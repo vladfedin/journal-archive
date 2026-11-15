@@ -6,6 +6,7 @@
 <main class="reading-layout">
   <nav class="breadcrumbs"><a href="../index.html">← Все записи</a></nav>
   <article class="post">
+    {% if entry.source_status %}<p class="notice">Показана ранее сохранённая версия: при последней проверке ЖЖ не вернул эту запись.</p>{% endif %}
     <header class="post-head">
       <div class="entry-meta"><time datetime="{{ summary.date }}">{{ summary.date|ru_date }}</time><span class="badge{% if summary.security != 'public' %} lock{% endif %}">{{ summary.security_label }}</span></div>
       <h1>{{ summary.title }}</h1>
@@ -24,6 +25,7 @@
     {% for comment in comments %}<article id="comment-{{ comment.id }}" class="comment depth-{{ comment.visual_depth }}{% if comment.state == 'S' %} screened{% endif %}" data-depth="{{ comment.depth }}"{% if comment.by_owner %} data-owner{% endif %}>
       <header class="comment-meta"><strong class="ljuser">{{ comment.user }}</strong>{% if comment.by_owner %}<span class="badge owner" title="Автор журнала">автор</span>{% endif %}{% if comment.state_label %}<span class="badge{% if comment.state == 'S' %} lock{% endif %}">{{ comment.state_label }}</span>{% endif %}<time datetime="{{ comment.get('date', '') }}">{{ comment.get('date', '')|ru_date }}</time><a class="comment-link" href="#comment-{{ comment.id }}" aria-label="Ссылка на комментарий {{ comment.id }}">#{{ comment.id }}</a></header>
       <div class="comment-body">
+        {% if comment.source_status %}<p class="fine">Ранее сохранённый комментарий: при последней проверке ЖЖ не вернул {% if comment.source_status == 'body_not_returned' %}его текст{% else %}его в списке{% endif %}.</p>{% endif %}
         {% if comment.missing_parent %}<p class="fine">Родительский комментарий #{{ comment.parentid }} не получен.</p>{% elif comment.parent_user %}<a class="parent-link" href="#comment-{{ comment.parentid }}">↳ в ответ <b>{{ comment.parent_user }}</b></a>{% endif %}
         {% if comment.subject_text %}<h3>{{ comment.subject_text }}</h3>{% endif %}<div class="prose{% if comment.autoformat %} autoformat{% endif %}">{{ comment.html }}</div>
         {% if comment.has_children or comment.reaction_view is none or comment.reaction_view.count %}<div class="comment-foot">{{ show_reactions(comment.reaction_view, false) }}{% if comment.has_children %}<button class="thread-toggle" type="button" aria-expanded="true">Свернуть ветку</button>{% endif %}</div>{% endif %}

@@ -37,6 +37,19 @@ def main():
     json_export = sub.add_parser("json", help="Экспортировать данные из базы в JSON без сети и сборки HTML")
     json_export.add_argument("folder", type=Path)
     json_export.add_argument("--output", type=Path, help="Путь к файлу; по умолчанию data/archive.json в архиве")
+    update = sub.add_parser("sync", help="Создать или обновить накопительный архив с продолжением очереди")
+    update.add_argument("username")
+    update.add_argument("--mode", choices=["full", "period", "urls"], default="full")
+    update.add_argument("--from", dest="date_from")
+    update.add_argument("--to", dest="date_to")
+    update.add_argument("--url", action="append", default=[])
+    update.add_argument("--archive", help="Имя существующей папки архива этого пользователя")
+    update.add_argument("--output", type=Path, default=Path("archives"))
+    update.add_argument("--max-requests", type=int, default=50)
+    update.add_argument("--delay", type=float, default=3)
+    update.add_argument("--images", action="store_true")
+    verify = sub.add_parser("verify", help="Проверить базу и контрольные суммы файлов без сети")
+    verify.add_argument("folder", type=Path)
     args = parser.parse_args()
     try:
         if args.command in (None, "serve"):
@@ -90,15 +103,36 @@ def main():
             finally:
                 store.close()
             print((args.folder / "index.html").resolve())
-        elif args.command == "export":
+        elif args.command == "verify":
+            import json
+            from .integrity import verify_archive
+            from .storage import Store
+            if not (args.folder / "archive.sqlite3").is_file():
+                raise ExportError("В папке нет archive.sqlite3.")
+            store = Store(args.folder)
+            try:
+                result = verify_archive(store)
+                print(json.dumps(result, ensure_ascii=False, indent=2))
+            finally:
+                store.close()
+            if not result["ok"]:
+                raise SystemExit(2)
+        elif args.command in ("export", "sync"):
             import math
             import signal
             from .exporter import archive_slug, export, validate_entry_limit
             from .client import RequestBudget
-            entry_limit = validate_entry_limit(None if args.all else args.limit)
+            entry_limit = validate_entry_limit(None if getattr(args, "all", False) else getattr(args, "limit", 10))
             RequestBudget(args.max_requests)
             if not math.isfinite(args.delay) or not 1 <= args.delay <= 60:
                 raise ExportError("Пауза должна быть от 1 до 60 секунд.")
+            if args.command == "sync" or getattr(args, "all", False):
+                from .sync import sync, validate_scope, target_slug
+                from .client import username
+                args.username = username(args.username)
+                if args.command == "sync":
+                    validate_scope(args.username, args.mode, args.date_from, args.date_to, args.url)
+                    target_slug(args.username, args.archive)
             password = getpass.getpass("Пароль ЖЖ (не сохраняется): ")
             if not password:
                 raise ExportError("Пароль не может быть пустым.")
@@ -111,11 +145,20 @@ def main():
                 if message and message != last_message:
                     print(message, flush=True)
                     last_message = message
-            report = export(args.username, password, args.output, images=args.images,
-                            delay=args.delay, cancel=cancel, progress=progress,
-                            entry_limit=entry_limit, max_requests=args.max_requests)
+            if args.command == "sync":
+                report = sync(args.username, password, args.output, mode=args.mode, start=args.date_from, end=args.date_to,
+                              urls=args.url, archive=args.archive, images=args.images, delay=args.delay,
+                              cancel=cancel, progress=progress, max_requests=args.max_requests)
+            elif getattr(args, "all", False):
+                report = sync(args.username, password, args.output, mode="full", images=args.images,
+                              delay=args.delay, cancel=cancel, progress=progress, max_requests=args.max_requests)
+            else:
+                report = export(args.username, password, args.output, images=args.images,
+                                delay=args.delay, cancel=cancel, progress=progress,
+                                entry_limit=entry_limit, max_requests=args.max_requests)
             password = ""
-            print((args.output / archive_slug(report["username"], entry_limit) / "index.html").resolve())
+            slug = target_slug(args.username, args.archive) if args.command == "sync" else archive_slug(report["username"], entry_limit)
+            print((args.output / slug / "index.html").resolve())
             print(f"HTTP-запросов: {report['requests_used']} / {report['request_limit']}")
             if report["status"] != "complete":
                 raise SystemExit(2)

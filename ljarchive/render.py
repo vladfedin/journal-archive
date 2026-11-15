@@ -333,4 +333,6 @@ def build_archive(store: Store, report: dict, *, images=False, client_cancel=Non
     atomic_write(folder / "assets" / "search-data.js", "window.ARCHIVE=" + dumps({"entries": summaries, "documents": search}).replace("<", "\\u003c") + ";")
     atomic_write(folder / "index.html", ENV.get_template("index.html").render(user=user, entries=summaries, report=report))
     atomic_write(folder / "report.html", ENV.get_template("report.html").render(user=user, report=report))
+    from .integrity import write_manifest
+    write_manifest(folder)
     return report

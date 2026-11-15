@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import requests
+from .retry import backoff
 from defusedxml import ElementTree, xmlrpc as safe_xmlrpc
 
 safe_xmlrpc.monkey_patch()
@@ -30,6 +31,10 @@ class RequestLimitReached(ExportError):
     pass
 
 
+class APIRateLimited(ExportError):
+    pass
+
+
 class RequestBudget:
     """One hard limit for all outbound HTTP attempts in an export, including retries."""
     def __init__(self, limit=50, progress=None):
@@ -40,6 +45,9 @@ class RequestBudget:
         self.exhausted = False
         self.progress = progress or (lambda **kwargs: None)
         self.lock = threading.Lock()
+        self.delay = 2.0
+        self.not_before = 0.0
+        self.save_cooldown = lambda deadline: None
 
     def consume(self, category):
         with self.lock:
@@ -117,32 +125,49 @@ def parse_comments(data: bytes) -> CommentPage:
 
 class LiveJournalClient:
     def __init__(self, user: str, password: str, *, delay: float = 2.0,
-                 cancel: threading.Event | None = None, budget: RequestBudget | None = None):
+                 cancel: threading.Event | None = None, budget: RequestBudget | None = None,
+                 progress=None, max_attempts=6):
         self.user = username(user)
         self._password_hash = hashlib.md5(password.encode("utf-8")).hexdigest()
         self.delay = max(1.0, float(delay))
         self.cancel = cancel or threading.Event()
         self.budget = budget or RequestBudget()
+        self.budget.delay = self.delay
         self.session = requests.Session()
-        self.session.headers["User-Agent"] = "LiveJournalLocalArchive/0.1 (personal backup)"
+        self.session.headers["User-Agent"] = "LiveJournalLocalArchive/0.2 (personal backup)"
         self._last_request = 0.0
         self._cookie = None
         self.journal_id = None
         self._reaction_token = None
+        self.progress = progress or (lambda **kwargs: None)
+        self.max_attempts = max_attempts
+        self.not_before = 0.0
+        self.save_cooldown = lambda deadline: None
 
     def check(self):
         if self.cancel.is_set():
             raise Cancelled("Выгрузка остановлена. Уже полученные данные сохранены; можно продолжить после повторного входа.")
 
     def _wait(self, seconds: float):
-        if self.cancel.wait(max(0, seconds)):
-            self.check()
+        deadline = time.monotonic() + max(0, seconds)
+        while time.monotonic() < deadline:
+            if self.cancel.wait(min(30, deadline - time.monotonic())):
+                self.check()
+
+    def _defer(self, seconds, message):
+        self.not_before = max(self.not_before, time.time() + seconds)
+        self.budget.not_before = self.not_before
+        self.save_cooldown(self.not_before)
+        self.progress(phase="waiting", message=message, retry_at=self.not_before)
 
     def _request(self, method: str, path: str, *, base_url=BASE_URL, category="livejournal", **kwargs) -> bytes:
         if base_url not in (BASE_URL, LIKES_URL, f"https://{self.user.replace('_', '-')}.livejournal.com"):
             raise ExportError("Неподдерживаемый адрес сервиса ЖЖ.")
-        for attempt in range(4):
+        for attempt in range(self.max_attempts):
             self.check()
+            if self.budget.used >= self.budget.limit:
+                self.budget.consume(category)  # Raise before waiting for a request that cannot be sent.
+            self._wait(self.not_before - time.time())
             self._wait(self.delay - (time.monotonic() - self._last_request))
             self.budget.consume(category)
             self._last_request = time.monotonic()
@@ -150,10 +175,10 @@ class LiveJournalClient:
                 with self.session.request(method, base_url + path, timeout=(15, 60),
                                           allow_redirects=False, stream=True, **kwargs) as response:
                     if response.status_code in (429, 500, 502, 503, 504):
-                        if attempt == 3:
+                        self._defer(backoff(attempt, response.headers.get("Retry-After"), limited=response.status_code == 429),
+                                    f"ЖЖ вернул HTTP {response.status_code}. Ждём перед повтором ({attempt + 1}/{self.max_attempts})…")
+                        if attempt == self.max_attempts - 1:
                             raise ExportError("ЖЖ временно ограничивает запросы или недоступен. Данные сохранены, продолжите позже.")
-                        retry = response.headers.get("Retry-After", "")
-                        self._wait(min(120, max(5 * 2 ** attempt, int(retry) if retry.isdigit() else 0)))
                         continue
                     if response.status_code in (401, 403):
                         raise ExportError("ЖЖ отказал в доступе (HTTP 401/403). Проверьте вход в браузере; при ограничении запросов продолжите позже.")
@@ -171,10 +196,10 @@ class LiveJournalClient:
                     return b"".join(chunks)
             except requests.exceptions.SSLError as exc:
                 raise ExportError("Не удалось проверить TLS-сертификат ЖЖ. Проверьте часы и сертификаты системы; проверка HTTPS не отключалась.") from exc
-            except (requests.Timeout, requests.ConnectionError) as exc:
-                if attempt == 3:
+            except (requests.Timeout, requests.ConnectionError, requests.exceptions.ChunkedEncodingError) as exc:
+                self._defer(backoff(attempt), f"Соединение прервалось. Пауза перед повтором ({attempt + 1}/{self.max_attempts})…")
+                if attempt == self.max_attempts - 1:
                     raise ExportError("Не удалось связаться с ЖЖ. Проверьте соединение и продолжите выгрузку.") from exc
-                self._wait(5 * 2 ** attempt)
         raise ExportError("Не удалось получить ответ ЖЖ.")
 
     def _rpc(self, method: str, args: dict | None = None) -> dict:
@@ -187,21 +212,29 @@ class LiveJournalClient:
                 raise ValueError("not a struct")
             return result
         except xmlrpc.client.Fault as exc:
+            if exc.faultCode == 402:
+                raise APIRateLimited("ЖЖ сообщил об ограничении частоты запросов XML-RPC (402).") from exc
             # Never echo a remote fault string: it can contain request credentials.
             raise ExportError(f"ЖЖ отклонил запрос {method} (код {exc.faultCode}). Проверьте логин, пароль и доступность API.") from exc
         except Exception as exc:
             raise ExportError(f"ЖЖ вернул некорректный ответ на {method}. Прогресс сохранён.") from exc
 
     def call(self, method: str, **params) -> dict:
-        challenge = self._rpc("getchallenge").get("challenge")
-        if not isinstance(challenge, str) or not challenge:
-            raise ExportError("ЖЖ не выдал challenge для входа.")
-        response = hashlib.md5((challenge + self._password_hash).encode("utf-8")).hexdigest()
-        return self._rpc(method, {"username": self.user, "ver": 1, "auth_method": "challenge",
-                                  "auth_challenge": challenge, "auth_response": response, **params})
+        for attempt in range(self.max_attempts):
+            try:
+                challenge = self._rpc("getchallenge").get("challenge")
+                if not isinstance(challenge, str) or not challenge:
+                    raise ExportError("ЖЖ не выдал challenge для входа.")
+                response = hashlib.md5((challenge + self._password_hash).encode("utf-8")).hexdigest()
+                return self._rpc(method, {"username": self.user, "ver": 1, "auth_method": "challenge",
+                                          "auth_challenge": challenge, "auth_response": response, **params})
+            except APIRateLimited:
+                self._defer(backoff(attempt, limited=True), "ЖЖ просит снизить частоту XML-RPC. Ждём и повторим с новым challenge…")
+                if attempt == self.max_attempts - 1:
+                    raise
 
     def login(self):
-        result = self.call("login", clientversion="Python-LJLocalArchive/0.1")
+        result = self.call("login", clientversion="Python-LJLocalArchive/0.2")
         uid = result.get("userid")
         if isinstance(uid, int) and not isinstance(uid, bool) and uid > 0:
             self.journal_id = uid

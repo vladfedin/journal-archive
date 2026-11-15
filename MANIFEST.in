@@ -1,0 +1,12 @@
+include README.md pyproject.toml start.sh start.command start.bat start-background.sh
+recursive-include docs *.md
+recursive-include packaging *.py
+recursive-include .github/workflows *.yml
+recursive-include ljarchive/templates *.html
+recursive-include ljarchive/static *.js *.css
+prune archives
+prune .venv
+prune .git
+prune release
+prune build
+global-exclude __pycache__ *.pyc *.sqlite3 *.lock .env

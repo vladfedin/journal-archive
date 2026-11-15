@@ -35,9 +35,15 @@
         <div class="input-row"><input id="password" name="password" type="password" placeholder="Введите пароль" autocomplete="current-password" required maxlength="1024"><button id="show-password" type="button" aria-label="Показать пароль" aria-pressed="false">Показать</button></div>
         <p class="password-note">Пароль не записывается на диск. Соединение с ЖЖ — по HTTPS.</p>
         <div class="trial-settings">
-          <div class="setting"><label for="entry-limit">Объём выгрузки</label><select id="entry-limit"><option value="10">Последние 10 записей — пробная выгрузка</option><option value="all">Весь журнал</option></select></div>
+          <div class="setting"><label for="entry-limit">Объём выгрузки</label><select id="entry-limit"><option value="10">Последние 10 записей — пробная выгрузка</option><option value="period">Создать / обновить за период</option><option value="urls">Обновить записи по URL</option><option value="all">Весь журнал — проверить и обновить</option></select></div>
           <div class="setting setting-narrow"><label for="max-requests">Не больше HTTP-запросов за запуск</label><input id="max-requests" class="field" type="number" inputmode="numeric" min="1" max="10000" step="1" value="50" required></div>
           <p>В предел входят вход, повторные попытки, реакции и картинки. Когда он достигнут, всё полученное сохранится; продолжить можно новым запуском.</p>
+        </div>
+        <div id="sync-settings" hidden>
+          <label for="target-archive">Архив для обновления</label><select id="target-archive"><option value="">Основной архив пользователя</option></select>
+          <div id="period-settings" hidden><label for="date-from">Записи начиная с</label><input id="date-from" class="field" type="date"><label for="date-to">По дату включительно</label><input id="date-to" class="field" type="date"><p class="fine">Период относится к дате публикации постов. Их комментарии сохраняются за всё время; число лет не ограничено.</p></div>
+          <div id="url-settings" hidden><label for="entry-urls">URL записей своего журнала, по одному на строке</label><textarea id="entry-urls" class="field" rows="3" placeholder="https://your-journal.livejournal.com/12345.html"></textarea><p class="fine">Можно вставить ссылку на комментарий: обновится вся запись с обсуждением.</p></div>
+          <p class="fine">Полученное добавляется в архив. После остановки выберите тот же режим, период и архив: загрузка продолжится с сохранённого места.</p>
         </div>
         <label class="checkbox-row"><input id="images" type="checkbox"><span><strong>Скачать изображения</strong><small>Тоже расходуют общий предел запросов. Для пробы выключены.</small></span></label>
         <p class="included-row">Комментарии к выбранным записям сохраняются всегда, включая скрытые.</p>
@@ -79,6 +85,6 @@
     <p class="fine">Папка хранения: <span id="output-path"></span></p>
   </section>
 </main>
-<footer class="footer"><span>Журнал / архив · версия 0.1</span><span>Работает локально, без подписки</span></footer>
+<footer class="footer"><span>Журнал / архив · версия 0.2</span><button id="quit" type="button" class="text-button">Завершить приложение</button><span>Работает локально, без подписки</span></footer>
 </body>
 </html>

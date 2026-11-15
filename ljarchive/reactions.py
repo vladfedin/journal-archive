@@ -94,11 +94,15 @@ def capture_authors(store, client, targets, progress=None):
                 store.save_reactions(kind, object_id, counts)
 
 
-def capture_reactions(store, client, progress=None):
+def capture_reactions(store, client, progress=None, *, entry_ids=None, checkpoint=None):
     entries, comments = store.entries(), store.comments()
+    if entry_ids is not None:
+        entries = [e for e in entries if int(e["itemid"]) in entry_ids]
+        comments = [c for c in comments if int(c.get("jitemid", 0)) in entry_ids and c.get("source_status") != "not_returned"]
     if not entries:
-        return
+        return True
     issues = []
+    complete = False
     try:
         journal_id = client.journal_id or store.get("journal_id")
         if not journal_id:
@@ -119,13 +123,15 @@ def capture_reactions(store, client, progress=None):
             if did:
                 thread = int(comment.get("dtalkid") or int(comment["id"]) * 256 + did % 256)
                 targets.append(((journal_id, did, thread), "comment", int(comment["id"])))
+        done = set(store.get(checkpoint, [])) if checkpoint else set()
+        pending = [t for t in targets if f"{t[1]}:{t[2]}" not in done]
         counts_error = None
-        for start in range(0, len(targets), BATCH_SIZE):
+        for start in range(0, len(pending), BATCH_SIZE):
             client.check()
             if progress:
                 progress(phase="reactions", message=f"Сохраняем реакции: {start} из {len(targets)}…",
                          completed=start, total=len(targets))
-            batch = targets[start:start + BATCH_SIZE]
+            batch = pending[start:start + BATCH_SIZE]
             entities = [{"journal": key[0], "item": key[1], **({"thread": key[2]} if key[2] else {})}
                         for key, _, _ in batch]
             try:
@@ -139,11 +145,22 @@ def capture_reactions(store, client, progress=None):
                 for key, kind, object_id in batch:
                     if key in counts:
                         store.save_reactions(kind, object_id, counts[key])
+                        done.add(f"{kind}:{object_id}")
+                if checkpoint:
+                    store.set(checkpoint, sorted(done))
             if len(counts) != len(batch):
                 issues.append(f"ЖЖ не вернул корректные счётчики для {len(batch) - len(counts)} объектов.")
         if counts_error:
             issues.append(str(counts_error))
-        capture_authors(store, client, targets, progress)
+        fresh = [t for t in targets if f"{t[1]}:{t[2]}" in done]
+        capture_authors(store, client, fresh, progress)
+        saved = {"post": store.reactions("post"), "comment": store.reactions("comment")}
+        incomplete = [t for t in fresh if saved[t[1]][t[2]].get("authors", {}).get("status") != "complete"]
+        complete = len(fresh) == len(targets) and not incomplete and not issues
+        if checkpoint:
+            # A changing counter can disagree with the author list; refresh that object next time.
+            with store.db:
+                store.set(checkpoint, sorted(done - {f"{t[1]}:{t[2]}" for t in incomplete}))
     except Cancelled:
         raise
     except ExportError as exc:
@@ -151,6 +168,7 @@ def capture_reactions(store, client, progress=None):
     finally:
         with store.db:
             store.set("reaction_issues", issues)
+    return complete
 
 
 def reaction_report(store):

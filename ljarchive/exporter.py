@@ -149,7 +149,10 @@ class Exporter:
     def recent_comments(self):
         store = self.store
         statuses = store.get("entry_comments", {})
-        entries = sorted(store.entries(), key=lambda e: (e["eventtime"], int(e["itemid"])), reverse=True)
+        entries = sorted(store.entries(), key=lambda e: (e.get("eventtime", ""), int(e["itemid"])), reverse=True)
+        selected = getattr(self, "selected_ids", None)
+        if selected is not None:
+            entries = [e for e in entries if int(e["itemid"]) in selected]
         for entry in entries:
             eid = int(entry["itemid"])
             status = statuses.setdefault(str(eid), {"next_page": 1, "done": False})
@@ -166,6 +169,7 @@ class Exporter:
                 items, users = normalize_thread(nodes, eid)
                 atomic_write(self.folder / "raw" / f"comments-{eid}-page-{page}.json", dumps(response))
                 self.save_thread(items, users)
+                status["seen_ids"] = sorted(set(status.get("seen_ids", [])) | {int(c["id"]) for c in items})
                 try:
                     pages = int(response["pages"])
                     returned_page = int(response["page"])
@@ -180,12 +184,14 @@ class Exporter:
                     # Some responses contain unexpanded placeholders even with expand_all.
                     # Retry those threads once, never silently drop their bodies.
                     missing = store.db.execute("""SELECT payload FROM comments WHERE entry_id=?
-                        AND json_type(payload,'$.body') IS NULL AND json_extract(payload,'$.state') NOT IN ('D','X')""", (eid,)).fetchall()
+                        AND (json_type(payload,'$.body') IS NULL OR json_extract(payload,'$.source_status')='body_not_returned')
+                        AND json_extract(payload,'$.state') NOT IN ('D','X')""", (eid,)).fetchall()
                     import json
                     for row in missing:
                         item = json.loads(row[0])
                         # Earlier expansion may already have loaded this descendant.
-                        if store.db.execute("SELECT json_type(payload,'$.body') FROM comments WHERE id=?", (item["id"],)).fetchone()[0] is not None:
+                        loaded = store.db.execute("SELECT json_type(payload,'$.body'),json_extract(payload,'$.source_status') FROM comments WHERE id=?", (item["id"],)).fetchone()
+                        if loaded[0] is not None and loaded[1] != "body_not_returned":
                             continue
                         self.update("comments", f"Разворачиваем комментарий #{item['id']} к записи #{eid}…")
                         expanded = self.client.call("getcomments", journal=self.client.user, itemid=eid,
@@ -194,7 +200,9 @@ class Exporter:
                         if not isinstance(expanded.get("comments"), list):
                             raise ExportError("ЖЖ не вернул развёрнутую ветку.")
                         atomic_write(self.folder / "raw" / f"comments-{eid}-thread-{item['id']}.json", dumps(expanded))
-                        self.save_thread(*normalize_thread(expanded["comments"], eid))
+                        expanded_items, expanded_users = normalize_thread(expanded["comments"], eid)
+                        self.save_thread(expanded_items, expanded_users)
+                        status["seen_ids"] = sorted(set(status["seen_ids"]) | {int(c["id"]) for c in expanded_items})
                     status["done"] = True
                 with store.db:
                     store.set("entry_comments", statuses)
@@ -368,6 +376,14 @@ class Exporter:
         from .render import build_archive
         store = self.store
         try:
+            if hasattr(self.client, "not_before"):
+                self.client.not_before = store.get("request_not_before", 0)
+                def save_cooldown(deadline):
+                    with store.db:
+                        store.set("request_not_before", deadline)
+                self.client.save_cooldown = save_cooldown
+                self.client.budget.save_cooldown = save_cooldown
+                self.client.budget.not_before = self.client.not_before
             self.update("login", "Входим в ЖЖ и получаем сессию владельца…")
             self.client.login()
             old_user = store.get("username")
@@ -430,7 +446,7 @@ def export(user, password, output, *, images=False, delay=2, cancel=None, progre
     user = username(user)
     entry_limit = validate_entry_limit(entry_limit)
     budget = RequestBudget(max_requests, progress=progress)
-    client = LiveJournalClient(user, password, delay=delay, cancel=cancel, budget=budget)
+    client = LiveJournalClient(user, password, delay=delay, cancel=cancel, budget=budget, progress=progress)
     try:
         return Exporter(Path(output) / archive_slug(user, entry_limit), client, images=images,
                         progress=progress, entry_limit=entry_limit).run()

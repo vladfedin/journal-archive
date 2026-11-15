@@ -4,9 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "livejournal-local-archive"
-version = "0.1.0"
+version = "0.2.0"
 description = "Локальный архив Живого Журнала с комментариями и поиском"
 requires-python = ">=3.10"
+readme = "README.md"
 dependencies = [
   "requests>=2.32,<3",
   "bleach>=6.2,<7",
@@ -16,9 +17,13 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest>=8,<10"]
+package = ["pyinstaller>=6.16,<7", "build>=1.2,<2"]
 
 [project.scripts]
 lj-archive = "ljarchive.__main__:main"
+
+[project.gui-scripts]
+lj-archive-desktop = "ljarchive.desktop:main"
 
 [tool.setuptools.package-data]
 ljarchive = ["templates/*.html", "static/*.css", "static/*.js"]

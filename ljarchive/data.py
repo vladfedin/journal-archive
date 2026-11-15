@@ -12,12 +12,15 @@ def snapshot(store):
     return {
         "schema_version": SCHEMA_VERSION,
         "journal": {"username": store.get("username"), "id": store.get("journal_id")},
-        "scope": {"entry_limit": store.get("entry_limit"), "started_at": store.get("started_at")},
+        "scope": {"entry_limit": store.get("entry_limit"), "started_at": store.get("started_at"),
+                  "last_sync": store.get("sync_job", {}).get("scope")},
         "entries": sorted(store.entries(), key=lambda item: int(item["itemid"])),
         "comments": store.comments(),
         "comment_metadata": [dict(row) for row in store.db.execute("SELECT * FROM comment_meta ORDER BY id")],
         "users": [dict(row) for row in store.db.execute("SELECT id,name AS username FROM users ORDER BY id")],
         "media": store.get("media", {}),
+        "versions": [{"kind": r[0], "id": r[1], "saved_at": r[2], "record": json.loads(r[3])}
+                     for r in store.db.execute("SELECT kind,object_id,saved_at,payload FROM versions ORDER BY saved_at,kind,object_id,digest")],
         "coverage": {"posts_done": bool(store.get("posts_done")), "comments_done": bool(store.get("bodies_done")),
                      "reactions": reaction_report(store)},
     }

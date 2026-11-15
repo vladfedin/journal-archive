@@ -17,6 +17,7 @@ from .client import Cancelled, ExportError, RequestBudget, username
 from .demo import create_demo
 from .exporter import archive_slug, export, validate_entry_limit
 from .render import ROOT, plural
+from .sync import sync, validate_scope, target_slug
 
 TERMINAL = {"complete", "partial", "cancelled", "error", "demo", "idle"}
 
@@ -55,6 +56,12 @@ class Jobs:
                 raise ExportError("Некорректная настройка изображений.")
             data["entry_limit"] = validate_entry_limit(data.get("entry_limit", 10))
             data["max_requests"] = RequestBudget(data.get("max_requests", 50)).limit
+            if data["entry_limit"] is None and not data.get("mode"):
+                data["mode"] = "full"
+            if data.get("mode"):
+                scope = validate_scope(data["username"], data["mode"], data.get("date_from"), data.get("date_to"), data.get("urls"))
+                data["sync_scope"] = scope.data()
+                data["archive"] = target_slug(data["username"], data.get("archive"))
         with self.lock:
             if self.thread and self.thread.is_alive():
                 raise ExportError("Уже идёт выгрузка. Дождитесь её завершения или остановите её.")
@@ -67,15 +74,22 @@ class Jobs:
             return dict(self.state)
 
     def run(self, data, demo):
-        slug = "_demo" if demo else archive_slug(data["username"], data["entry_limit"])
+        slug = "_demo" if demo else data.get("archive") or archive_slug(data["username"], data["entry_limit"])
         try:
             if demo:
                 report = create_demo(self.output / slug, progress=self.progress)
             else:
                 password = data.pop("password")
-                report = export(data["username"], password, self.output, images=data.get("images", False),
-                                delay=data.get("delay", 2), cancel=self.cancel, progress=self.progress,
-                                entry_limit=data["entry_limit"], max_requests=data["max_requests"])
+                if data.get("sync_scope"):
+                    scope = data["sync_scope"]
+                    report = sync(data["username"], password, self.output, images=data.get("images", False),
+                                  delay=data.get("delay", 3), cancel=self.cancel, progress=self.progress,
+                                  max_requests=data["max_requests"], mode=scope["mode"], start=scope["start"],
+                                  end=scope["end"], urls=scope["urls"], archive=data["archive"])
+                else:
+                    report = export(data["username"], password, self.output, images=data.get("images", False),
+                                    delay=data.get("delay", 2), cancel=self.cancel, progress=self.progress,
+                                    entry_limit=data["entry_limit"], max_requests=data["max_requests"])
                 password = ""
             self.progress(phase=report["status"], entries=report["entries_saved"], comments=report["comments_saved"],
                           message=("Демонстрационный архив готов." if demo else
@@ -101,7 +115,7 @@ class Jobs:
                 if not (path.parent / "index.html").is_file():
                     continue
                 found.append({key: report.get(key) for key in ("username", "status", "entries_saved", "comments_saved", "created_at", "entry_limit", "requests_used", "request_limit")} |
-                             {"url": f"/archive/{slug}/index.html", "report_url": f"/archive/{slug}/report.html",
+                             {"slug": slug, "url": f"/archive/{slug}/index.html", "report_url": f"/archive/{slug}/report.html",
                               "zip_url": f"/download/{slug}.zip", "json_url": f"/download/{slug}.json"})
             except (OSError, ValueError):
                 continue
@@ -113,7 +127,7 @@ def make_server(output: Path, port=8787):
     token = secrets.token_urlsafe(32)
 
     class Handler(BaseHTTPRequestHandler):
-        server_version = "LJLocalArchive/0.1"
+        server_version = "LJLocalArchive/0.2"
 
         def log_message(self, *_):
             pass
@@ -217,7 +231,7 @@ def make_server(output: Path, port=8787):
                     with TemporaryFile() as buffer:
                         with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
                             for member in folder.rglob("*"):
-                                if member.is_file() and not member.is_symlink() and member.suffix not in (".sqlite3", ".tmp", ".lock") and member.resolve().is_relative_to(folder):
+                                if member.is_file() and not member.is_symlink() and member.suffix not in (".sqlite3", ".tmp", ".lock") and member.relative_to(folder).parts[0] != "quarantine" and member.resolve().is_relative_to(folder):
                                     archive.write(member, str(Path(slug) / member.relative_to(folder)))
                         length = buffer.tell()
                         buffer.seek(0)
@@ -252,6 +266,16 @@ def make_server(output: Path, port=8787):
                     jobs.cancel.set()
                     jobs.progress(cancelling=True)
                     return self.json(jobs.snapshot())
+                if self.path == "/api/quit":
+                    jobs.cancel.set()
+                    def shutdown():
+                        if jobs.thread and jobs.thread.is_alive():
+                            jobs.thread.join()
+                        self.server.shutdown()
+                    self.json({"message": "Сохраняем прогресс и завершаем приложение."})
+                    self.wfile.flush()
+                    threading.Thread(target=shutdown, daemon=True).start()
+                    return
                 return self.json({"error": "Неизвестный запрос."}, 404)
             except ExportError as exc:
                 return self.json({"error": str(exc)}, 400)

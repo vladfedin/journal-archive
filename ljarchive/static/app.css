@@ -177,3 +177,7 @@
   .archive-row { padding: 14px 16px; }
   .job-actions > * { flex: 1 1 auto; }
 }
+
+#sync-settings label { display: block; font-weight: 600; margin: 14px 0 6px; }
+#sync-settings .field { width: 100%; font: inherit; }
+#sync-settings .fine { margin: 8px 0 14px; }
