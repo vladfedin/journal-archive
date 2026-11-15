@@ -5,6 +5,12 @@ import webbrowser
 
 
 def main():
+    diagnostic_log = os.environ.get("LJARCHIVE_DIAGNOSTIC_LOG")
+    if diagnostic_log:
+        import faulthandler
+        sys.stdout = sys.stderr = open(diagnostic_log, "a", encoding="utf-8", buffering=1)
+        faulthandler.enable(file=sys.stderr)
+        faulthandler.dump_traceback_later(60, file=sys.stderr)
     # Windows --windowed builds do not provide stdout/stderr.
     if sys.stdout is None:
         sys.stdout = open(os.devnull, "w", encoding="utf-8")

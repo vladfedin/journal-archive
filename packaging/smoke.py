@@ -17,6 +17,8 @@ else:
 with tempfile.TemporaryDirectory(prefix="ljarchive-ЖЖ-") as directory:
     folder = Path(directory) / "demo"
     env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "VIRTUAL_ENV")}
+    diagnostic_log = Path(directory) / 'native.log'
+    env['LJARCHIVE_DIAGNOSTIC_LOG'] = str(diagnostic_log)
     subprocess.run([str(binary), "demo", "--output", str(folder)], cwd=directory, env=env, check=True, timeout=90)
     data = json.loads((folder / "data/archive.json").read_text(encoding="utf-8"))
     assert len(data["entries"]) == 6 and len(data["comments"]) == 12
@@ -46,6 +48,10 @@ with tempfile.TemporaryDirectory(prefix="ljarchive-ЖЖ-") as directory:
             assert session.get(base + '/archive/demo/data/archive.json', timeout=5).json()['schema_version'] == 1
             assert session.post(base + '/api/quit', headers={'Origin':base}, json={}, timeout=5).status_code == 200
         assert process.wait(timeout=10) == 0
+    except Exception:
+        if diagnostic_log.exists():
+            print(diagnostic_log.read_text(encoding='utf-8'), flush=True)
+        raise
     finally:
         if process.poll() is None:
             if sys.platform == "win32":
