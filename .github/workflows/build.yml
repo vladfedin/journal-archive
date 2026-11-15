@@ -37,7 +37,19 @@ jobs:
                           print('::error::' + escape(case.get('name', '') + '\n' + (issue.text or issue.get('message', ''))))
       - run: python -m build
       - run: python packaging/build.py
-      - run: python packaging/smoke.py
+      - name: Check native application
+        shell: python {0}
+        run: |
+          import subprocess
+          import sys
+          result = subprocess.run([sys.executable, 'packaging/smoke.py'],
+                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                  encoding='utf-8', errors='replace')
+          print(result.stdout)
+          if result.returncode:
+              message = result.stdout.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+              print('::error::' + message)
+          sys.exit(result.returncode)
       - uses: actions/upload-artifact@v4
         with:
           name: LiveJournalArchive-${{ matrix.os }}
