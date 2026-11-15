@@ -114,17 +114,17 @@ def test_latest_ten_with_screened_comments_and_reactions_share_budget(tmp_path, 
     assert report["reactions"]["authors_saved"] == 90
     assert report["request_limit"] == 50
     assert not any(name in ("getdaycounts", "syncitems") for name, _ in wire.calls)
-    entries = json.loads((tmp_path / "owner-latest-10/data/entries.json").read_text())
+    entries = json.loads((tmp_path / "owner-latest-10/data/entries.json").read_text(encoding="utf-8"))
     assert {e["itemid"] for e in entries} == set(range(3, 13))
-    comments = json.loads((tmp_path / "owner-latest-10/data/comments.json").read_text())
+    comments = json.loads((tmp_path / "owner-latest-10/data/comments.json").read_text(encoding="utf-8"))
     assert {c["jitemid"] for c in comments} == set(range(3, 13))
     assert {c["user"] for c in comments} == {"friend", "owner"}
     assert all(c["reactions"]["count"] == 3 for c in comments)
     assert all(e["reactions"]["groups"] == [1, 0, 2] for e in entries)
     assert all(c["reactions"]["authors"]["status"] == "complete" for c in comments)
-    assert "31 / 50" in (tmp_path / "owner-latest-10/report.html").read_text()
+    assert "31 / 50" in (tmp_path / "owner-latest-10/report.html").read_text(encoding="utf-8")
     for file in (tmp_path / "owner-latest-10").rglob("*.json"):
-        assert "fixture-read-token" not in file.read_text() and "fixture-session" not in file.read_text()
+        assert "fixture-read-token" not in file.read_text(encoding="utf-8") and "fixture-session" not in file.read_text(encoding="utf-8")
     assert not (tmp_path / "owner").exists()
 
 
@@ -137,7 +137,7 @@ def test_limit_stops_before_next_request_and_keeps_ten_posts(tmp_path, monkeypat
     assert len(report["pending_comment_entry_ids"]) == 8
     folder = tmp_path / "owner-latest-10"
     assert len(list((folder / "entries").glob("*.html"))) == 10
-    assert json.loads((folder / "export-report.json").read_text())["request_limit"] == 10
+    assert json.loads((folder / "export-report.json").read_text(encoding="utf-8"))["request_limit"] == 10
     resumed, resumed_wire = export_fixture(tmp_path, monkeypatch)
     assert resumed["status"] == "complete"
     assert resumed["requests_used"] == len(resumed_wire.calls) == 25
@@ -177,7 +177,7 @@ def test_reactions_cannot_exceed_budget_after_complete_text_download(tmp_path, m
     assert not report["reactions"]["complete"]
     assert report["reactions"]["issues"]
     assert not any(name == "reaction_counts" for name, _ in wire.calls)
-    assert "Реакции не загружены" in (tmp_path / "owner-latest-10/entries/12.html").read_text()
+    assert "Реакции не загружены" in (tmp_path / "owner-latest-10/entries/12.html").read_text(encoding="utf-8")
 
 
 def test_retry_cannot_bypass_request_limit(monkeypatch):

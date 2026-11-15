@@ -80,12 +80,12 @@ def test_twenty_one_years_and_period_merge_without_losing_old_records(tmp_path):
     assert not any(p.get('year') == 2026 for m, p in first.calls if m == 'getevents')
     report = run(tmp_path, Journal(revision=1), Scope('period', '2026-11-01', '2026-11-01'))
     assert report['entries_saved'] == 2 and report['comments_saved'] == 4
-    data = json.loads((tmp_path/'data/archive.json').read_text())
+    data = json.loads((tmp_path/'data/archive.json').read_text(encoding="utf-8"))
     assert data['entries'][0]['event'].endswith('revision 0')
     assert data['entries'][1]['event'].endswith('revision 1')
     report = run(tmp_path, Journal(revision=2))
     assert report['status'] == 'complete'
-    assert len(json.loads((tmp_path/'data/archive.json').read_text())['versions']) >= 6
+    assert len(json.loads((tmp_path/'data/archive.json').read_text(encoding="utf-8"))['versions']) >= 6
 
 
 def test_url_refreshes_old_discussion_without_touching_newer_post(tmp_path):
@@ -96,7 +96,7 @@ def test_url_refreshes_old_discussion_without_touching_newer_post(tmp_path):
     assert report['status'] == 'complete'
     assert not any(m == 'getdaycounts' for m, _ in client.calls)
     assert {p['itemid'] for m, p in client.calls if m == 'getcomments'} == {1}
-    data = json.loads((tmp_path/'data/archive.json').read_text())
+    data = json.loads((tmp_path/'data/archive.json').read_text(encoding="utf-8"))
     assert data['entries'][1]['event'].endswith('revision 0')
     assert next(c for c in data['comments'] if c['id'] == 11)['body'].endswith('revision 1')
 
@@ -126,7 +126,7 @@ def test_removed_entry_keeps_saved_text_and_marks_availability(tmp_path):
     run(tmp_path, Journal(), scope)
     report = run(tmp_path, Journal(removed=True), scope)
     assert report['status'] == 'partial'
-    data = json.loads((tmp_path/'data/archive.json').read_text())
+    data = json.loads((tmp_path/'data/archive.json').read_text(encoding="utf-8"))
     assert data['entries'][0]['event'] == 'Entry 1 revision 0'
     assert data['entries'][0]['source_status'] == 'not_returned'
 
@@ -136,7 +136,7 @@ def test_old_body_is_not_proof_of_successful_refresh(tmp_path):
     run(tmp_path, Journal(), scope)
     report = run(tmp_path, Journal(no_body=True), scope)
     assert report['status'] == 'partial'
-    data = json.loads((tmp_path/'data/archive.json').read_text())
+    data = json.loads((tmp_path/'data/archive.json').read_text(encoding="utf-8"))
     assert data['comments'][0]['body'] and data['comments'][0]['source_status'] == 'body_not_returned'
 
 

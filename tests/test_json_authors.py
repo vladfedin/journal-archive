@@ -49,7 +49,7 @@ def test_json_export_is_independent_and_keeps_raw_content(tmp_path):
             store.save_reactions('post', 1, {**counts, 'authors': parse_authors([{'id': 7, 'username': 'reader', 'type': 0}], counts)})
         exported = export_json(store, tmp_path / 'standalone.json')
         assert not (folder / 'index.html').exists()
-        data = json.loads(exported.read_text())
+        data = json.loads(exported.read_text(encoding="utf-8"))
         assert data['schema_version'] == 1
         assert data['entries'][0]['event'] == '<p style="color:red">Оригинал</p>'
         assert data['comments'][0]['body'] == 'Строка\nСтрока'
@@ -66,7 +66,7 @@ assert 'ljarchive.render' not in sys.modules
 assert 'jinja2' not in sys.modules
 ''', str(folder), str(tmp_path / 'cli.json')], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
-    assert json.loads((tmp_path / 'cli.json').read_text()) == data
+    assert json.loads((tmp_path / 'cli.json').read_text(encoding="utf-8")) == data
 
 
 def test_rendering_does_not_mutate_exported_data(tmp_path):
@@ -76,7 +76,7 @@ def test_rendering_does_not_mutate_exported_data(tmp_path):
         before = snapshot(store)
         build_archive(store, report)
         assert snapshot(store) == before
-        assert json.loads((tmp_path / 'data/archive.json').read_text()) == before
+        assert json.loads((tmp_path / 'data/archive.json').read_text(encoding="utf-8")) == before
         for c in before['comments']:
             assert not {'html', 'depth', 'visual_depth', 'reaction_view', 'state_label'} & c.keys()
     finally:

@@ -87,7 +87,7 @@ def test_full_export_includes_private_screened_threads_and_gaps(tmp_path):
     assert report["screened_comments"] == 1
     assert report["deleted_comments"] == 1
     assert report["missing_comments"] == []
-    page = (tmp_path / "my_journal/entries/1.html").read_text()
+    page = (tmp_path / "my_journal/entries/1.html").read_text(encoding="utf-8")
     assert "Скрытая тайна" in page and 'class="comment depth-1 screened"' in page
     assert "old_friend" in page and "Личная" in page
     assert client.closed
