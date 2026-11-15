@@ -30,13 +30,14 @@ with tempfile.TemporaryDirectory(prefix="ljarchive-ЖЖ-") as directory:
     base = f"http://127.0.0.1:{port}"
     try:
         with requests.Session() as session:
-            for attempt in range(60):
+            deadline = time.monotonic() + 90
+            while time.monotonic() < deadline:
                 if process.poll() is not None:
                     raise RuntimeError("Native HTTP server exited before startup")
                 try:
-                    response = session.get(base + "/", timeout=1)
+                    response = session.get(base + "/", timeout=(1, 5))
                     break
-                except requests.ConnectionError:
+                except (requests.ConnectionError, requests.Timeout):
                     time.sleep(0.25)
             else:
                 raise RuntimeError("Native HTTP server did not start")
@@ -47,6 +48,11 @@ with tempfile.TemporaryDirectory(prefix="ljarchive-ЖЖ-") as directory:
         assert process.wait(timeout=10) == 0
     finally:
         if process.poll() is None:
-            process.terminate()
+            if sys.platform == "win32":
+                # The one-file bootloader owns a child process; clean up both on failure.
+                subprocess.run(['taskkill', '/PID', str(process.pid), '/T', '/F'],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
+            else:
+                process.terminate()
             process.wait(timeout=10)
     print("Native bundle: HTML/CSS, SQLite, JSON, HTTP startup and graceful shutdown passed.")
