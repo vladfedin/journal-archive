@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta name="color-scheme" content="light dark">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'">
+  <title>{% block title %}{{ user }} · Архив ЖЖ{% endblock %}</title>
+  <link rel="stylesheet" href="{{ prefix|default('') }}assets/archive.css">
+  <script src="{{ prefix|default('') }}assets/theme.js"></script>
+  <script defer src="{{ prefix|default('') }}assets/archive.js"></script>
+  {% block head %}{% endblock %}
+</head>
+<body>
+  <header class="masthead">
+    <div class="topbar"><a class="brand" href="{{ prefix|default('') }}index.html"><span class="brand-icon" aria-hidden="true">ж</span>{% block brand %}<span class="brand-name">{{ user }}</span><span class="brand-light">архив ЖЖ</span>{% endblock %}</a><span class="topbar-tools"><span class="local-label"><span class="dot"></span> Локальная копия</span><button id="theme-toggle" class="theme-toggle" type="button" hidden><span>Тёмная тема</span></button></span></div>
+    {% block masthead %}{% endblock %}
+  </header>
+  {% block body %}{% endblock %}
+  <footer class="footer"><span>{{ user }} · личный архив Живого Журнала</span><span class="footer-links"><a href="{{ prefix|default('') }}data/archive.json" download="{{ user }}.json">Скачать JSON</a><a href="{{ prefix|default('') }}report.html">Отчёт о полноте</a></span></footer>
+</body>
+</html>

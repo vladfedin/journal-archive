@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "livejournal-local-archive"
+version = "0.1.0"
+description = "Локальный архив Живого Журнала с комментариями и поиском"
+requires-python = ">=3.10"
+dependencies = [
+  "requests>=2.32,<3",
+  "bleach>=6.2,<7",
+  "defusedxml>=0.7,<1",
+  "Jinja2>=3.1.6,<4",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8,<10"]
+
+[project.scripts]
+lj-archive = "ljarchive.__main__:main"
+
+[tool.setuptools.package-data]
+ljarchive = ["templates/*.html", "static/*.css", "static/*.js"]
+
+[tool.setuptools.packages.find]
+include = ["ljarchive*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+

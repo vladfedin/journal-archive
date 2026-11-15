@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta name="color-scheme" content="light dark">
+  <title>Журнал / архив · сохранить ЖЖ</title>
+  <link rel="stylesheet" href="/static/archive.css">
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/theme.js"></script>
+  <script defer src="/static/app.js"></script>
+</head>
+<body class="studio">
+<header class="masthead">
+  <div class="topbar">
+    <a class="brand" href="/"><span class="brand-icon" aria-hidden="true">ж</span><span class="brand-name">Журнал</span><span class="brand-light">/ архив</span></a>
+    <nav class="top-nav" aria-label="Разделы"><a class="nav-export" href="#export">Сохранить журнал</a><a href="#library">Мои архивы <span id="library-count" class="nav-count">0</span></a></nav>
+    <span class="topbar-tools"><span class="local-label"><span class="dot"></span> Работает на вашем компьютере</span><button id="theme-toggle" class="theme-toggle" type="button" hidden><span>Тёмная тема</span></button></span>
+  </div>
+  <div class="journal-head studio-hero">
+    <h1>Живой Журнал. <em>Сохранённый целиком.</em></h1>
+    <p>Записи, комментарии и ветки обсуждений — в одной папке на вашем компьютере. Архив открывается в любом браузере, без сети и без входа в ЖЖ.</p>
+  </div>
+</header>
+<main class="studio-main">
+  <div id="export" class="workspace-grid">
+    <section class="connect-panel">
+      <h2>Подключите свой журнал</h2>
+      <p class="panel-lead">Войдите как владелец журнала — тогда сохранятся и записи под замком, и скрытые комментарии.</p>
+      <form id="export-form">
+        <label for="username">Имя пользователя</label>
+        <div class="input-row"><input id="username" name="username" placeholder="your_journal" autocomplete="username" autocapitalize="none" spellcheck="false" pattern="[A-Za-z0-9_\-]{1,15}" maxlength="15" required><span class="input-suffix">.livejournal.com</span></div>
+        <label for="password">Пароль Живого Журнала</label>
+        <div class="input-row"><input id="password" name="password" type="password" placeholder="Введите пароль" autocomplete="current-password" required maxlength="1024"><button id="show-password" type="button" aria-label="Показать пароль" aria-pressed="false">Показать</button></div>
+        <p class="password-note">Пароль не записывается на диск. Соединение с ЖЖ — по HTTPS.</p>
+        <div class="trial-settings">
+          <div class="setting"><label for="entry-limit">Объём выгрузки</label><select id="entry-limit"><option value="10">Последние 10 записей — пробная выгрузка</option><option value="all">Весь журнал</option></select></div>
+          <div class="setting setting-narrow"><label for="max-requests">Не больше HTTP-запросов за запуск</label><input id="max-requests" class="field" type="number" inputmode="numeric" min="1" max="10000" step="1" value="50" required></div>
+          <p>В предел входят вход, повторные попытки, реакции и картинки. Когда он достигнут, всё полученное сохранится; продолжить можно новым запуском.</p>
+        </div>
+        <label class="checkbox-row"><input id="images" type="checkbox"><span><strong>Скачать изображения</strong><small>Тоже расходуют общий предел запросов. Для пробы выключены.</small></span></label>
+        <p class="included-row">Комментарии к выбранным записям сохраняются всегда, включая скрытые.</p>
+        <details class="advanced"><summary>Дополнительные настройки</summary><label for="delay">Пауза между запросами, секунд</label><input id="delay" class="field" type="number" inputmode="numeric" min="1" max="60" value="2" step="1"><p>После обрыва приложение продолжит с сохранённого места. Для очень большого журнала выгрузка может занять несколько часов.</p></details>
+        <button class="primary-button" id="start" type="submit">Создать архив</button>
+        <p class="form-footnote">Файлы сохранятся на этом компьютере.</p>
+      </form>
+      <div id="job" class="job-panel" hidden aria-live="polite">
+        <div class="job-heading"><strong id="job-title">Готовим архив</strong><span id="job-phase" class="badge"></span></div>
+        <p id="job-message"></p>
+        <progress id="job-progress" aria-label="Прогресс текущего этапа"></progress>
+        <div class="job-counts"><span><strong id="post-count">0</strong> <span id="post-word">записей</span></span><span><strong id="comment-count">0</strong> <span id="comment-word">комментариев</span></span><span id="request-count-wrap"><strong id="request-count">0 / 50</strong> запросов</span></div>
+        <div class="job-actions"><button id="cancel" class="secondary-button" type="button">Остановить и сохранить</button><a id="open-result" class="primary-button compact" hidden>Открыть архив</a></div>
+      </div>
+      <p id="form-error" class="notice" role="alert" hidden></p>
+    </section>
+    <aside class="preview-panel">
+      <h2>Что получится</h2>
+      <p class="panel-lead">Страницы записей с комментариями, связанные между собой. Удобно читать и с компьютера, и с телефона.</p>
+      <div class="paper-preview" aria-hidden="true">
+        <div class="mock-head"><span class="mock-mark">ж</span><span>мой_журнал</span></div>
+        <div class="mock-post"><div class="paper-meta">12 октября 2012, 16:08</div><div class="paper-title">Тот самый осенний день</div><div class="paper-line long"></div><div class="paper-line"></div><div class="paper-line short"></div><div class="paper-tags"><span>#жизнь</span><span>#воспоминания</span></div></div>
+        <div class="mock-comment"><div class="mock-bar"><b>old_friend</b><span class="hidden-tag">Скрытый</span></div><div class="paper-line"></div></div>
+        <div class="mock-comment mock-reply"><div class="mock-bar"><b>мой_журнал</b></div><div class="paper-line short"></div></div>
+      </div>
+      <ul class="feature-list">
+        <li><strong>Найдётся даже фраза из комментария</strong><small>Поиск, годы, метки и уровни доступа</small></li>
+        <li><strong>Ветки сохраняют свой порядок</strong><small>Авторы, ответы и скрытые комментарии</small></li>
+        <li><strong>Одна папка — вся история</strong><small>HTML для чтения, JSON с исходными текстами</small></li>
+      </ul>
+      <button id="demo" class="secondary-button demo-button" type="button">Посмотреть пример архива</button>
+      <span class="demo-caption">Вымышленные записи, вход не нужен.</span>
+    </aside>
+  </div>
+  <p class="quiet-note">Скрытые комментарии сохраняются, если ЖЖ отдаёт их владельцу. Удалённые тексты восстановить нельзя. Приложение проверит полноту выгрузки и покажет всё, что не удалось получить.</p>
+  <section id="library" class="library">
+    <div class="section-top"><h2>Мои архивы</h2><button id="refresh-library" type="button" class="text-button">Обновить список</button></div>
+    <div id="archives"><p class="library-empty">Здесь появятся ваши сохранённые журналы.</p></div>
+    <p class="fine">Папка хранения: <span id="output-path"></span></p>
+  </section>
+</main>
+<footer class="footer"><span>Журнал / архив · версия 0.1</span><span>Работает локально, без подписки</span></footer>
+</body>
+</html>

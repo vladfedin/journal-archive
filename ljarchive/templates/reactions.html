@@ -1,0 +1,17 @@
+{% macro show_reactions(data, zero=true) -%}
+{%- if data is none or data.count or zero -%}
+<div class="reactions" aria-label="Реакции"{% if data %} title="Сохранено {{ data.captured_at|ru_date }}"{% endif %}>
+  {%- if data is none -%}
+  <span class="reactions-missing">Реакции не загружены</span>
+  {%- elif data.count == 0 -%}
+  <span class="reaction-empty" title="Нет реакций" aria-label="Нет реакций">♡ 0</span>
+  {%- else -%}
+    {%- for badge in data.badges -%}
+    <details class="reaction-detail"><summary class="reaction" title="{{ badge.label }} — показать авторов" aria-label="{{ badge.label }}: {{ badge.count }}"><span aria-hidden="true">{{ badge.icon }}</span> <span>{{ badge.count }}</span><span class="reaction-arrow" aria-hidden="true">▾</span></summary>
+      <div class="reaction-people"><strong>{{ badge.label }}</strong>{% if badge.users %}<ul>{% for person in badge.users %}<li>{% if person.url %}<a href="{{ person.url }}" rel="noreferrer noopener">{{ person.name }}</a>{% else %}{{ person.name }}{% endif %}</li>{% endfor %}</ul>{% endif %}{% if not badge.authors_complete %}<p class="fine">{% if badge.users %}Получено авторов: {{ badge.users|length }} из {{ badge.count }}.{% else %}Имена не загружены.{% endif %}</p>{% endif %}</div>
+    </details>
+    {%- endfor -%}
+  {%- endif -%}
+</div>
+{%- endif -%}
+{%- endmacro %}
