@@ -14,7 +14,7 @@ if sys.platform == "darwin":
     binary = root / "dist/LiveJournalArchive.app/Contents/MacOS/LiveJournalArchive"
 else:
     binary = root / "dist" / ("LiveJournalArchive.exe" if sys.platform == "win32" else "LiveJournalArchive")
-with tempfile.TemporaryDirectory() as directory:
+with tempfile.TemporaryDirectory(prefix="ljarchive-ЖЖ-") as directory:
     folder = Path(directory) / "demo"
     env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "VIRTUAL_ENV")}
     subprocess.run([str(binary), "demo", "--output", str(folder)], cwd=directory, env=env, check=True, timeout=90)
