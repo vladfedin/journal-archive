@@ -157,6 +157,21 @@ def main():
                     assert 'example_journal/help.html' in zipped.namelist()
                     assert source_snapshot(json.loads(zipped.read('example_journal/data/activitystreams.json'))) == raw
                     assert not any('sqlite' in name or '.jobs' in name for name in zipped.namelist())
+                from ljarchive.storage import Store
+                live = Store(root / 'live_fixture')
+                old_state = server.jobs.state
+                with live.db:
+                    live.set('username', 'live_fixture')
+                    live.save_entry({'itemid':1,'subject':'Во время загрузки','event':'Уже сохранено','eventtime':'2001-01-01 10:00:00','reply_count':2})
+                server.jobs.state = {'phase':'comments','slug':'live_fixture','entry_id':1}
+                page.goto(base + '/archive/live_fixture/timeline.html')
+                expect(page.locator('.timeline-bar')).to_have_count(1)
+                expect(page.locator('.timeline-bar')).to_have_class('timeline-bar pending active')
+                page.locator('.timeline-bar').click()
+                expect(page.locator('.post h1')).to_have_text('Во время загрузки')
+                expect(page.locator('.prose').first).to_contain_text('Уже сохранено')
+                server.jobs.state = old_state
+                live.close()
                 page.goto(base + '/archive/example_journal/timeline.html')
                 expect(page.locator('.timeline-bar')).to_have_count(6)
                 expect(page.locator('.timeline-year')).to_be_visible()

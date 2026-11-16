@@ -68,7 +68,8 @@ def timeline(store, *, task=False):
     counts, authors = defaultdict(int), defaultdict(Counter)
     # Aggregate in SQLite; neither HTML bodies nor full threads enter the progress API.
     for row in store.db.execute('''SELECT c.entry_id, u.name, COUNT(*) FROM comments c
-            LEFT JOIN users u ON u.id=json_extract(c.payload,'$.posterid')
+            LEFT JOIN comment_meta m ON m.id=c.id
+            LEFT JOIN users u ON u.id=COALESCE(m.posterid,json_extract(c.payload,'$.posterid'))
             GROUP BY c.entry_id,u.name'''):
         counts[row[0]] += row[2]
         if row[1]:

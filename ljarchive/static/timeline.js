@@ -6,7 +6,8 @@ window.ArchiveTimeline=class {
     const node=(tag,cls,text)=>{const n=document.createElement(tag);n.className=cls;if(text)n.textContent=text;return n;};
     this.head=node('div','timeline-head');this.count=node('span','muted small');this.year=node('select','input timeline-year');this.year.setAttribute('aria-label','Год');
     this.current=node('button','btn text','К текущей');this.current.type='button';this.current.onclick=()=>this.jump(this.items.findIndex(i=>i.id===this.active));
-    this.head.append(this.count,this.year,this.current);this.year.onchange=()=>this.jump(this.items.findIndex(i=>i.date.startsWith(this.year.value)));
+    this.gap=node('button','btn text','Пропуски');this.gap.type='button';this.gap.setAttribute('aria-label','Следующая запись с пропусками');this.gap.onclick=()=>{const after=Math.floor(this.viewport.scrollLeft/this.slot)+1;let next=this.items.findIndex((i,n)=>n>=after&&i.state==='partial');if(next<0)next=this.items.findIndex(i=>i.state==='partial');this.jump(next,false);this.track.querySelector(`[data-timeline-index="${next}"]`)?.focus({preventScroll:true});};
+    this.head.append(this.count,this.year,this.gap,this.current);this.year.onchange=()=>this.jump(this.items.findIndex(i=>i.date.startsWith(this.year.value)),false);
     this.overview=node('canvas','timeline-overview');this.overview.setAttribute('aria-hidden','true');
     this.overview.onclick=e=>this.jump(Math.floor((e.clientX-this.overview.getBoundingClientRect().left)/this.overview.clientWidth*this.items.length));
     this.viewport=node('div','timeline-viewport');this.viewport.tabIndex=0;this.viewport.setAttribute('aria-label','Записи по времени. Прокрутите вправо или выберите год.');
@@ -17,7 +18,7 @@ window.ArchiveTimeline=class {
     this.viewport.onkeydown=e=>{if(e.target!==this.viewport)return;if(['ArrowRight','ArrowLeft','Home','End'].includes(e.key)){e.preventDefault();this.viewport.scrollLeft=e.key==='Home'?0:e.key==='End'?this.track.offsetWidth:this.viewport.scrollLeft+(e.key==='ArrowRight'?120:-120);}};
     this.resize=new ResizeObserver(()=>this.draw());this.resize.observe(this.viewport);
   }
-  jump(index){if(index>=0){this.viewport.scrollLeft=Math.max(0,index*this.slot-this.viewport.clientWidth/2);this.draw();}}
+  jump(index,center=true){if(index>=0){this.viewport.scrollLeft=Math.max(0,index*this.slot-(center?this.viewport.clientWidth/2:0));this.draw();}}
   set(data,active=null){
     this.data=data;this.active=active;const rows=[...data.entries];
     // Calendar placeholders are generated as a range, with no invented entry IDs or links.
@@ -27,7 +28,7 @@ window.ArchiveTimeline=class {
     this.count.textContent=`${data.ready} / ${data.expected} записей${data.partial?' · с пропусками: '+data.partial:''}`;
     const years=[...new Set(this.items.map(i=>i.date.slice(0,4)).filter(Boolean))];const value=this.year.value;
     if(years.join(',')!==this.years){this.years=years.join(',');this.year.replaceChildren(...years.map(y=>new Option(y,y)));if(years.includes(value))this.year.value=value;}
-    this.current.hidden=!active;this.track.style.width=Math.max(1,this.items.length*this.slot)+'px';this.draw();
+    this.gap.hidden=!data.partial;this.current.hidden=!active;this.track.style.width=Math.max(1,this.items.length*this.slot)+'px';this.draw();
   }
   description(item){
     if(!item.id)return `${item.date} · запись ещё не получена`;
@@ -56,7 +57,7 @@ window.ArchiveTimeline=class {
   drawOverview(){
     const width=Math.round(this.viewport.clientWidth),height=32;if(!width)return;this.overview.width=width;this.overview.height=height;
     const ctx=this.overview.getContext('2d'),n=this.items.length;if(!n)return;
-    for(let x=0;x<width;x++){const item=this.items[Math.min(n-1,Math.floor(x*n/width))];ctx.fillStyle={ready:'#6c917b',partial:'#c59254',loading:'#688da3',pending:'#b9bbb580'}[item.state]||'#b9bbb580';const h=item.id?Math.min(27,5+Math.log2(1+(item.expected_comments||item.comments||0))*2.2):4;ctx.fillRect(x,height-h,1,h);}
+    for(let x=0;x<width;x++){const from=Math.min(n-1,Math.floor(x*n/width)),to=Math.max(from+1,Math.floor((x+1)*n/width));let state='ready',h=4;const priority={ready:0,pending:1,loading:2,partial:3};for(let i=from;i<to;i++){const item=this.items[i];if(priority[item.state]>priority[state])state=item.state;h=Math.max(h,item.id?Math.min(27,5+Math.log2(1+(item.expected_comments||item.comments||0))*2.2):4);}ctx.fillStyle={ready:'#6c917b',partial:'#c59254',loading:'#688da3',pending:'#b9bbb580'}[state];ctx.fillRect(x,height-h,1,h);}
     const left=this.viewport.scrollLeft/(n*this.slot)*width,span=Math.min(width,this.viewport.clientWidth/(n*this.slot)*width);ctx.strokeStyle='#6688a1';ctx.lineWidth=2;ctx.strokeRect(left+1,1,Math.max(3,span-2),height-2);
   }
 };
