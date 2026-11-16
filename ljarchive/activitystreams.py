@@ -5,8 +5,6 @@ entire source snapshot. Its string content survives JSON-LD 1.0 processing, incl
 unknown source keys, ordered arrays, nulls and keys such as @context or @id.
 """
 from collections import defaultdict
-from datetime import datetime
-from email.utils import parsedate_to_datetime
 import hashlib
 import html
 from html.parser import HTMLParser
@@ -60,16 +58,10 @@ def person(name=None, number=None):
 
 def published(value):
     """Never invent UTC for LJ's local eventtime or for a date without an offset."""
-    if not isinstance(value, str) or not value:
-        return None
-    try:
-        moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        try:
-            moment = parsedate_to_datetime(value)
-        except (ValueError, TypeError, OverflowError):
-            return None
-    return moment.isoformat() if moment.tzinfo is not None and moment.utcoffset() is not None else None
+    from .dates import source_datetime
+    moment = source_datetime(value)
+    return moment.isoformat() if moment is not None and moment.tzinfo is not None and moment.utcoffset() is not None else None
+
 
 
 class Content(HTMLParser):

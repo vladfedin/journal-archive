@@ -58,6 +58,23 @@ def capture_materials(exporter, entry):
         checkpoint()
 
 
+def material_progress(record, mapping):
+    result = {key: value for key, value in record.items() if key != 'urls'}
+    if 'urls' in record:
+        result['saved'] = sum(bool(mapping.get(url)) for url in record['urls'])
+    result['missing'] = max(0, result.get('requested', 0) - result.get('saved', 0))
+    return result
+
+
+def coverage_notice(status, materials, *, repost=False):
+    parts = []
+    if status.get('error') and not repost:
+        parts.append('Комментарии получены не полностью')
+    if materials.get('missing'):
+        parts.append(f"Не загружены изображения: {materials['missing']}")
+    return ' · '.join(parts)
+
+
 def timeline(store, *, task=False):
     statuses = store.get('entry_comments', {})
     materials = store.get('entry_materials', {})
@@ -66,13 +83,14 @@ def timeline(store, *, task=False):
     selected = set(selected) if selected is not None else None
     bodies_done = store.get('bodies_done', False)
     mapping = store.get('media', {})
-    counts, authors = defaultdict(int), defaultdict(Counter)
+    counts, authors, screened = defaultdict(int), defaultdict(Counter), defaultdict(int)
     # Aggregate in SQLite; neither HTML bodies nor full threads enter the progress API.
-    for row in store.db.execute('''SELECT c.entry_id, u.name, COUNT(*) FROM comments c
+    for row in store.db.execute('''SELECT c.entry_id, u.name, COUNT(*), SUM(CASE WHEN COALESCE(m.state,json_extract(c.payload,'$.state'))='S' THEN 1 ELSE 0 END) FROM comments c
             LEFT JOIN comment_meta m ON m.id=c.id
             LEFT JOIN users u ON u.id=COALESCE(m.posterid,json_extract(c.payload,'$.posterid'))
             GROUP BY c.entry_id,u.name'''):
         counts[row[0]] += row[2]
+        screened[row[0]] += row[3]
         if row[1]:
             authors[row[0]][row[1]] += row[2]
     items, by_day = [], Counter()
@@ -91,9 +109,8 @@ def timeline(store, *, task=False):
                 continue
         date = date or ''
         by_day[date[:10]] += 1
-        status, mat = statuses.get(str(eid), {}), dict(materials.get(str(eid), {}))
-        if 'urls' in mat:
-            mat['saved'] = sum(bool(mapping.get(u)) for u in mat.pop('urls'))
+        status = statuses.get(str(eid), {})
+        mat = material_progress(materials.get(str(eid), {}), mapping)
         done = repost or status.get('done', bodies_done)
         state = 'pending' if not done else 'ready'
         if (status.get('error') and not repost) or (done and mat.get('saved', 0) < mat.get('requested', 0)):
@@ -102,6 +119,8 @@ def timeline(store, *, task=False):
             state = 'loading'
         items.append({'id': eid, 'date': date, 'title': plain(title) or 'Без заголовка',
                       'url': f'entries/{eid}.html', 'state': state, 'repost': repost, 'error': None if repost else status.get('error'),
+                      'comments_complete': bool(done), 'screened': 0 if repost else screened[eid],
+                      'notice': coverage_notice(status, mat, repost=repost),
                       'comments': 0 if repost else counts[eid], 'expected_comments': expected, 'pages': status.get('pages'),
                       'page': status.get('last_valid_page', max(0, status.get('next_page', 1) - 1)), 'materials': mat,
                       'top': [] if repost else authors[eid].most_common(3)})
@@ -155,6 +174,8 @@ def preview_entry(store, eid):
         return ENV.get_template('entry.html').render(user=user, entry=entry, summary=summary, comments=comments,
                      content=safe_content(entry.get('event'), url, {}, media, set(), expand_cuts=True), original=url,
                      post_autoformat=needs_autoformat(entry.get('event'), entry.get('props')), current=[], newer=None, older=None,
+                     coverage_notice=coverage_notice(store.get('entry_comments', {}).get(str(eid), {}),
+                         material_progress(store.get('entry_materials', {}).get(str(eid), {}), media.mapping), repost=is_repost(entry)),
                      preview=True, report={'created_at': store.get('started_at', '')})
     finally:
         media.close()

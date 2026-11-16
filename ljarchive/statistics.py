@@ -6,16 +6,14 @@ import re
 
 
 def date_of(record, field='date'):
-    value = record.get(field)
-    if isinstance(value, str):
-        try:
-            return datetime.fromisoformat(value.replace('Z', '+00:00')).date()
-        except ValueError:
-            pass
+    from .dates import source_datetime
+    moment = source_datetime(record.get(field))
+    if moment is not None:
+        return moment.date()
     if field == 'date' and record.get('datepostunix'):
         try:
             return datetime.fromtimestamp(int(record['datepostunix']), timezone.utc).date()
-        except (ValueError, OverflowError, OSError):
+        except (ValueError, TypeError, OverflowError, OSError):
             pass
     return None
 
@@ -150,8 +148,6 @@ def statistics(data):
 
 
 def write_statistics(store, report):
-    from .render import ENV
-    from .storage import atomic_write, dumps
     data = statistics({'journal': {'username': store.get('username'), 'id': store.get('journal_id')},
                        'entries': store.entries(), 'comments': store.comments(),
                        'scope': {'entry_limit': store.get('entry_limit'),
@@ -159,8 +155,15 @@ def write_statistics(store, report):
                        'coverage': {'posts_done': store.get('posts_done'),
                                     'comments_done': store.get('bodies_done'),
                                     'discussions': store.get('entry_comments', {})}})
-    atomic_write(store.folder / 'data' / 'statistics.json', dumps(data) + '\n')
-    atomic_write(store.folder / 'assets' / 'statistics-data.js',
+    write_statistics_data(store.folder, data, report)
+
+
+def write_statistics_data(folder, data, report):
+    """Publish derived statistics without writing the source snapshot or SQLite."""
+    from .render import ENV
+    from .storage import atomic_write, dumps
+    atomic_write(folder / 'data' / 'statistics.json', dumps(data) + '\n')
+    atomic_write(folder / 'assets' / 'statistics-data.js',
                  'window.ARCHIVE_STATS=' + dumps(data).replace('<', '\\u003c') + ';')
-    atomic_write(store.folder / 'statistics.html', ENV.get_template('statistics.html').render(
+    atomic_write(folder / 'statistics.html', ENV.get_template('statistics.html').render(
         user=report['username'], report=report, stats=data))

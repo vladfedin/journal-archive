@@ -6,9 +6,10 @@
 {% block body %}
 <main class="main reading"><nav class="reading-nav" aria-label="Записи"><a href="../index.html">← Все записи</a><span>{% if newer %}<a href="{{ newer.itemid }}.html">Новее</a>{% endif %}{% if older %}<a href="{{ older.itemid }}.html">Старее →</a>{% endif %}</span></nav>
 {% if preview %}<p class="inline-status">Загрузка продолжается · <a href="../timeline.html">Хронология</a></p>{% endif %}
+{% if coverage_notice %}<p class="inline-status entry-coverage">{{ coverage_notice }}</p>{% endif %}
 <article class="post">{% if entry.source_status %}<p class="inline-status" title="При последней проверке ЖЖ не вернул эту запись">Ранее сохранённая версия</p>{% endif %}
 {{ show_userpic(summary.userpic,user) }}
-<div class="entry-meta">{% if summary.repost %}<span class="state repost-label">Перепост{% if summary.repost_url %} · <a href="{{ summary.repost_url }}" rel="noreferrer noopener">Оригинал ↗</a>{% endif %}</span>{% endif %}<time datetime="{{ summary.date }}">{{ summary.date|ru_date(true,true) }}</time>{% if summary.security != 'public' %}<span class="state">{{ summary.security_label }}</span>{% endif %}<a href="{{ original }}" rel="noreferrer noopener">ЖЖ ↗</a></div><h1>{{ summary.title }}</h1>
+<div class="entry-meta">{% if summary.repost %}<span class="state repost-label">Перепост{% if summary.repost_url %} · <a href="{{ summary.repost_url }}" target="_blank" rel="noreferrer noopener">Оригинал ↗</a>{% endif %}</span>{% endif %}<time datetime="{{ summary.date }}">{{ summary.date|ru_date(true,true) }}</time>{% if summary.security != 'public' %}<span class="state">{{ summary.security_label }}</span>{% endif %}<a href="{{ original }}" target="_blank" rel="noreferrer noopener">ЖЖ ↗</a></div><h1>{{ summary.title }}</h1>
 <div class="prose{% if post_autoformat %} autoformat{% endif %}">{{ content }}</div>
 {% if current %}<dl class="post-current">{% for label,value in current %}<dt>{{ label }}</dt><dd>{{ value }}</dd>{% endfor %}</dl>{% endif %}
 {{ show_reactions(summary.reactions) }}

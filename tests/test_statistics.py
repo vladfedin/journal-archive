@@ -63,3 +63,33 @@ def test_empty_archive_and_same_identity_after_rename():
     stats = statistics(source)
     assert len(stats['people']) == 3
     assert next(p for p in stats['people'] if p['id'] == 'user:2')['comments'] == 4
+
+
+def test_real_getcomments_utc_dates_populate_years_edges_and_findings():
+    source = fixture()
+    for c in source['comments']:
+        if c['date'] != 'bad':
+            c['date'] = c['date'][:10] + ' 04:15:04 UTC'
+    stats = statistics(source)
+    assert stats['totals']['unknown_dates'] == 1
+    assert stats['yearly']['2000']['comments'] == 2
+    assert stats['yearly']['2010']['comments'] == 4
+    assert next(p for p in stats['people'] if p['id'] == 'user:2')['years']['2010']['comments'] == 2
+    assert stats['revivals'][0]['days'] > 3650
+    assert stats['returns'][0]['person'] == 'user:2'
+    assert all('unknown' not in e['years'] for e in stats['edges'])
+
+
+def test_supported_dates_preserve_local_date_and_unknown_dates_remain_unknown():
+    from ljarchive.statistics import date_of
+    from ljarchive.activitystreams import published
+    from datetime import date
+    for stamp in ('2005-04-18 04:15:04 UTC', '2005-04-18T04:15:04Z', '2005-04-18 04:15:04 GMT',
+                  'Mon, 18 Apr 2005 04:15:04 GMT', '2005-04-18 04:15:04+00:00'):
+        assert date_of({'date': stamp}) == date(2005,4,18)
+        assert published(stamp) == '2005-04-18T04:15:04+00:00'
+    assert date_of({'date':'2005-04-18 00:01:00+03:00'}) == date(2005,4,18)
+    assert published('2005-04-18 04:15:04') is None
+    for bad in ('2005-02-30 04:15:04 UTC', 'unknown', '2005-04-18 garbage', None):
+        assert date_of({'date': bad}) is None
+        assert published(bad) is None

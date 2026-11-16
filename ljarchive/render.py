@@ -270,7 +270,7 @@ def build_archive(store: Store, report: dict, *, images=False, userpics=False, c
     media = media or Media(folder, images, cancel, budget=budget)
     media.enabled = images
     entries, comments = store.entries(), store.comments()
-    report["format_version"] = "0.7.1"
+    report["format_version"] = "0.7.2"
     report.setdefault("issues", [])
     report["reactions"] = reaction_report(store)
     if report.get("status") == "complete" and not (report["reactions"]["complete"] and report["reactions"]["authors_complete"]):
@@ -324,6 +324,9 @@ def build_archive(store: Store, report: dict, *, images=False, userpics=False, c
     labels = {"public": "Открытая", "private": "Личная", "usemask": "Для друзей / группы"}
     from .comment_state import comment_view
     from .entries import is_repost, repost_url
+    from .progress import material_progress, coverage_notice
+    comment_statuses, material_records = store.get("entry_comments", {}), store.get("entry_materials", {})
+    saved_media = store.get("media", {})
     try:
         for index, entry in enumerate(entries):
             if progress:
@@ -366,6 +369,8 @@ def build_archive(store: Store, report: dict, *, images=False, userpics=False, c
                         content=content, comments=entry_comments, original=url,
                         post_autoformat=needs_autoformat(entry.get("event"), entry.get("props")),
                         current=current, newer=neighbours[0], older=neighbours[1],
+                        coverage_notice=coverage_notice(comment_statuses.get(str(eid), {}),
+                            material_progress(material_records.get(str(eid), {}), {**saved_media, **media.mapping}), repost=is_repost(entry)),
                         report=report)
             atomic_write(folder / "entries" / f"{eid}.html", rendered)
             feed = ENV.get_template("feed-post.html").render(content=safe_content(entry.get("event"), url, links, media, comment_ids),

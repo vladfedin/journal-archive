@@ -117,7 +117,7 @@ class Jobs:
             if not path.is_file() or not (folder / "archive.sqlite3").is_file():
                 return
             report = json.loads(path.read_text(encoding="utf-8"))
-            if report.get("format_version") == "0.7.1":
+            if report.get("format_version") == "0.7.2":
                 return
             from .storage import Store
             from .render import build_archive

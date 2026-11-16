@@ -26,6 +26,14 @@
     return row[mode];
   }
   const format = n => $('stats-metric').value === 'share' ? n.toLocaleString('ru', {maximumFractionDigits: 1}) + '%' : number(n);
+  function fitYears() {
+    const table = $('stats-people'), style = getComputedStyle(table);
+    const fixed = parseFloat(style.getPropertyValue('--stats-name-width')) + parseFloat(style.getPropertyValue('--stats-total-width'));
+    const minimum = $('stats-metric').value === 'share' ? 52 : 38;
+    const width = Math.max(minimum, Math.min(56, Math.floor((table.parentElement.clientWidth - fixed) / Math.max(1, data.years.length))));
+    table.style.setProperty('--stats-year-width', width + 'px');
+  }
+  new ResizeObserver(fitYears).observe($('stats-people').parentElement);
   function render() {
     const year = $('stats-year').value, own = $('stats-owner').checked;
     const query = $('stats-search').value.trim().toLocaleLowerCase();
@@ -35,26 +43,28 @@
     const pages = Math.max(1, Math.ceil(visible.length / 30));
     page = Math.min(page, pages - 1);
     const table = $('stats-people'); table.replaceChildren();
+    table.style.setProperty('--stats-years', String(data.years.length));
+    fitYears();
     const head = node('thead'), hr = node('tr');
     const columns = ['Участник', year || 'Всего', ...data.years];
     columns.forEach(value => { const th = node('th', value); th.scope = 'col'; hr.append(th); });
     head.append(hr); table.append(head);
     const body = node('tbody');
     const subset = visible.slice(page * 30, page * 30 + 30);
-    let peak = 1;
-    for (const p of visible) for (const y of data.years) peak = Math.max(peak, metric(p, y));
+    let peak = 0;
+    for (const p of data.people.filter(p => own || !p.owner)) for (const y of data.years) peak = Math.max(peak, metric(p, y));
     for (const p of subset) {
-      const tr = node('tr'), name = node('th', p.name); name.scope = 'row';
+      const tr = node('tr'), name = node('th', p.name); name.scope = 'row'; name.title = p.name;
       tr.append(name, node('td', format(metric(p, year)), 'stats-total'));
       for (const y of data.years) {
         const td = node('td');
         if (p.years[y]) {
           const value = metric(p, y), a = link(p.years[y].url, format(value));
-          a.className = 'heat heat-' + Math.max(1, Math.ceil(value / peak * 5));
+          a.className = 'heat heat-' + Math.max(1, Math.ceil(Math.log1p(value) / Math.log1p(peak || 1) * 5));
           a.title = `${p.name} · ${y}: ${number(p.years[y].comments)} комм. / ${number(p.years[y].posts)} записей`;
           td.append(a);
         } else {
-          td.textContent = '·'; td.title = 'Нет сохранённых комментариев'; td.className = 'muted';
+          const zero = node('span', '·', 'heat heat-zero'); zero.title = 'Нет сохранённых комментариев'; td.append(zero);
         }
         if (y === year) td.classList.add('stats-selected');
         tr.append(td);

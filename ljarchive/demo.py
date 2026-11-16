@@ -73,7 +73,7 @@ def create_demo(folder: Path, progress=None):
                     store.db.execute("INSERT OR REPLACE INTO users VALUES (?,?)", (uid, user))
                 store.db.execute("INSERT OR REPLACE INTO comment_meta VALUES (?,?,?)", (cid, uid, state))
                 store.save_comment({"id": cid, "jitemid": eid, "parentid": parent, "posterid": uid,
-                                    "userpic": owner_pic if user == "example_journal" else reply_pic, "body": body, "date": entries[6 - eid][1].replace(" ", "T") + "Z"})
+                                    "userpic": owner_pic if user == "example_journal" else reply_pic, "body": body, "date": entries[6 - eid][1] + " UTC"})
                 groups = [2, 1] if cid == 4 else [cid % 3]
                 store.save_reactions("comment", cid, demo_reactions(groups))
             store.set("username", "example_journal")

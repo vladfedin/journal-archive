@@ -83,6 +83,15 @@ def main():
                 page.get_by_role('link', name='Статистика ↗').click()
                 expect(page.locator('h1')).to_have_text('Статистика')
                 expect(page.locator('#stats-people tbody tr')).not_to_have_count(0)
+                assert page.locator('#stats-people a.heat').count() > 0
+                for width in (1440, 320):
+                    page.set_viewport_size({'width': width, 'height': 1100})
+                    scroll = page.locator('.stats-scroll').first
+                    scroll.evaluate('e => e.scrollLeft = 300')
+                    cells = page.locator('#stats-people tbody tr').first.evaluate('e => [...e.children].slice(0,2).map(c => {let b=c.getBoundingClientRect();return {left:b.left,right:b.right}})')
+                    assert abs(cells[0]['right'] - cells[1]['left']) < 1, cells
+                    scroll.evaluate('e => e.scrollLeft = 0')
+                page.set_viewport_size({'width': 1440, 'height': 1100})
                 page.locator('#stats-owner').check()
                 expect(page.locator('#stats-graph')).to_be_visible()
                 assert page.locator('#stats-graph .graph-edge').count() > 0
@@ -107,6 +116,8 @@ def main():
                 page.set_viewport_size({'width': 1440, 'height': 1100})
                 stats_json = page.request.get(base + '/archive/example_journal/data/statistics.json').json()
                 assert stats_json['totals']['comments'] == 12
+                assert stats_json['totals']['unknown_dates'] == 0
+                assert sum(y['comments'] for y in stats_json['yearly'].values()) == 12
                 page.goto((root / 'example_journal/statistics.html').as_uri())
                 expect(page.locator('#stats-people tbody')).to_contain_text('old_friend')
                 page.locator('#stats-owner').check()
@@ -252,6 +263,7 @@ def main():
                     page.screenshot(path=str(root / f'modal-{width}.png'), full_page=True)
                     page.keyboard.press('Escape')
                 page.goto(base + '/archive/example_journal/entries/3.html')
+                expect(page.get_by_role('link', name='ЖЖ ↗', exact=True)).to_have_attribute('target', '_blank')
                 page.locator('#comment-4 [aria-label="Пиши ещё!: 1"]').click()
                 assert not page.evaluate('document.documentElement.scrollWidth > innerWidth')
                 page.locator('#theme-toggle').click()

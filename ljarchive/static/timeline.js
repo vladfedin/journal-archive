@@ -33,8 +33,11 @@ window.ArchiveTimeline=class {
   description(item){
     if(!item.id)return `${item.date} · запись ещё не получена`;
     const m=item.materials||{}, who=(item.top||[]).map(([name,n])=>`${name}: ${n}`).join(', ');
-    if(item.repost)return `${item.date} · ${item.title} · Перепост\nМатериалы: ${m.saved||0} / ${m.requested??'?'}`;
-    return `${item.date} · ${item.title}${item.repost?' · Перепост':''}\nКомментарии: ${item.comments}${item.expected_comments!=null?' / '+item.expected_comments:''}${item.pages!=null?' · страницы: '+item.page+' / '+item.pages:''}\nМатериалы: ${m.saved||0} / ${m.requested??'?'}${who?'\nЧаще комментировали: '+who:''}${item.error?'\n'+item.error:''}`;
+    const materials=`Материалы: ${m.saved||0} / ${m.requested??'?'}`;
+    if(item.repost)return `${item.date} · ${item.title} · Перепост\n${materials}${item.notice?'\n'+item.notice:''}`;
+    const complete=item.comments_complete===true;
+    const comments=`Комментарии: ${item.comments}${complete?' · сохранены':item.expected_comments!=null?' / '+item.expected_comments:''}${item.screened?' · скрытых: '+item.screened:''}`;
+    return `${item.date} · ${item.title}\n${comments}${!complete&&item.pages!=null?' · страницы: '+item.page+' / '+item.pages:''}\n${materials}${item.notice?'\n'+item.notice:''}${who?'\nЧаще комментировали: '+who:''}${item.error?'\n'+item.error:''}`;
   }
   draw(){
     const start=Math.max(0,Math.floor(this.viewport.scrollLeft/this.slot)-4),end=Math.min(this.items.length,Math.ceil((this.viewport.scrollLeft+this.viewport.clientWidth)/this.slot)+4);

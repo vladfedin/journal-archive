@@ -185,3 +185,26 @@ def test_interruption_while_expanding_last_page_resumes_that_page(tmp_path):
     report = SyncExporter(tmp_path, client, scope).run()
     assert report['status'] == 'complete', report
     assert not any(p.get('page') == 3 for m, p in client.calls if m == 'getcomments')
+
+
+def test_saved_screened_comment_and_missing_images_have_separate_status(tmp_path):
+    from ljarchive.render import build_archive
+    client = Journal()
+    report = SyncExporter(tmp_path, client, Scope('urls', urls=SCOPE.urls[:1])).run()
+    store = Store(tmp_path)
+    try:
+        with store.db:
+            store.set('entry_materials', {'1': {'requested': 3, 'saved': 1, 'urls': ['https://example.com/a.png', 'https://example.com/b.png', 'https://example.com/c.png']}})
+            store.set('media', {'https://example.com/a.png': 'media/a.png'})
+        row = timeline(store)['entries'][0]
+        assert row['state'] == 'partial' and row['comments_complete']
+        assert row['screened'] == 1 and row['materials']['missing'] == 2
+        assert row['notice'] == 'Не загружены изображения: 2'
+        assert 'Комментарии получены не полностью' not in preview_entry(store, 1)
+        assert row['notice'] in preview_entry(store, 1)
+        build_archive(store, report, images=False)
+        html = (tmp_path/'entries/1.html').read_text(encoding='utf-8')
+        assert row['notice'] in html
+        assert 'target="_blank" rel="noreferrer noopener">ЖЖ ↗' in html
+    finally:
+        store.close()
