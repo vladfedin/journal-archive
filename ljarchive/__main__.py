@@ -37,6 +37,7 @@ def main():
     json_export = sub.add_parser("json", help="Экспортировать данные из базы в JSON без сети и сборки HTML")
     json_export.add_argument("folder", type=Path)
     json_export.add_argument("--output", type=Path, help="Путь к файлу; по умолчанию data/archive.json в архиве")
+    json_export.add_argument("--format", choices=["source", "activitystreams"], default="source", help="Формат JSON; по умолчанию source")
     update = sub.add_parser("sync", help="Создать или обновить накопительный архив с продолжением очереди")
     update.add_argument("username")
     update.add_argument("--mode", choices=["full", "period", "urls"], default="full")
@@ -66,7 +67,7 @@ def main():
                 raise ExportError("В папке нет archive.sqlite3.")
             store = Store(args.folder)
             try:
-                print(export_json(store, args.output).resolve())
+                print(export_json(store, args.output, format=args.format).resolve())
             finally:
                 store.close()
         elif args.command in ("build", "refresh-reactions"):

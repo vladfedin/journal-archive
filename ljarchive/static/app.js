@@ -49,7 +49,7 @@ async function library(){const data=await api('/api/archives');const key=JSON.st
     const more=el('details','more'),summary=el('summary','','⋯');summary.setAttribute('aria-label','Действия с архивом '+archive.username);const menu=el('div','menu');
     if(archive.resumable){const resume=el('button','','Продолжить');resume.type='button';resume.dataset.resume='';resume.onclick=()=>openDialog('resume',archive);menu.append(resume);}
     const update=el('button','','Обновить');update.type='button';update.dataset.update='';update.onclick=()=>openDialog('update',archive);menu.append(update);
-    if(archive.url){menu.append(el('hr'));for(const [text,url] of [['Скачать JSON',archive.json_url],['Скачать ZIP',archive.zip_url],['Состояние архива',archive.report_url]]){const a=el('a','',text);a.href=url;menu.append(a);}}
+    if(archive.url){menu.append(el('hr'));for(const [text,url] of [['Скачать JSON',archive.activitystreams_url],['Исходный JSON',archive.json_url],['Скачать ZIP',archive.zip_url],['Состояние архива',archive.report_url]]){const a=el('a','',text);a.href=url;menu.append(a);}}
     more.append(summary,menu);actions.append(more);cell.append(actions);row.append(cell);$('archives').append(row);
   }setBusy(busy);
 }

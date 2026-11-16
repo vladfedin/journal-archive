@@ -86,7 +86,7 @@ class Jobs:
             if not path.is_file() or not (folder / "archive.sqlite3").is_file():
                 return
             report = json.loads(path.read_text(encoding="utf-8"))
-            if report.get("format_version") == "0.4.1":
+            if report.get("format_version") == "0.5.0":
                 return
             from .storage import Store
             from .render import build_archive
@@ -219,7 +219,8 @@ class Jobs:
                     continue
                 found[slug] = {key: report.get(key) for key in ("username", "status", "entries_saved", "comments_saved", "created_at", "entry_limit", "requests_used", "request_limit")}
                 found[slug].update(slug=slug, url=f"/archive/{slug}/index.html", report_url=f"/archive/{slug}/report.html",
-                                  zip_url=f"/download/{slug}.zip", json_url=f"/download/{slug}.json", resumable=False)
+                                  zip_url=f"/download/{slug}.zip", json_url=f"/download/{slug}.json",
+                                  activitystreams_url=f"/download/{slug}.activitystreams.json", resumable=False)
                 if slug != "_demo":
                     found[slug].update(parameters=self.legacy_parameters(slug), resumable=report.get("status") not in ("complete", "demo"))
             except (OSError, ValueError, KeyError, TypeError, ExportError):
@@ -284,6 +285,8 @@ def make_server(output: Path, port=8787):
             if not path.is_file():
                 return self.json({"error": "Файл не найден."}, 404)
             mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+            if path.name == "activitystreams.json":
+                mime = "application/activity+json"
             if path.suffix in (".html", ".css", ".js", ".json"):
                 mime += "; charset=utf-8"
             with path.open("rb") as stream:
@@ -330,7 +333,7 @@ def make_server(output: Path, port=8787):
                         return self.json({"error": "Не удалось обновить оформление архива. Проверьте папку и свободное место."}, 409)
                 return self.file(target)
             if path.startswith("/download/") and path.endswith((".zip", ".json")):
-                extension = Path(path).suffix
+                extension = ".activitystreams.json" if path.endswith(".activitystreams.json") else Path(path).suffix
                 slug = path.removeprefix("/download/")[:-len(extension)]
                 import re
                 if not re.fullmatch(r"[a-z0-9_]{1,15}(?:-latest-[1-9][0-9]?)?", slug):
@@ -338,18 +341,32 @@ def make_server(output: Path, port=8787):
                 folder = (jobs.output / slug).resolve()
                 if not folder.is_relative_to(jobs.output) or not (folder / "index.html").is_file():
                     return self.json({"error": "Архив не найден."}, 404)
-                if extension == ".json":
+                if extension in (".json", ".activitystreams.json"):
+                    activity = extension == ".activitystreams.json"
+                    filename = "activitystreams.json" if activity else "archive.json"
                     with jobs.lock:
                         if jobs.thread and jobs.thread.is_alive():
                             return self.json({"error": "Дождитесь окончания выгрузки перед скачиванием JSON."}, 409)
                         if not (folder / "archive.sqlite3").is_file():
-                            return self.file(folder / "data" / "archive.json", download=slug + ".json")
+                            target = folder / "data" / filename
+                            if activity and not target.is_file():
+                                from .activitystreams import to_activitystreams
+                                from .storage import atomic_write
+                                source = folder / "data" / "archive.json"
+                                if not source.is_file():
+                                    return self.json({"error": "Исходные данные архива не найдены."}, 404)
+                                try:
+                                    document = to_activitystreams(json.loads(source.read_text(encoding="utf-8")))
+                                    atomic_write(target, json.dumps(document, ensure_ascii=False, indent=2) + "\n")
+                                except (OSError, ValueError, KeyError, TypeError):
+                                    return self.json({"error": "Не удалось прочитать исходный JSON архива."}, 409)
+                            return self.file(target, download=slug + ".json")
                         from .data import export_json
                         from .storage import Store
                         try:
                             store = Store(folder)
                             try:
-                                target = export_json(store)
+                                target = export_json(store, format="activitystreams" if activity else "source")
                             finally:
                                 store.close()
                         except ExportError as exc:

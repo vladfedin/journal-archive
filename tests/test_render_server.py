@@ -76,6 +76,11 @@ def test_demo_archive_and_zip_served_without_db_or_credentials(local_server):
     assert json_response.status_code == 200
     assert json_response.headers["Content-Disposition"] == 'attachment; filename="_demo.json"'
     data = json_response.json()
+    from ljarchive.activitystreams import source_snapshot
+    activity_response = session.get(base + archive["activitystreams_url"])
+    assert activity_response.status_code == 200
+    assert activity_response.headers['Content-Type'].startswith('application/activity+json')
+    assert source_snapshot(activity_response.json()) == data
     assert data["schema_version"] == 1 and len(data["entries"]) == 6 and len(data["comments"]) == 12
     assert data["entries"][0]["reactions"]["authors"]["status"] == "complete"
     response = session.get(base + archive["zip_url"])
@@ -85,6 +90,8 @@ def test_demo_archive_and_zip_served_without_db_or_credentials(local_server):
     assert "_demo/index.html" in names
     assert "_demo/data/comments.json" in names
     assert "_demo/data/archive.json" in names
+    assert "_demo/data/activitystreams-context.json" in names
+    assert source_snapshot(json.loads(zipped.read('_demo/data/activitystreams.json'))) == data
     assert not any("sqlite" in n or n.endswith(".lock") for n in names)
     assert session.get(base + "/archive/_demo/archive.sqlite3").status_code == 403
     session.close()
@@ -101,3 +108,24 @@ def test_http_rejects_invalid_request_limit_before_login(local_server, limit):
         assert response.status_code == 400
         assert server.jobs.snapshot()["phase"] == "idle"
         assert server.jobs.thread is None
+
+
+def test_activitystreams_download_from_legacy_zip_without_database(local_server, monkeypatch):
+    from ljarchive.activitystreams import source_snapshot
+    server, base = local_server
+    folder = server.jobs.output / 'fixture'
+    create_demo(folder)
+    source = (folder / 'data/archive.json').read_bytes()
+    (folder / 'archive.sqlite3').unlink()
+    (folder / 'data/activitystreams.json').unlink()
+    monkeypatch.setattr('ljarchive.storage.Store', lambda *a, **kw: pytest.fail('No database should be created'))
+    with requests.Session() as session:
+        session.get(base)
+        response = session.get(base + '/download/fixture.activitystreams.json')
+        assert response.status_code == 200
+        assert source_snapshot(response.json()) == json.loads(source)
+        assert (folder / 'data/archive.json').read_bytes() == source
+        assert not (folder / 'archive.sqlite3').exists()
+        (folder / 'data/activitystreams.json').unlink()
+        (folder / 'data/archive.json').write_text('{broken', encoding='utf-8')
+        assert session.get(base + '/download/fixture.activitystreams.json').status_code == 409

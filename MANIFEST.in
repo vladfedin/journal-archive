@@ -4,6 +4,7 @@ recursive-include packaging *.py
 recursive-include .github/workflows *.yml
 recursive-include ljarchive/templates *.html
 recursive-include ljarchive/static *.js *.css *.svg *.ico
+recursive-include ljarchive/schemas *.json
 prune archives
 prune .venv
 prune .git

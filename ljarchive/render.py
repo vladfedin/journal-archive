@@ -268,7 +268,7 @@ def build_archive(store: Store, report: dict, *, images=False, userpics=False, c
     cancel = client_cancel or threading.Event()
     media = Media(folder, images, cancel, budget=budget)
     entries, comments = store.entries(), store.comments()
-    report["format_version"] = "0.4.1"
+    report["format_version"] = "0.5.0"
     report.setdefault("issues", [])
     report["reactions"] = reaction_report(store)
     if report.get("status") == "complete" and not (report["reactions"]["complete"] and report["reactions"]["authors_complete"]):

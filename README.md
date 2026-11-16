@@ -32,9 +32,9 @@ Python устанавливать не нужно. Приложение откр
 | macOS | `~/Library/Application Support/LiveJournalArchive/archives` |
 | Linux | `$XDG_DATA_HOME/LiveJournalArchive/archives` или `~/.local/share/LiveJournalArchive/archives` |
 
-В папке журнала: `index.html`, страницы записей, поиск, `help.html`, `data/archive.json`, рабочая база `archive.sqlite3`. История изменений хранится в базе и JSON. Параметры незавершённых задач находятся в общей папке `.jobs`; для переноса с продолжением загрузки скопируйте всю рабочую папку.
+В папке журнала: `index.html`, страницы записей, поиск, `help.html`, `data/activitystreams.json`, `data/archive.json`, рабочая база `archive.sqlite3`. История изменений хранится в базе и JSON. Параметры незавершённых задач находятся в общей папке `.jobs`; для переноса с продолжением загрузки скопируйте всю рабочую папку.
 
-**Скачать ZIP** выдаёт страницы и JSON, **Скачать JSON** — только данные. Рабочая база в ZIP не включается. [Формат JSON](docs/json-format.md).
+**Скачать ZIP** выдаёт страницы, медиа и оба JSON. **Скачать JSON** — [ActivityStreams 2.0 с расширениями ЖЖ](docs/activitystreams.md), включая полный исходный снимок. **Исходный JSON** — [прежний формат данных](docs/json-format.md). Рабочая база в ZIP не включается. Экспорт выполняется без сети; неизвестные поля, история изменений и сведения о пропусках сохраняются.
 
 Сохраняется то, что ЖЖ возвращает владельцу, включая доступные личные записи и скрытые комментарии. Удалённые тексты и данные, которые сервис не возвращает, восстановить нельзя. Пропуски видны в состоянии архива; неизвестное число реакций не превращается в ноль. Доступ к файлам даёт доступ и к закрытым текстам внутри них.
 
@@ -60,7 +60,8 @@ python -m ljarchive export username --limit 10         # тест, до 50 за�
 python -m ljarchive sync username --mode period --from 2005-01-01 --to 2005-12-31
 python -m ljarchive sync username --mode urls --url https://username.livejournal.com/12345.html
 python -m ljarchive sync username --mode full           # проверка и полное обновление
-python -m ljarchive json archives/username --output journal.json
+python -m ljarchive json archives/username --format activitystreams --output journal.json
+python -m ljarchive json archives/username --format source --output source.json
 python -m ljarchive build archives/username            # пересобрать HTML без сети
 python -m ljarchive verify archives/username           # проверить локальные данные без сети
 ```

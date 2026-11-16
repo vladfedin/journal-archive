@@ -136,10 +136,18 @@ def main():
                 with page.expect_download() as downloaded:
                     page.get_by_text('Скачать JSON', exact=True).click()
                 assert downloaded.value.suggested_filename == 'example_journal.json'
-                assert len(json.loads(Path(downloaded.value.path()).read_text(encoding='utf-8'))['entries']) == 6
+                from ljarchive.activitystreams import source_snapshot
+                standard = json.loads(Path(downloaded.value.path()).read_text(encoding='utf-8'))
+                assert standard['type'] == 'Collection'
+                assert len(source_snapshot(standard)['entries']) == 6
+                with page.expect_download() as downloaded:
+                    page.get_by_text('Исходный JSON', exact=True).click()
+                raw = json.loads(Path(downloaded.value.path()).read_text(encoding='utf-8'))
+                assert source_snapshot(standard) == raw
                 response = page.request.get(base + '/download/example_journal.zip')
                 with zipfile.ZipFile(io.BytesIO(response.body())) as zipped:
                     assert 'example_journal/help.html' in zipped.namelist()
+                    assert source_snapshot(json.loads(zipped.read('example_journal/data/activitystreams.json'))) == raw
                     assert not any('sqlite' in name or '.jobs' in name for name in zipped.namelist())
                 for width in (390, 320):
                     page.set_viewport_size({'width': width, 'height': 844})

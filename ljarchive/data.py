@@ -28,12 +28,21 @@ def snapshot(store):
     }
 
 
-def export_json(store, path=None, *, split=False):
+def export_json(store, path=None, *, split=False, format="source"):
     """Can run independently of rendering, including before any HTML exists."""
     data = snapshot(store)
-    path = Path(path) if path else store.folder / "data" / "archive.json"
-    atomic_write(path, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+    from .activitystreams import to_activitystreams
+    if format not in ("source", "activitystreams"):
+        raise ValueError("Unknown JSON format")
+    document = to_activitystreams(data) if format == "activitystreams" else data
+    filename = "activitystreams.json" if format == "activitystreams" else "archive.json"
+    path = Path(path) if path else store.folder / "data" / filename
+    atomic_write(path, json.dumps(document, ensure_ascii=False, indent=2) + "\n")
     if split:
         for name, key in (("entries", "entries"), ("comments", "comments"), ("comment-metadata", "comment_metadata")):
             atomic_write(store.folder / "data" / f"{name}.json", json.dumps(data[key], ensure_ascii=False, indent=2) + "\n")
+        activity = document if format == "activitystreams" else to_activitystreams(data)
+        atomic_write(store.folder / "data" / "activitystreams.json", json.dumps(activity, ensure_ascii=False, indent=2) + "\n")
+        atomic_write(store.folder / "data" / "activitystreams-context.json",
+                     (Path(__file__).parent / "schemas" / "activitystreams-context.json").read_bytes())
     return path

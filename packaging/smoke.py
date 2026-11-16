@@ -22,6 +22,10 @@ with tempfile.TemporaryDirectory(prefix="ljarchive-ЖЖ-") as directory:
     subprocess.run([str(binary), "demo", "--output", str(folder)], cwd=directory, env=env, check=True, timeout=90)
     data = json.loads((folder / "data/archive.json").read_text(encoding="utf-8"))
     assert len(data["entries"]) == 6 and len(data["comments"]) == 12
+    standard = json.loads((folder / "data/activitystreams.json").read_text(encoding="utf-8"))
+    assert standard["type"] == "Collection"
+    assert json.loads(standard["ja:source"]["content"]) == data
+    assert (folder / "data/activitystreams-context.json").is_file()
     assert (folder / "assets/archive.css").is_file()
     assert (folder / "index.html").is_file()
     assert (folder / "help.html").is_file()
@@ -57,6 +61,9 @@ with tempfile.TemporaryDirectory(prefix="ljarchive-ЖЖ-") as directory:
             assert session.get(base + '/archive/demo/assets/favicon.svg', timeout=5).content == (folder / 'assets/favicon.svg').read_bytes()
             assert 'Паузы и лимиты' in session.get(base + '/help', timeout=5).text
             assert session.get(base + '/archive/demo/data/archive.json', timeout=5).json()['schema_version'] == 1
+            downloaded = session.get(base + '/download/demo.activitystreams.json', timeout=5)
+            assert downloaded.headers['Content-Type'].startswith('application/activity+json')
+            assert json.loads(downloaded.json()['ja:source']['content']) == data
             assert session.post(base + '/api/quit', headers={'Origin':base}, json={}, timeout=5).status_code == 200
         assert process.wait(timeout=10) == 0
     except Exception:
