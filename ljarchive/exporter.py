@@ -5,7 +5,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .client import Cancelled, ExportError, LiveJournalClient, RequestBudget, username
+from .client import Cancelled, ExportError, IncompleteData, LiveJournalClient, RequestBudget, username
 from .storage import Store, atomic_write, dumps
 
 
@@ -44,6 +44,9 @@ def normalize_thread(nodes, entry_id):
                 "state": node.get("state") or "A", "subject": node.get("subject", ""),
                 "date": node.get("datepost", ""), "props": node.get("props", {}),
                 "dtalkid": int(node["dtalkid"])}
+        for key in ("userpic", "poster_userpic_url"):
+            if key in node:
+                item[key] = node[key]
         if "body" in node and node["body"] is not None:
             item["body"] = node["body"]
         elif node.get("is_loaded", node.get("_loaded")) in (1, "1", True):
@@ -68,6 +71,60 @@ class Exporter:
 
     def update(self, phase, message, **extra):
         self.progress(phase=phase, message=message, **self.store.counts(), **extra)
+
+    def retry_missing(self, operation, label):
+        # HTTP failures already have their own retry policy. Only partial successful
+        # responses get additional passes; access refusals and caps propagate immediately.
+        import time
+        for attempt in range(3):
+            self.client.check()
+            try:
+                return operation()
+            except IncompleteData:
+                if attempt == 2:
+                    raise
+                deadline = max(time.time() + 30 * 2 ** attempt, getattr(self.client, "not_before", 0))
+                with self.store.db:
+                    self.store.set("request_not_before", deadline)
+                    self.store.set("repair", {"stage": label, "pass": attempt + 2, "retry_at": deadline})
+                self.update("waiting", f"Повторная загрузка пропусков: {label}", retry_at=deadline)
+                if hasattr(self.client, "_wait"):
+                    self.client._wait(deadline - time.time())
+                elif self.client.cancel.wait(max(0, deadline - time.time())):
+                    self.client.check()
+
+    def userpic_metadata(self):
+        # Upgrade old archives without repeating already enriched discussions.
+        from .userpics import describe
+        pictures = describe(self.store)
+        requested = set(self.store.get("userpic_comments_requested", []))
+        selected = getattr(self, "selected_ids", None)
+        pending = {int(c["jitemid"]) for c in self.store.comments()
+                   if pictures["comment"][str(c["id"])]["selection"] == "unknown"
+                   and int(c["jitemid"]) not in requested
+                   and (selected is None or int(c["jitemid"]) in selected)}
+        if not pending:
+            return
+        statuses = self.store.get("entry_comments", {})
+        for eid in pending:
+            statuses[str(eid)] = {"next_page": 1, "done": False}
+        with self.store.db:
+            self.store.set("entry_comments", statuses)
+        if hasattr(self, "checkpoint"):
+            self.checkpoint(phase="comments")
+            self.retry_missing(self.comments, "юзерпики комментариев")
+        else:
+            self.retry_missing(self.recent_comments, "юзерпики комментариев")
+
+    def reactions(self, *, entry_ids=None, checkpoint="trial_reaction_counts"):
+        from .reactions import capture_reactions
+        def capture():
+            complete = capture_reactions(self.store, self.client, self.progress,
+                                         entry_ids=entry_ids, checkpoint=checkpoint)
+            if not complete and self.store.get("reaction_retryable"):
+                raise IncompleteData("Не все реакции или имена авторов получены. Можно продолжить загрузку.")
+            return complete
+        return self.retry_missing(capture, "реакции")
 
     def posts(self):
         store = self.store
@@ -144,11 +201,24 @@ class Exporter:
             store.set("recent_expected", expected)
             store.set("posts_done", len(entries) == expected)
         if len(entries) != expected:
-            raise ExportError(f"Запрошены последние {expected} записей, ЖЖ вернул {len(entries)}.")
+            raise IncompleteData(f"Запрошены последние {expected} записей, ЖЖ вернул {len(entries)}.")
+
+    def discussion_complete(self, entry, status):
+        store, eid = self.store, int(entry["itemid"])
+        saved = store.db.execute("SELECT payload FROM comments WHERE entry_id=?", (eid,)).fetchall()
+        import json
+        records = [json.loads(row[0]) for row in saved]
+        seen = set(status.get("seen_ids", []))
+        missing_bodies = any(("body" not in c or c.get("source_status") == "body_not_returned")
+                             and c.get("state") not in ("D", "X") for c in records if c["id"] in seen)
+        missing_screened = entry.get("props", {}).get("hasscreened") in (1, "1", True) and not any(
+            c.get("state") == "S" and c["id"] in seen for c in records)
+        return not (missing_bodies or missing_screened or len(seen) < int(entry.get("reply_count", 0) or 0))
 
     def recent_comments(self):
         store = self.store
         statuses = store.get("entry_comments", {})
+        incomplete = []
         entries = sorted(store.entries(), key=lambda e: (e.get("eventtime", ""), int(e["itemid"])), reverse=True)
         selected = getattr(self, "selected_ids", None)
         if selected is not None:
@@ -162,7 +232,7 @@ class Exporter:
             while True:
                 self.update("comments", f"Комментарии к записи #{eid} · страница {page}")
                 response = self.client.call("getcomments", journal=self.client.user, itemid=eid,
-                                            page=page, page_size=500, expand_strategy="expand_all", format="thread")
+                                            page=page, page_size=500, expand_strategy="expand_all", format="thread", extra=1)
                 nodes = response.get("comments")
                 if not isinstance(nodes, list):
                     raise ExportError(f"ЖЖ не вернул комментарии к записи #{eid}.")
@@ -196,22 +266,29 @@ class Exporter:
                         self.update("comments", f"Разворачиваем комментарий #{item['id']} к записи #{eid}…")
                         expanded = self.client.call("getcomments", journal=self.client.user, itemid=eid,
                                                     dtalkid=item["dtalkid"], page=1, page_size=500,
-                                                    expand_strategy="expand_all", format="thread")
+                                                    expand_strategy="expand_all", format="thread", extra=1)
                         if not isinstance(expanded.get("comments"), list):
                             raise ExportError("ЖЖ не вернул развёрнутую ветку.")
                         atomic_write(self.folder / "raw" / f"comments-{eid}-thread-{item['id']}.json", dumps(expanded))
                         expanded_items, expanded_users = normalize_thread(expanded["comments"], eid)
                         self.save_thread(expanded_items, expanded_users)
                         status["seen_ids"] = sorted(set(status["seen_ids"]) | {int(c["id"]) for c in expanded_items})
-                    status["done"] = True
+                    status["done"] = self.discussion_complete(entry, status)
+                    if not status["done"]:
+                        status.update(next_page=1, seen_ids=[])
+                        incomplete.append(eid)
+                    with store.db:
+                        store.set("userpic_comments_requested", sorted(set(store.get("userpic_comments_requested", [])) | {eid}))
                 with store.db:
                     store.set("entry_comments", statuses)
-                if status["done"]:
+                if page >= pages:
                     break
                 page += 1
         with store.db:
             store.set("meta_done", True)
-            store.set("bodies_done", True)
+            store.set("bodies_done", not incomplete)
+        if incomplete:
+            raise IncompleteData(f"Не подтверждена полнота обсуждений: {len(incomplete)}. Можно продолжить загрузку.")
 
     def save_thread(self, items, users):
         store = self.store
@@ -399,6 +476,8 @@ class Exporter:
                 store.set("username", self.client.user)
                 if getattr(self.client, "journal_id", None):
                     store.set("journal_id", self.client.journal_id)
+                if getattr(self.client, "userpics", None) is not None:
+                    store.set("userpic_catalog", self.client.userpics)
                 store.set("entry_limit", self.entry_limit)
                 if not store.get("started_at"):
                     store.set("started_at", now())
@@ -410,14 +489,15 @@ class Exporter:
                         store.set("entry_comments", {})
             error, cancelled = None, False
             try:
-                self.posts()
+                self.retry_missing(self.posts, "записи")
                 if self.entry_limit is not None:
-                    self.recent_comments()
+                    self.retry_missing(self.recent_comments, "комментарии")
                 else:
                     self.comment_metadata()
                     self.comment_bodies()
-                from .reactions import capture_reactions
-                capture_reactions(store, self.client, self.progress)
+                if self.entry_limit is not None:
+                    self.userpic_metadata()
+                self.reactions()
             except Cancelled as exc:
                 error, cancelled = str(exc), True
             except ExportError as exc:
@@ -428,7 +508,7 @@ class Exporter:
                 with store.db:
                     store.set("last_request_stats", budget.snapshot())
             self.update("render", "Собираем страницы, поиск и отчёт о полноте…")
-            report = build_archive(store, report, images=self.images and not cancelled,
+            report = build_archive(store, report, images=self.images and not cancelled, userpics=not cancelled,
                                    client_cancel=self.client.cancel, progress=self.progress, budget=budget)
             with store.db:
                 store.set("finished", report["status"] == "complete")

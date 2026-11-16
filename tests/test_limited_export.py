@@ -81,13 +81,13 @@ class Wire:
             eid, page = params["itemid"], params["page"]
             cid = eid * 100 + page * 10
             child = {"dtalkid": (cid + 1) * 256 + 7, "parentdtalkid": cid * 256 + 7,
-                     "posterid": 1, "postername": "owner", "state": "A", "is_loaded": 1, "body": "Reply"}
+                     "userpic": "", "posterid": 1, "postername": "owner", "state": "A", "is_loaded": 1, "body": "Reply"}
             if self.placeholder and "dtalkid" not in params:
                 child.pop("body")
                 child["is_loaded"] = 0
             result = {"pages": self.pages, "page": page, "comments": [
                 {"dtalkid": cid * 256 + 7, "parentdtalkid": 0, "posterid": 42, "postername": "friend",
-                 "body": "Screened text", "is_loaded": 1, "state": "S", "children": [child]}]}
+                 "userpic": "", "body": "Screened text", "is_loaded": 1, "state": "S", "children": [child]}]}
         else:
             raise AssertionError(f"Unexpected method {name}")
         return Response(result)

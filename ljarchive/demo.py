@@ -1,5 +1,8 @@
 """Small, clearly labeled fictional archive for offline UI exploration."""
 from pathlib import Path
+import hashlib
+import struct
+import zlib
 
 from .exporter import now
 from .render import build_archive
@@ -9,6 +12,19 @@ from .storage import Store
 
 def create_demo(folder: Path, progress=None):
     store = Store(folder)
+    def demo_picture(name, colors, width=80, height=80):
+        url = "https://example.invalid/" + name + ".png"
+        def chunk(kind, data):
+            return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xffffffff)
+        pixels = b"".join(b"\x00" + b"".join(bytes(colors[(x // 16 + y // 16) % len(colors)]) for x in range(width)) for y in range(height))
+        png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(pixels)) + chunk(b"IEND", b"")
+        path = "media/" + hashlib.sha256(url.encode()).hexdigest() + ".png"
+        from .storage import atomic_write
+        atomic_write(folder / path, png)
+        return url
+    owner_pic = demo_picture("owner", [(76, 108, 137), (165, 192, 201)])
+    reply_pic = demo_picture("reply", [(177, 122, 89), (225, 202, 168)])
+    photo = demo_picture("post-image", [(207, 217, 202), (177, 195, 185)], 600, 200)
     entries = [
         (6, "2024-06-14 19:42:00", "Оставить немного места для нового", "public", "жизнь, заметки", "<p>Сегодня разобрал старые тетради. Между страницами — билет на поезд, список книг и телефон человека, с которым мы давно не разговаривали.</p><p>Забавно, как много памяти помещается в обычной коробке. Решил, что и этим записям пора найти свой дом.</p>"),
         (5, "2020-04-23 10:15:00", "Маленькие ритуалы большого города", "usemask", "город, повседневное", "<p>Открыть окно. Поставить чайник. Услышать, как внизу кто-то выгуливает собаку и здоровается с дворником.</p><p>Кажется, город состоит прежде всего из таких маленьких повторений. Из них же состоит и ощущение дома.</p>"),
@@ -43,7 +59,10 @@ def create_demo(folder: Path, progress=None):
             data["authors"] = {**parse_authors(users, data), "source": "demo"}
             return data
         with store.db:
+            store.set("userpic_catalog", {"defaultpicurl": owner_pic})
             for eid, date, title, security, tags, body in entries:
+                if eid == 6:
+                    body = body.replace("<p>Забавно", '<lj-cut text="Открыть заметку"><p>Забавно') + '<img src="' + photo + '" alt="Иллюстрация в примере"></lj-cut>'
                 store.save_entry({"itemid": eid, "anum": 1, "eventtime": date, "subject": title,
                                   "event": body, "security": security, "props": {"taglist": tags}})
                 store.save_reactions("post", eid, demo_reactions([eid + 2]))
@@ -51,7 +70,7 @@ def create_demo(folder: Path, progress=None):
                 store.db.execute("INSERT OR REPLACE INTO users VALUES (?,?)", (cid, user))
                 store.db.execute("INSERT OR REPLACE INTO comment_meta VALUES (?,?,?)", (cid, cid, state))
                 store.save_comment({"id": cid, "jitemid": eid, "parentid": parent, "posterid": cid,
-                                    "body": body, "date": entries[6 - eid][1].replace(" ", "T") + "Z"})
+                                    "userpic": owner_pic if user == "example_journal" else reply_pic, "body": body, "date": entries[6 - eid][1].replace(" ", "T") + "Z"})
                 groups = [2, 1] if cid == 4 else [cid % 3]
                 store.save_reactions("comment", cid, demo_reactions(groups))
             store.set("username", "example_journal")

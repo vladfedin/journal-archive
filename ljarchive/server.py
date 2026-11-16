@@ -86,7 +86,7 @@ class Jobs:
             if not path.is_file() or not (folder / "archive.sqlite3").is_file():
                 return
             report = json.loads(path.read_text(encoding="utf-8"))
-            if report.get("format_version") == "0.3.0":
+            if report.get("format_version") == "0.4.0":
                 return
             from .storage import Store
             from .render import build_archive
@@ -244,7 +244,7 @@ def make_server(output: Path, port=8787):
     token = secrets.token_urlsafe(32)
 
     class Handler(BaseHTTPRequestHandler):
-        server_version = "LJLocalArchive/0.3"
+        server_version = "LJLocalArchive/0.4"
 
         def log_message(self, *_):
             pass

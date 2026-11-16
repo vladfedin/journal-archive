@@ -73,7 +73,36 @@ document.addEventListener("DOMContentLoaded", () => {
     for (const key of ["year", "tag", "security", "sort"]) if (params.has(key)) $(key).value = params.get(key);
     search.value = params.get("q") || "";
     let page = 1, timer;
-    const PAGE_SIZE = 30;
+    let view = params.get("view") || "compact";
+    if (!params.has("view")) try { view = localStorage.getItem("ljarchive-view") || view; } catch {}
+    if (view !== "full") view = "compact";
+    const bodies = new Map(), pending = new Map();
+    window.ArchivePost = (id, html) => {
+      bodies.set(id, html);
+      pending.get(id)?.(html);
+      pending.delete(id);
+      // Keep the reading cache bounded even in journals spanning decades.
+      if (bodies.size > 60) bodies.delete(bodies.keys().next().value);
+    };
+    function fullBody(entry, container) {
+      const show = html => { if (container.isConnected) container.innerHTML = html; };
+      if (bodies.has(entry.id)) { container.innerHTML = bodies.get(entry.id); return; }
+      const script = document.createElement("script");
+      script.src = `assets/posts/${Number(entry.id)}.js`;
+      pending.set(entry.id, show);
+      script.onload = () => script.remove();
+      script.onerror = () => {
+        script.remove(); pending.delete(entry.id);
+        const link = el("a", "", "Открыть запись"); link.href = entry.url;
+        container.replaceChildren(link);
+      };
+      document.head.append(script);
+    }
+    document.querySelectorAll("[data-view]").forEach(button => button.onclick = () => {
+      view = button.dataset.view; page = 1;
+      try { localStorage.setItem("ljarchive-view", view); } catch {}
+      render();
+    });
     const FILTERS = ["year", "tag", "security"];
 
     function pickTag(tag) {
@@ -94,11 +123,18 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     function render() {
+      const PAGE_SIZE = view === "full" ? 10 : 30;
+      document.querySelectorAll("[data-view]").forEach(button => button.setAttribute("aria-pressed", String(button.dataset.view === view)));
+      document.querySelector(".archive-main").classList.toggle("full-view", view === "full");
       const query = search.value.trim().toLocaleLowerCase("ru");
       const terms = query.split(/\s+/).filter(Boolean);
       const year = $("year").value, tag = $("tag").value, security = $("security").value;
       const accepts = (e) => e && (!year || e.year === year) && (!tag || e.tags.includes(tag)) && (!security || e.security === security);
       let rows = terms.length ? normalized.filter(d => accepts(byEntry.get(d.entry)) && terms.every(t => d.haystack.includes(t))).map(d => ({e: byEntry.get(d.entry), d})) : entries.filter(accepts).map(e => ({e}));
+      if (view === "full") {
+        const seen = new Set();
+        rows = rows.filter(row => { if (seen.has(row.e.id)) return false; seen.add(row.e.id); return true; });
+      }
       rows.sort((a, b) => ((b.e.date.localeCompare(a.e.date) || b.e.id - a.e.id) * ($("sort").value === "old" ? -1 : 1)));
       const pages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE)); page = Math.min(page, pages);
       const active = FILTERS.filter(key => $(key).value).length;
@@ -114,11 +150,19 @@ document.addEventListener("DOMContentLoaded", () => {
         const time = el("time", "", ruDate(e.date)); if (e.date) time.dateTime = e.date;
         link.href = d?.url || e.url; title.append(link); meta.append(time);
         if (e.security !== "public") meta.append(el("span", "state", e.security_label));
+        if (view === "full" && e.userpic?.path) {
+          const avatar = el("a", "userpic-link"), image = el("img", "userpic");
+          avatar.href = e.userpic.path; avatar.title = e.userpic.keyword || "Юзерпик";
+          image.src = e.userpic.path; image.alt = e.userpic.keyword || "Юзерпик автора"; image.loading = "lazy";
+          avatar.append(image); card.append(avatar);
+        }
         card.append(meta, title);
         if (d?.kind === "comment") card.append(el("div", "match-label", "Совпадение в комментарии"));
         let excerpt = e.excerpt;
         if (d && terms.length) { const position = d.text.toLocaleLowerCase("ru").indexOf(terms[0]); const start = Math.max(0, position - 70); excerpt = (start ? "…" : "") + d.text.slice(start, start + 300) + (start + 300 < d.text.length ? "…" : ""); }
-        card.append(d ? highlighted("entry-excerpt result-snippet", excerpt, terms) : el("p", "entry-excerpt", excerpt));
+        if (d || view === "compact") card.append(d ? highlighted("entry-excerpt result-snippet", excerpt, terms) : el("p", "entry-excerpt", excerpt));
+        const body = view === "full" ? el("div", "feed-body") : null;
+        if (body) { card.classList.add("full-post"); card.append(body); }
         const bottom = el("div", "entry-bottom");
         if (e.comments) {
           const comments = el("a", "count-link"), icon = el("span");
@@ -130,6 +174,7 @@ document.addEventListener("DOMContentLoaded", () => {
         card.append(bottom);
         const reactions = reactionsBlock(e.reactions); if (reactions) card.append(reactions);
         list.append(card);
+        if (body) fullBody(e, body);
       }
       const pagination = $("pagination"); pagination.replaceChildren();
       if (pages > 1) {
@@ -141,6 +186,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const state = new URLSearchParams(); if (query) state.set("q", search.value);
       for (const key of FILTERS) if ($(key).value) state.set(key, $(key).value);
       if ($("sort").value === "old") state.set("sort", "old");
+      if (view === "full") state.set("view", "full");
       try { history.replaceState(null, "", location.pathname + (state.size ? "?" + state.toString() : "")); } catch {}
     }
     search.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(() => { page = 1; render(); }, 180); });

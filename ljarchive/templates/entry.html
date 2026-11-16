@@ -1,10 +1,12 @@
 {% set prefix = '../' %}
 {% extends 'base.html' %}
 {% from 'reactions.html' import show_reactions %}
+{% from 'userpic.html' import show_userpic %}
 {% block title %}{{ summary.title }} · {{ user }}{% endblock %}
 {% block body %}
 <main class="main reading"><nav class="reading-nav" aria-label="Записи"><a href="../index.html">← Все записи</a><span>{% if newer %}<a href="{{ newer.itemid }}.html">Новее</a>{% endif %}{% if older %}<a href="{{ older.itemid }}.html">Старее →</a>{% endif %}</span></nav>
 <article class="post">{% if entry.source_status %}<p class="inline-status" title="При последней проверке ЖЖ не вернул эту запись">Ранее сохранённая версия</p>{% endif %}
+{{ show_userpic(summary.userpic,user) }}
 <div class="entry-meta"><time datetime="{{ summary.date }}">{{ summary.date|ru_date(true,true) }}</time>{% if summary.security != 'public' %}<span class="state">{{ summary.security_label }}</span>{% endif %}<a href="{{ original }}" rel="noreferrer noopener">ЖЖ ↗</a></div><h1>{{ summary.title }}</h1>
 <div class="prose{% if post_autoformat %} autoformat{% endif %}">{{ content }}</div>
 {% if current %}<dl class="post-current">{% for label,value in current %}<dt>{{ label }}</dt><dd>{{ value }}</dd>{% endfor %}</dl>{% endif %}
@@ -12,6 +14,7 @@
 <div class="post-foot"><span class="entry-tags">{% for tag in summary.tags %}<a href="../index.html?tag={{ tag|urlencode }}">{{ tag }}</a>{% endfor %}</span></div></article>
 <section id="comments" class="comments"><div class="comments-heading"><h2>Комментарии <span>{{ comments|length }}</span></h2>{% if comments %}<button id="expand-comments" class="btn text" type="button">Свернуть ветки</button>{% endif %}</div>
 {% for comment in comments %}<article id="comment-{{ comment.id }}" class="comment depth-{{ comment.visual_depth }}{% if comment.state == 'S' %} screened{% endif %}" data-depth="{{ comment.depth }}">
+{{ show_userpic(comment.userpic_view,comment.user) }}
 <header class="comment-head">{% if comment.user|profile_url %}<a class="author" href="{{ comment.user|profile_url }}" rel="noreferrer noopener">{{ comment.user }}</a>{% else %}<strong class="author">{{ comment.user }}</strong>{% endif %}{% if comment.by_owner %}<span class="state">Автор</span>{% endif %}{% if comment.state_label %}<span class="state{% if comment.state == 'S' %} screened{% endif %}">{{ comment.state_label }}</span>{% endif %}<time datetime="{{ comment.get('date','') }}">{{ comment.get('date','')|ru_date }}</time><a class="muted" href="#comment-{{ comment.id }}" aria-label="Ссылка на комментарий {{ comment.id }}">#{{ comment.id }}</a></header>
 {% if comment.source_status %}<p class="inline-status" title="ЖЖ не вернул комментарий или его текст при последней проверке">Ранее сохранённая версия</p>{% endif %}
 {% if comment.missing_parent %}<span class="parent">Родительский комментарий #{{ comment.parentid }} недоступен</span>{% elif comment.parent_user and comment.depth > 1 %}<a class="parent" href="#comment-{{ comment.parentid }}">↳ {{ comment.parent_user }}</a>{% endif %}

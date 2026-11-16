@@ -6,9 +6,8 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from .client import Cancelled, ExportError, LiveJournalClient, RequestBudget, username
+from .client import Cancelled, ExportError, IncompleteData, LiveJournalClient, RequestBudget, username
 from .exporter import Exporter, now
-from .reactions import capture_reactions
 from .storage import atomic_write, dumps
 
 
@@ -112,7 +111,8 @@ class SyncExporter(Exporter):
             return
         with self.store.db:
             self.store.save_entry(entry)
-        self.checkpoint(seen=sorted(set(self.state["seen"]) | {entry["itemid"]}))
+        self.checkpoint(seen=sorted(set(self.state["seen"]) | {entry["itemid"]}),
+                        unavailable=sorted(set(self.state["unavailable"]) - {entry["itemid"]}))
 
     def fetch_one(self, eid, expected_did=None):
         result = self.client.call("getevents", selecttype="one", itemid=eid, lineendings="unix", noprops=0, truncate=0)
@@ -156,7 +156,7 @@ class SyncExporter(Exporter):
                             store.db.execute("INSERT OR REPLACE INTO days(day,expected) VALUES (?,?)", (value, int(day["count"])))
                     store.set("days_loaded", True)
                 self.checkpoint(calendar_loaded=True)
-            for day in store.db.execute("SELECT * FROM days WHERE done=0 ORDER BY day DESC").fetchall():
+            for day in store.db.execute("SELECT * FROM days WHERE done!=1 ORDER BY day DESC").fetchall():
                 self.update("posts", f"Записи за {day['day']}…")
                 year, month, number = map(int, day["day"].split("-"))
                 result = self.client.call("getevents", selecttype="day", year=year, month=month, day=number,
@@ -183,6 +183,14 @@ class SyncExporter(Exporter):
         with store.db:
             store.set("posts_done", True)
         self.checkpoint(phase="comments", selected=sorted(self.selected_ids))
+
+    def unavailable_posts(self):
+        for eid in list(self.state.get("unavailable", [])):
+            self.fetch_one(eid)
+        if self.state.get("unavailable"):
+            raise IncompleteData("ЖЖ не вернул часть записей. Ранее сохранённые тексты оставлены в архиве.")
+        self.selected_ids = set(self.state["seen"])
+        self.checkpoint(selected=sorted(self.selected_ids))
 
     def reconcile_posts(self):
         """Persist discovery and individual fetches when a day response is truncated."""
@@ -221,7 +229,7 @@ class SyncExporter(Exporter):
         counts = Counter(e.get("eventtime", "")[:10] for e in store.entries() if int(e["itemid"]) in self.state["seen"])
         for day in store.db.execute("SELECT * FROM days WHERE done=2").fetchall():
             if counts[day["day"]] != day["expected"]:
-                raise ExportError(f"Полнота дня {day['day']} пока не подтверждена.")
+                raise IncompleteData(f"Полнота дня {day['day']} пока не подтверждена.")
             with store.db:
                 store.db.execute("UPDATE days SET done=1 WHERE day=?", (day["day"],))
 
@@ -229,6 +237,7 @@ class SyncExporter(Exporter):
         self.recent_comments()
         statuses = self.store.get("entry_comments", {})
         missing = []
+        incomplete_entries = set()
         comments = self.store.comments()
         screened_ids = {c["id"] for c in comments if c["state"] == "S"}
         with self.store.db:
@@ -244,18 +253,24 @@ class SyncExporter(Exporter):
                     self.store.save_comment(original)
                 elif ("body" not in item or item.get("source_status") == "body_not_returned") and item.get("state") not in ("D", "X"):
                     missing.append(item["id"])
+                    incomplete_entries.add(eid)
         for entry in self.store.entries():
             eid = int(entry["itemid"])
             if eid in self.selected_ids and len(statuses[str(eid)].get("seen_ids", [])) < int(entry.get("reply_count", 0) or 0):
                 missing.append(f"entry-{eid}")
+                incomplete_entries.add(eid)
             if eid in self.selected_ids and entry.get("props", {}).get("hasscreened") in (1, "1", True):
                 fresh_ids = set(statuses[str(eid)].get("seen_ids", []))
                 if not fresh_ids & screened_ids:
                     missing.append(f"screened-{eid}")
+                    incomplete_entries.add(eid)
         if missing:
+            for eid in incomplete_entries:
+                statuses[str(eid)] = {"next_page": 1, "done": False}
             with self.store.db:
-                self.store.set("entry_comments", {})
-            raise ExportError(f"Не подтверждена полнота комментариев: {len(missing)} пропусков. Следующий запуск повторит проверку веток.")
+                self.store.set("entry_comments", statuses)
+                self.store.set("bodies_done", False)
+            raise IncompleteData(f"Не подтверждена полнота комментариев: {len(missing)} пропусков. Следующий запуск повторит проверку веток.")
         self.checkpoint(phase="reactions")
 
     def save_thread(self, items, users):
@@ -324,22 +339,27 @@ class SyncExporter(Exporter):
                 self.client.login()
                 with store.db:
                     store.set("journal_id", self.client.journal_id)
+                    if getattr(self.client, "userpics", None) is not None:
+                        store.set("userpic_catalog", self.client.userpics)
                 if self.state["phase"] == "posts":
-                    self.posts()
+                    self.retry_missing(self.posts, "записи")
                 self.selected_ids = set(self.state.get("selected", []))
+                if self.state.get("unavailable"):
+                    self.retry_missing(self.unavailable_posts, "записи")
                 if self.state["phase"] == "comments":
-                    self.comments()
+                    self.retry_missing(self.comments, "комментарии")
+                self.userpic_metadata()
                 if self.state["phase"] == "reactions":
-                    if capture_reactions(store, self.client, self.progress, entry_ids=self.selected_ids, checkpoint="sync_reaction_counts"):
+                    if self.reactions(entry_ids=self.selected_ids, checkpoint="sync_reaction_counts"):
                         self.checkpoint(phase="render")
             except Cancelled as exc:
                 error, cancelled = str(exc), True
             except ExportError as exc:
                 error = str(exc)
             report = self.report(error, cancelled)
-            report = build_archive(store, report, images=self.images and not cancelled,
+            report = build_archive(store, report, images=self.images and not cancelled, userpics=not cancelled,
                                    client_cancel=self.client.cancel, progress=self.progress, budget=self.client.budget)
-            complete = self.state["phase"] == "render" and not error and (not self.images or report["media_complete"])
+            complete = self.state["phase"] == "render" and not error and report["status"] == "complete"
             if complete:
                 self.checkpoint(phase="done", done=True, finished_at=now())
             elif self.images and not report["media_complete"] and report["status"] == "complete":

@@ -4,6 +4,7 @@ from pathlib import Path
 
 from .reactions import reaction_report
 from .storage import atomic_write
+from .userpics import describe
 
 SCHEMA_VERSION = 1
 
@@ -19,6 +20,7 @@ def snapshot(store):
         "comment_metadata": [dict(row) for row in store.db.execute("SELECT * FROM comment_meta ORDER BY id")],
         "users": [dict(row) for row in store.db.execute("SELECT id,name AS username FROM users ORDER BY id")],
         "media": store.get("media", {}),
+        "userpics": describe(store),
         "versions": [{"kind": r[0], "id": r[1], "saved_at": r[2], "record": json.loads(r[3])}
                      for r in store.db.execute("SELECT kind,object_id,saved_at,payload FROM versions ORDER BY saved_at,kind,object_id,digest")],
         "coverage": {"posts_done": bool(store.get("posts_done")), "comments_done": bool(store.get("bodies_done")),

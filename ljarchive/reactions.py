@@ -103,6 +103,7 @@ def capture_reactions(store, client, progress=None, *, entry_ids=None, checkpoin
         return True
     issues = []
     complete = False
+    retryable = True
     try:
         journal_id = client.journal_id or store.get("journal_id")
         if not journal_id:
@@ -139,6 +140,7 @@ def capture_reactions(store, client, progress=None, *, entry_ids=None, checkpoin
             except Cancelled:
                 raise
             except ExportError as exc:
+                retryable = False
                 counts_error = exc
                 break
             with store.db:
@@ -164,10 +166,12 @@ def capture_reactions(store, client, progress=None, *, entry_ids=None, checkpoin
     except Cancelled:
         raise
     except ExportError as exc:
+        retryable = False
         issues.append(str(exc))
     finally:
         with store.db:
             store.set("reaction_issues", issues)
+            store.set("reaction_retryable", retryable)
     return complete
 
 

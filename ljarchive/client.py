@@ -35,6 +35,10 @@ class APIRateLimited(ExportError):
     pass
 
 
+class IncompleteData(ExportError):
+    """A successful response omitted requested data; retry only the pending objects."""
+
+
 class RequestBudget:
     """One hard limit for all outbound HTTP attempts in an export, including retries."""
     def __init__(self, limit=50, progress=None):
@@ -134,10 +138,11 @@ class LiveJournalClient:
         self.budget = budget or RequestBudget()
         self.budget.delay = self.delay
         self.session = requests.Session()
-        self.session.headers["User-Agent"] = "LiveJournalLocalArchive/0.3 (personal backup)"
+        self.session.headers["User-Agent"] = "LiveJournalLocalArchive/0.4 (personal backup)"
         self._last_request = 0.0
         self._cookie = None
         self.journal_id = None
+        self.userpics = None
         self._reaction_token = None
         self.progress = progress or (lambda **kwargs: None)
         self.max_attempts = max_attempts
@@ -234,7 +239,8 @@ class LiveJournalClient:
                     raise
 
     def login(self):
-        result = self.call("login", clientversion="Python-LJLocalArchive/0.2")
+        result = self.call("login", clientversion="Python-LJLocalArchive/0.4", getpickws=1, getpickwurls=1)
+        self.userpics = {key: result.get(key) for key in ("pickws", "pickwurls", "defaultpicurl")}
         uid = result.get("userid")
         if isinstance(uid, int) and not isinstance(uid, bool) and uid > 0:
             self.journal_id = uid

@@ -35,10 +35,13 @@ class Media:
         self.mapping, self.failed = {}, []
         self.budget = budget or RequestBudget()
         self.session = requests.Session()
-        self.session.headers["User-Agent"] = "LiveJournalLocalArchive/0.3"
+        self.session.headers["User-Agent"] = "LiveJournalLocalArchive/0.4"
         # Never attach credentials from .netrc or the owner's LJ cookie to embeds.
         self.session.trust_env = False
         self.blocked_hosts = set()
+        self.stopped = False
+        self.attempted = set()
+        self.used_urls = {"images": set(), "userpics": set()}
 
     def wait(self, seconds):
         # Short interruptible waits keep cancellation responsive even for long Retry-After.
@@ -54,8 +57,9 @@ class Media:
         self.budget.save_cooldown(self.budget.not_before)
         self.budget.progress(phase="waiting", message="Сервер изображений просит подождать перед повтором…", retry_at=self.budget.not_before)
 
-    def get(self, url: str) -> str | None:
-        if url in self.mapping:
+    def get(self, url: str, *, required=False, category="images") -> str | None:
+        self.used_urls[category].add(url)
+        if url in self.mapping and (self.mapping[url] is not None or url in self.attempted):
             return self.mapping[url]
         digest = hashlib.sha256(url.encode()).hexdigest()
         existing = next((self.folder / "media").glob(digest + ".*"), None)
@@ -63,8 +67,9 @@ class Media:
             self.mapping[url] = "media/" + existing.name
             return self.mapping[url]
         self.mapping[url] = None
-        if not self.enabled or self.cancel.is_set():
+        if (not (self.enabled and category == "images") and not required) or self.stopped or self.cancel.is_set():
             return None
+        self.attempted.add(url)
         try:
             current = url
             for attempt in range(6):
@@ -72,22 +77,23 @@ class Media:
                 if urlsplit(current).hostname in self.blocked_hosts:
                     raise ValueError("host denied access")
                 if self.budget.limit is not None and self.budget.used >= self.budget.limit:
-                    self.budget.consume("images")
+                    self.budget.consume(category)
                 if not self.wait(max(self.budget.delay, self.budget.not_before - time.time())):
                     return None
-                self.budget.consume("images")
+                self.budget.consume(category)
                 try:
                     response = self.session.get(current, stream=True, timeout=(10, 20), allow_redirects=False)
                 except (requests.Timeout, requests.ConnectionError) as exc:
                     self.defer(backoff(attempt))
                     if attempt == 5:
+                        self.stopped = True
                         raise exc
                     continue
                 with response:
                     if response.status_code in (429, 500, 502, 503, 504):
                         self.defer(backoff(attempt, response.headers.get("Retry-After"), limited=response.status_code == 429))
                         if attempt == 5:
-                            self.enabled = False
+                            self.stopped = True
                         continue
                     if response.status_code in (401, 403):
                         self.blocked_hosts.add(urlsplit(current).hostname)
@@ -110,7 +116,7 @@ class Media:
                     except (requests.Timeout, requests.ConnectionError, requests.exceptions.ChunkedEncodingError):
                         self.defer(backoff(attempt))
                         if attempt == 5:
-                            self.enabled = False
+                            self.stopped = True
                         continue
                     if not size:
                         raise ValueError("empty image")
@@ -120,7 +126,7 @@ class Media:
                     return path
             raise ValueError("too many redirects")
         except RequestLimitReached:
-            self.enabled = False
+            self.stopped = True
             return None
         except (requests.RequestException, ValueError, OSError):
             self.failed.append(url)

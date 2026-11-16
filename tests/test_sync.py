@@ -13,6 +13,7 @@ from ljarchive.integrity import verify_archive
 class Journal:
     user = "fixture"
     journal_id = 123
+    userpics = {}
 
     def __init__(self, *, limit=100, fail_page=None, revision=0, removed=False, no_body=False, truncated=False):
         self.budget = RequestBudget(limit)
@@ -27,6 +28,9 @@ class Journal:
 
     def check(self):
         pass
+
+    def _wait(self, seconds):
+        self.check()
 
     def close(self):
         pass
@@ -53,7 +57,7 @@ class Journal:
             if page == self.fail_page:
                 raise ExportError('Fixture interruption')
             cid = eid * 10 + page
-            node = {"dtalkid": cid * 256 + 7, "parentdtalkid": 0 if page == 1 else (eid * 10 + 1) * 256 + 7,
+            node = {"userpic": "", "dtalkid": cid * 256 + 7, "parentdtalkid": 0 if page == 1 else (eid * 10 + 1) * 256 + 7,
                     "posterid": 44, "postername": "reader", "state": "S" if page == 1 else "A",
                     "body": f"Comment {cid} revision {self.revision}", "is_loaded": 1}
             if self.no_body:

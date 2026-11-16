@@ -25,6 +25,9 @@ with tempfile.TemporaryDirectory(prefix="ljarchive-ЖЖ-") as directory:
     assert (folder / "assets/archive.css").is_file()
     assert (folder / "index.html").is_file()
     assert (folder / "help.html").is_file()
+    assert (folder / "assets/posts/6.js").is_file()
+    assert all(pic["path"] for pic in data["userpics"]["post"].values())
+    assert 'class="lj-cut"' in (folder / "entries/6.html").read_text(encoding="utf-8")
     assert (folder / "assets/common.js").is_file()
     with socket.socket() as sock:
         sock.bind(('127.0.0.1', 0))

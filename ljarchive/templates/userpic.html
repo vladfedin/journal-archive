@@ -1,0 +1,3 @@
+{% macro show_userpic(pic, user, prefix='../', cls='') -%}
+{% if pic and pic.path %}<a class="userpic-link {{ cls }}" href="{{ prefix }}{{ pic.path }}" title="{{ pic.keyword or user }}"><img class="userpic" src="{{ prefix }}{{ pic.path }}" alt="Юзерпик {{ user }}{% if pic.keyword %}: {{ pic.keyword }}{% endif %}" loading="lazy"></a>{% endif %}
+{%- endmacro %}

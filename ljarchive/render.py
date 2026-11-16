@@ -17,12 +17,14 @@ from .media import Media
 from .data import export_json
 from .reactions import reaction_report
 from .presentation import reaction_view
+from .userpics import describe, coverage
 from .storage import Store, atomic_write, dumps
 
 ROOT = Path(__file__).parent
 ENV = Environment(loader=FileSystemLoader(ROOT / "templates"), autoescape=select_autoescape(["html"]))
 TAGS = frozenset("p br div span a b strong i em u s del blockquote pre code ul ol li h1 h2 h3 h4 h5 h6 hr img table thead tbody tr td th caption dl dt dd sub sup details summary figure figcaption".split())
 ATTRS = {"a": ["href", "title"], "img": ["src", "alt", "title", "width", "height"],
+         "details": ["class", "open"], "summary": ["class"],
          "td": ["colspan", "rowspan"], "th": ["colspan", "rowspan"]}
 BLOCK_MARKUP = re.compile(r"<(?:p|div|blockquote|ul|ol|li|table|h[1-6]|pre|figure|figcaption)\b", re.I)
 MONTHS = "января февраля марта апреля мая июня июля августа сентября октября ноября декабря".split()
@@ -92,14 +94,20 @@ def needs_autoformat(value, props=None):
 
 class LJUserMarkup(HTMLParser):
     """Recognize LJ user attributes in any order, including editor-generated tags."""
-    def __init__(self):
+    def __init__(self, expand_cuts=False):
         super().__init__(convert_charrefs=False)
         self.out = []
+        self.cut_depth = 0
+        self.expand_cuts = expand_cuts
 
     def handle_starttag(self, tag, attrs):
         values = dict(attrs)
         user = values.get("user") or values.get("username")
-        if tag == "lj" and user and re.fullmatch(r"[a-zA-Z0-9_-]{1,15}", user):
+        if tag == "lj-cut":
+            label = values.get("text") or "Читать дальше"
+            self.out.append('<details class="lj-cut"' + (" open" if self.expand_cuts else "") + "><summary>" + html.escape(label) + "</summary>")
+            self.cut_depth += 1
+        elif tag == "lj" and user and re.fullmatch(r"[a-zA-Z0-9_-]{1,15}", user):
             label = values.get("displayusername") or user
             self.out.append(f'<a href="https://{user.replace("_", "-")}.livejournal.com/">{html.escape(label)}</a>')
         else:
@@ -109,7 +117,11 @@ class LJUserMarkup(HTMLParser):
         self.handle_starttag(tag, attrs)
 
     def handle_endtag(self, tag):
-        if tag != "lj":
+        if tag == "lj-cut":
+            if self.cut_depth:
+                self.out.append("</details>")
+                self.cut_depth -= 1
+        elif tag != "lj":
             self.out.append(f"</{tag}>")
 
     def handle_data(self, value):
@@ -206,13 +218,13 @@ class Content(HTMLParser):
         self.out.append(f"&#{name};")
 
 
-def safe_content(value, base, links, media, comment_ids):
+def safe_content(value, base, links, media, comment_ids, *, expand_cuts=False):
     source = text_value(value)
     # Preserve LJ user links and cut contents; scripts and embeds never run offline.
-    lj_markup = LJUserMarkup()
+    lj_markup = LJUserMarkup(expand_cuts)
     lj_markup.feed(source)
     lj_markup.close()
-    source = "".join(lj_markup.out)
+    source = "".join(lj_markup.out) + "</details>" * lj_markup.cut_depth
     source = re.sub(r'<(script|style)\b[^>]*>.*?</\1\s*>', "", source, flags=re.I | re.S)
     source = re.sub(r'<(?:iframe|embed)\b[^>]*\bsrc=["\']([^"\']+)["\'][^>]*>',
                     lambda m: '<p><a href="' + html.escape(m[1], quote=True) + '">Открыть встроенный материал в оригинале ↗</a></p>', source, flags=re.I)
@@ -251,17 +263,42 @@ def threaded(comments):
     return result
 
 
-def build_archive(store: Store, report: dict, *, images=False, client_cancel=None, progress=None, budget=None):
+def build_archive(store: Store, report: dict, *, images=False, userpics=False, client_cancel=None, progress=None, budget=None):
     folder, user = store.folder, report["username"]
     cancel = client_cancel or threading.Event()
     media = Media(folder, images, cancel, budget=budget)
     entries, comments = store.entries(), store.comments()
-    report["format_version"] = "0.3.0"
+    report["format_version"] = "0.4.0"
     report.setdefault("issues", [])
     report["reactions"] = reaction_report(store)
     if report.get("status") == "complete" and not (report["reactions"]["complete"] and report["reactions"]["authors_complete"]):
         report["status"] = "partial"
         report["issues"].append("Не все реакции или имена авторов получены.")
+    pictures = describe(store, entries, comments)
+    selected = report.get("sync", {}).get("selected")
+    selected = None if selected is None else set(selected)
+    comment_entries = {str(c["id"]): int(c.get("jitemid", 0)) for c in comments}
+    task_pictures = {"post": {}, "comment": {}}
+    requested_pics = set()
+    total_pics = len({pic["url"] for group in pictures.values() for pic in group.values() if pic["url"]})
+    for kind, group in pictures.items():
+        for key, pic in group.items():
+            in_scope = selected is None or (int(key) if kind == "post" else comment_entries[key]) in selected
+            if pic["url"]:
+                if progress and userpics and in_scope and pic["url"] not in requested_pics:
+                    requested_pics.add(pic["url"])
+                    progress(phase="userpics", message="Юзерпики", completed=len(requested_pics) - 1, total=total_pics)
+                pic["path"] = media.get(pic["url"], required=userpics and in_scope, category="userpics")
+            if in_scope:
+                task_pictures[kind][key] = pic
+    for group in pictures.values():
+        for pic in group.values():
+            if pic["url"]:
+                pic["path"] = media.mapping.get(pic["url"])
+    report["userpics"] = coverage(task_pictures)
+    if userpics and not report["userpics"]["complete"] and report.get("status") == "complete":
+        report["status"] = "partial"
+        report["issues"].append("Не все юзерпики получены. Можно продолжить загрузку.")
     by_entry = defaultdict(list)
     for item in comments:
         by_entry[int(item.get("jitemid", 0))].append(item)
@@ -296,7 +333,7 @@ def build_archive(store: Store, report: dict, *, images=False, client_cancel=Non
             security = entry.get("security", "public")
             tags = [t.strip() for t in text_value(entry.get("props", {}).get("taglist", "")).split(",") if t.strip()]
             date = entry.get("eventtime", "")
-            summary = {"id": eid, "title": title, "date": date, "year": date[:4], "tags": tags,
+            summary = {"userpic": pictures["post"].get(str(eid)), "id": eid, "title": title, "date": date, "year": date[:4], "tags": tags,
                        "security": security, "security_label": labels.get(security, security),
                        "comments": len(entry_comments), "screened": sum(c["state"] == "S" for c in entry_comments),
                        "excerpt": excerpt(plain(entry.get("event"))), "url": f"entries/{eid}.html",
@@ -307,6 +344,7 @@ def build_archive(store: Store, report: dict, *, images=False, client_cancel=Non
                 item["user"] = item.get("user") or (f"Пользователь #{item['posterid']}" if item.get("posterid") else "Аноним")
             authors = {int(item["id"]): item["user"] for item in entry_comments}
             for item in entry_comments:
+                item["userpic_view"] = pictures["comment"].get(str(item["id"]))
                 item["by_owner"] = item["user"] == user
                 item["parent_user"] = authors.get(int(item.get("parentid") or 0))
                 item["state_label"] = states.get(item["state"], "Состояние: " + item["state"])
@@ -316,7 +354,7 @@ def build_archive(store: Store, report: dict, *, images=False, client_cancel=Non
                 item["reaction_view"] = reaction_view(item.get("reactions"))
                 search.append({"entry": eid, "title": title, "text": f'{item["user"]} {item["subject_text"]} {plain(item.get("body"))}',
                                "url": f'entries/{eid}.html#comment-{item["id"]}', "kind": "comment"})
-            content = safe_content(entry.get("event"), url, links, media, comment_ids)
+            content = safe_content(entry.get("event"), url, links, media, comment_ids, expand_cuts=True)
             current = [(label, plain(props[key])) for key, label in CURRENT if plain(props.get(key)).strip()]
             neighbours = [{"itemid": other["itemid"], "title": plain(other.get("subject")) or "Без заголовка"} if other else None
                           for other in (entries[index - 1] if index else None,
@@ -327,14 +365,22 @@ def build_archive(store: Store, report: dict, *, images=False, client_cancel=Non
                         current=current, newer=neighbours[0], older=neighbours[1],
                         report=report)
             atomic_write(folder / "entries" / f"{eid}.html", rendered)
+            feed = ENV.get_template("feed-post.html").render(content=safe_content(entry.get("event"), url, links, media, comment_ids),
+                    current=current, post_autoformat=needs_autoformat(entry.get("event"), entry.get("props")))
+            # Rewrite only internal links and local images for the archive root. Original text is unchanged.
+            feed = re.sub(r'href="([0-9]+\.html(?:#[^"\s]*)?)"', r'href="entries/\1"', feed)
+            feed = feed.replace('src="../media/', 'src="media/')
+            atomic_write(folder / "assets" / "posts" / f"{eid}.js",
+                         "window.ArchivePost(" + str(eid) + "," + dumps(str(feed)).replace("<", "\\u003c") + ");")
     finally:
         media.close()
-    report["images_saved"] = sum(bool(path) for path in media.mapping.values())
+    image_map = {url: media.mapping[url] for url in media.used_urls["images"]}
+    report["images_saved"] = sum(bool(path) for path in image_map.values())
     report["images_failed"] = media.failed
-    report["images_unavailable"] = sum(path is None for path in media.mapping.values())
+    report["images_unavailable"] = sum(path is None for path in image_map.values())
     if media.failed:
         report["issues"].append(f"Не удалось сохранить {len(media.failed)} изображений. Их ссылки оставлены на страницах.")
-    if images and cancel.is_set():
+    if (images or userpics) and cancel.is_set():
         report["status"] = "cancelled"
         report["issues"].append("Скачивание изображений остановлено. Полученные тексты сохранены.")
     # Content completeness and media availability are reported separately.
@@ -347,7 +393,7 @@ def build_archive(store: Store, report: dict, *, images=False, client_cancel=Non
         if budget.exhausted and images and report["images_unavailable"]:
             report["issues"].append("Скачивание изображений прекращено по общему пределу HTTP-запросов.")
     with store.db:
-        store.set("media", media.mapping)
+        store.set("media", {**store.get("media", {}), **media.mapping})
     export_json(store, split=True)
     atomic_write(folder / "export-report.json", dumps(report))
     # JS file rather than fetch(): search also works when opened through file://.

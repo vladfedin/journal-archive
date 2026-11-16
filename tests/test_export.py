@@ -13,6 +13,7 @@ from ljarchive.storage import Store
 class FixtureClient:
     user = "my_journal"
     journal_id = 123
+    userpics = {}
 
     def __init__(self, fail_at=None, missing_screened=False, truncated=False):
         self.cancel = threading.Event()
@@ -31,6 +32,9 @@ class FixtureClient:
 
     def reaction_counts(self, entities):
         return [{**item, "thread": item.get("thread", 0), "count": 0, "groups": [0]} for item in entities]
+
+    def _wait(self, seconds):
+        self.check()
 
     def close(self):
         self.closed = True
@@ -63,14 +67,14 @@ class FixtureClient:
             else:
                 page = CommentPage([{"id": 1000, "state": "D"}, {"id": 1001, "posterid": 42}], {}, 1001, 1002)
         elif start == 1:
-            bodies = [{"id": 1, "jitemid": 1, "body": "Корень", "parentid": 0}]
+            bodies = [{"id": 1, "jitemid": 1, "userpic": "", "body": "Корень", "parentid": 0}]
             if not self.missing_screened:
-                bodies.append({"id": 2, "jitemid": 1, "body": "Скрытая тайна", "parentid": 1})
+                bodies.append({"id": 2, "jitemid": 1, "userpic": "", "body": "Скрытая тайна", "parentid": 1})
             page = CommentPage(bodies, {}, None, 501)
         elif start in (501, 1000):
             page = CommentPage([], {}, None, None)
         else:
-            page = CommentPage([{"id": 1001, "jitemid": 3, "body": "После разрыва ID", "parentid": 0}], {}, None, None)
+            page = CommentPage([{"id": 1001, "jitemid": 3, "userpic": "", "body": "После разрыва ID", "parentid": 0}], {}, None, None)
         return page, b'<?xml version="1.0"?><livejournal><comments/></livejournal>'
 
 

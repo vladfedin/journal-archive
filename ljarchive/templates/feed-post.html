@@ -1,0 +1,2 @@
+<div class="prose{% if post_autoformat %} autoformat{% endif %}">{{ content }}</div>
+{% if current %}<dl class="post-current">{% for label,value in current %}<dt>{{ label }}</dt><dd>{{ value }}</dd>{% endfor %}</dl>{% endif %}

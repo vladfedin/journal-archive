@@ -1,7 +1,7 @@
 'use strict';
 const $ = id => document.getElementById(id);
 const terminal = new Set(['idle','complete','partial','cancelled','error','demo']);
-const labels = {login:'Вход',posts:'Записи',comments:'Комментарии',reactions:'Реакции',render:'Страницы',waiting:'Пауза',complete:'Готов',partial:'Не завершён',cancelled:'Остановлено',error:'Ошибка',demo:'Пример'};
+const labels = {login:'Вход',posts:'Записи',comments:'Комментарии',reactions:'Реакции',userpics:'Юзерпики',render:'Страницы',waiting:'Пауза',complete:'Готов',partial:'Не завершён',cancelled:'Остановлено',error:'Ошибка',demo:'Пример'};
 const scopes = {full:'весь журнал',period:'за период',urls:'по ссылкам',latest:'тест (последние 10 записей)'};
 const el = (tag, cls, text) => {const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n;};
 const day = value => {const m=/^(\d{4})-(\d{2})-(\d{2})/.exec(value||'');return m?`${Number(m[3])} ${'января февраля марта апреля мая июня июля августа сентября октября ноября декабря'.split(' ')[Number(m[2])-1]} ${m[1]}`:'';};
