@@ -88,7 +88,7 @@ def check_upgrade(binary, directory, env):
             assert checkpointed.is_set()
             assert f'Архив ЖЖ · {__version__}' in page.text
             info = session.get(base + '/api/app', timeout=5).json()
-            assert info['version'] == __version__ and Path(info['output']) == previous_output
+            assert info['version'] == __version__ and Path(info['output']) == previous_output.resolve()
             state = session.get(base + '/api/status', timeout=5).json()
             assert state['phase'] == 'cancelled' and state['entries'] == 348 and state['comments'] == 1234
             assert json.loads(marker.read_text(encoding='utf-8')) == {'saved':True}
