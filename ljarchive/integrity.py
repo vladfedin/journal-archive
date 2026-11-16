@@ -29,7 +29,7 @@ def verify_archive(store):
     for row in store.db.execute("PRAGMA quick_check"):
         if row[0] != "ok":
             issues.append({"kind": "database", "message": "SQLite сообщает о повреждении базы."})
-    for kind, table in (("post", "entries"), ("comment", "comments")):
+    for kind, table in (("post", "entries"), ("comment", "comments"), ("account", "account_sections"), ("message", "messages")):
         for row in store.db.execute(f"SELECT r.id,r.payload,h.digest FROM {table} r LEFT JOIN record_hashes h ON h.object_id=r.id AND h.kind=?", (kind,)):
             digest = hashlib.sha256(row[1].encode()).hexdigest()
             if digest != row[2]:

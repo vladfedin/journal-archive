@@ -1,0 +1,6 @@
+{% extends 'base.html' %}
+{% block title %}Переписка · {{ user }}{% endblock %}
+{% block body %}<main class="main reading"><div class="heading"><h1>Переписка</h1><a href="account.html">Профиль</a></div>
+<p class="muted small">Сообщения из выдачи ЖЖ · <a href="help.html#personal">Что включено</a></p>
+{% for message in messages %}<article class="message post" id="message-{{ message.qid }}"><div class="entry-meta">{% if message.picture_path %}<img class="message-picture" src="{{ message.picture_path }}" alt="Юзерпик" loading="lazy">{% endif %}<span>{{ 'От: ' ~ message.get('from','') if message.type == 18 else 'Кому: ' ~ message.get('to','') }}</span><time>{{ message.date|ru_date }}</time>{% if message.state == 'N' %}<span class="state">Не прочитано</span>{% endif %}</div><h2>{{ message.subject }}</h2><div class="prose">{{ message.html|safe }}</div></article>{% else %}<p class="muted">Сообщения не загружены.</p>{% endfor %}
+<nav class="post-nav" aria-label="Страницы переписки">{% if page > 1 %}<a href="{{ 'messages.html' if page == 2 else 'messages-' ~ (page-1) ~ '.html' }}">← Новее</a>{% endif %}<span>{{ page }} / {{ pages }}</span>{% if page < pages %}<a href="messages-{{ page+1 }}.html">Старее →</a>{% endif %}</nav></main>{% endblock %}

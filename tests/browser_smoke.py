@@ -157,9 +157,39 @@ def main():
                     assert 'example_journal/help.html' in zipped.namelist()
                     assert source_snapshot(json.loads(zipped.read('example_journal/data/activitystreams.json'))) == raw
                     assert not any('sqlite' in name or '.jobs' in name for name in zipped.namelist())
+                page.goto(base + '/archive/example_journal/timeline.html')
+                expect(page.locator('.timeline-bar')).to_have_count(6)
+                expect(page.locator('.timeline-year')).to_be_visible()
+                page.locator('.timeline-bar').first.hover()
+                expect(page.locator('.timeline-tip')).to_contain_text('Комментарии:')
+                page.locator('.timeline-bar').first.click()
+                expect(page.locator('.post h1')).to_be_visible()
+                page.goto((root / 'example_journal/timeline.html').as_uri())
+                expect(page.locator('.timeline-bar')).to_have_count(6)
+                page.evaluate("""() => {
+                    window.largeTimeline = new ArchiveTimeline(document.querySelector('#archive-timeline'));
+                    const entries = Array.from({length: 8000}, (_,i) => ({id:i+1,date:`${2000+Math.floor(i/400)}-01-01`,
+                      title:'Post '+i,url:'entries/3.html',state:i%7===0?'partial':'ready',comments:i%800,
+                      expected_comments:i%800,materials:{saved:2,requested:2},top:[['reader',12]]}));
+                    largeTimeline.set({entries,gaps:[],known:8000,expected:8000,ready:6857,partial:1143});
+                }""")
+                assert page.locator('.timeline-bar').count() < 150
+                page.locator('.timeline-year').select_option('2010')
+                page.locator('.timeline-bar').first.focus()
+                page.keyboard.press('ArrowRight')
+                assert page.locator('.timeline-bar:focus').count() == 1
+                expect(page.locator('.timeline-tip')).to_contain_text('reader: 12')
+                page.screenshot(path=str(Path(tempfile.gettempdir()) / 'ljarchive-timeline-desktop.png'), full_page=True)
+                page.set_viewport_size({'width': 390, 'height': 844})
+                assert not page.evaluate('document.documentElement.scrollWidth > innerWidth')
+                page.screenshot(path=str(Path(tempfile.gettempdir()) / 'ljarchive-timeline-mobile.png'), full_page=True)
+                page.goto((root / 'example_journal/account.html').as_uri())
+                expect(page.locator('h1')).to_be_visible()
+                page.goto((root / 'example_journal/messages.html').as_uri())
+                expect(page.locator('h1')).to_have_text('Переписка')
                 for width in (390, 320):
                     page.set_viewport_size({'width': width, 'height': 844})
-                    for url in ('/', '/help', '/archive/example_journal/index.html', '/archive/example_journal/entries/3.html', '/archive/example_journal/report.html'):
+                    for url in ('/', '/help', '/archive/example_journal/index.html', '/archive/example_journal/entries/3.html', '/archive/example_journal/report.html', '/archive/example_journal/timeline.html', '/archive/example_journal/account.html', '/archive/example_journal/messages.html'):
                         page.goto(base + url)
                         assert not page.evaluate('document.documentElement.scrollWidth > innerWidth'), (width, url)
                     page.goto(base + '/archive/example_journal/index.html?view=full')

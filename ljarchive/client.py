@@ -23,6 +23,18 @@ class ExportError(Exception):
     """An actionable, credential-free error safe to show in the UI."""
 
 
+class HTTPError(ExportError):
+    def __init__(self, status):
+        self.status = status
+        super().__init__(f"ЖЖ вернул HTTP {status}. Прогресс сохранён.")
+
+
+class APIError(ExportError):
+    def __init__(self, method, code):
+        self.method, self.code = method, code
+        super().__init__(f"ЖЖ отклонил запрос {method} (код {code}).")
+
+
 class Cancelled(ExportError):
     pass
 
@@ -172,7 +184,7 @@ class LiveJournalClient:
             self.check()
             if self.budget.limit is not None and self.budget.used >= self.budget.limit:
                 self.budget.consume(category)  # Raise before waiting for a request that cannot be sent.
-            self._wait(self.not_before - time.time())
+            self._wait(max(self.not_before, self.budget.not_before) - time.time())
             self._wait(self.delay - (time.monotonic() - self._last_request))
             self.budget.consume(category)
             self._last_request = time.monotonic()
@@ -190,7 +202,7 @@ class LiveJournalClient:
                     if 300 <= response.status_code < 400:
                         raise ExportError("ЖЖ перенаправил запрос. Возможно, требуется вход или подтверждение в браузере.")
                     if response.status_code != 200:
-                        raise ExportError(f"ЖЖ вернул HTTP {response.status_code}. Прогресс сохранён.")
+                        raise HTTPError(response.status_code)
                     chunks, size = [], 0
                     for chunk in response.iter_content(65536):
                         self.check()
@@ -220,7 +232,7 @@ class LiveJournalClient:
             if exc.faultCode == 402:
                 raise APIRateLimited("ЖЖ сообщил об ограничении частоты запросов XML-RPC (402).") from exc
             # Never echo a remote fault string: it can contain request credentials.
-            raise ExportError(f"ЖЖ отклонил запрос {method} (код {exc.faultCode}). Проверьте логин, пароль и доступность API.") from exc
+            raise APIError(method, exc.faultCode) from exc
         except Exception as exc:
             raise ExportError(f"ЖЖ вернул некорректный ответ на {method}. Прогресс сохранён.") from exc
 
@@ -240,6 +252,9 @@ class LiveJournalClient:
 
     def login(self):
         result = self.call("login", clientversion="Python-LJLocalArchive/0.4", getpickws=1, getpickwurls=1)
+        self.profile = {key: result[key] for key in (
+            "username", "userid", "fullname", "friendgroups", "usejournals", "caps",
+            "is_validated", "is_identity", "identity_type", "identity_value", "identity_display") if key in result}
         self.userpics = {key: result.get(key) for key in ("pickws", "pickwurls", "defaultpicurl")}
         uid = result.get("userid")
         if isinstance(uid, int) and not isinstance(uid, bool) and uid > 0:
@@ -248,6 +263,16 @@ class LiveJournalClient:
         if not isinstance(cookie, str) or not cookie or any(c in cookie for c in "\r\n;"):
             raise ExportError("ЖЖ не выдал сессию для выгрузки комментариев.")
         self._cookie = cookie
+
+    def personal_page(self, path):
+        return self._request("GET", path, category="personal", headers={"Cookie": "ljsession=" + self._cookie})
+
+    def personal_feed(self, name):
+        if name not in ("foaf", "userpics"):
+            raise ExportError("Неизвестный раздел профиля.")
+        return self._request("GET", "/data/" + name, category="personal",
+                             base_url=f"https://{self.user.replace('_', '-')}.livejournal.com",
+                             headers={"Cookie": "ljsession=" + self._cookie})
 
     def reaction_counts(self, entities):
         # The read-only service used by LJ.LikeReaction.callGetLikesRaw.

@@ -55,6 +55,8 @@ class Store:
             CREATE TABLE IF NOT EXISTS comments(id INTEGER PRIMARY KEY, entry_id INTEGER, parent_id INTEGER, payload TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS comments_entry ON comments(entry_id);
             CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY, name TEXT);
+            CREATE TABLE IF NOT EXISTS account_sections(id TEXT PRIMARY KEY, payload TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY, payload TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS reactions(kind TEXT, object_id INTEGER, payload TEXT NOT NULL,
                 PRIMARY KEY(kind, object_id));
             CREATE TABLE IF NOT EXISTS record_hashes(kind TEXT, object_id INTEGER, digest TEXT NOT NULL,
@@ -112,10 +114,12 @@ class Store:
     def save_reactions(self, kind, object_id, payload):
         self.db.execute("INSERT OR REPLACE INTO reactions VALUES (?,?,?)", (kind, object_id, dumps(payload)))
 
-    def comments(self):
+    def comments(self, entry_id=None):
         rows = self.db.execute("""SELECT c.payload, m.state, m.posterid, u.name FROM comments c
             LEFT JOIN comment_meta m ON m.id=c.id
-            LEFT JOIN users u ON u.id=COALESCE(m.posterid,json_extract(c.payload,'$.posterid')) ORDER BY c.id""")
+            LEFT JOIN users u ON u.id=COALESCE(m.posterid,json_extract(c.payload,'$.posterid'))"""
+            + (" WHERE c.entry_id=?" if entry_id is not None else "") + " ORDER BY c.id",
+            (entry_id,) if entry_id is not None else ())
         result = []
         reactions = self.reactions("comment")
         for row in rows:
@@ -131,4 +135,15 @@ class Store:
 
     def close(self):
         self.db.close()
-        self._lock.close()
+        if self._lock:
+            self._lock.close()
+
+    @classmethod
+    def reader(cls, folder):
+        """A consistent read transaction, also available while the exporter owns the lock."""
+        store = cls.__new__(cls)
+        store.folder, store._lock = Path(folder), None
+        store.db = sqlite3.connect((store.folder / "archive.sqlite3").resolve().as_uri() + "?mode=ro", uri=True)
+        store.db.row_factory = sqlite3.Row
+        store.db.execute("BEGIN")
+        return store

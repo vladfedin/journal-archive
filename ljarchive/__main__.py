@@ -51,6 +51,9 @@ def main():
     update.add_argument("--images", action="store_true")
     verify = sub.add_parser("verify", help="Проверить базу и контрольные суммы файлов без сети")
     verify.add_argument("folder", type=Path)
+    for command in (cli, update):
+        command.add_argument("--account", action="store_true", help="Профиль, друзья, настройки, каталог юзерпиков")
+        command.add_argument("--messages", action="store_true", help="Входящие и исходящие из доступной выдачи ЖЖ")
     args = parser.parse_args()
     try:
         if args.command in (None, "serve"):
@@ -152,14 +155,14 @@ def main():
             if args.command == "sync":
                 report = sync(args.username, password, args.output, mode=args.mode, start=args.date_from, end=args.date_to,
                               urls=args.url, archive=args.archive, images=args.images, delay=args.delay,
-                              cancel=cancel, progress=progress, max_requests=args.max_requests)
+                              cancel=cancel, progress=progress, max_requests=args.max_requests, account=args.account, messages=args.messages)
             elif full_export:
                 report = sync(args.username, password, args.output, mode="full", images=args.images,
-                              delay=args.delay, cancel=cancel, progress=progress, max_requests=args.max_requests)
+                              delay=args.delay, cancel=cancel, progress=progress, max_requests=args.max_requests, account=args.account, messages=args.messages)
             else:
                 report = export(args.username, password, args.output, images=args.images,
                                 delay=args.delay, cancel=cancel, progress=progress,
-                                entry_limit=entry_limit, max_requests=args.max_requests)
+                                entry_limit=entry_limit, max_requests=args.max_requests, account=args.account, messages=args.messages)
             password = ""
             slug = target_slug(args.username, args.archive) if args.command == "sync" else archive_slug(report["username"], entry_limit)
             print((args.output / slug / "index.html").resolve())

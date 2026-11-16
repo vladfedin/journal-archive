@@ -10,7 +10,9 @@ SCHEMA_VERSION = 1
 
 
 def snapshot(store):
+    from .personal import account_data
     return {
+        "account": account_data(store),
         "schema_version": SCHEMA_VERSION,
         "journal": {"username": store.get("username"), "id": store.get("journal_id")},
         "scope": {"entry_limit": store.get("entry_limit"), "started_at": store.get("started_at"),
@@ -24,7 +26,8 @@ def snapshot(store):
         "versions": [{"kind": r[0], "id": r[1], "saved_at": r[2], "record": json.loads(r[3])}
                      for r in store.db.execute("SELECT kind,object_id,saved_at,payload FROM versions ORDER BY saved_at,kind,object_id,digest")],
         "coverage": {"posts_done": bool(store.get("posts_done")), "comments_done": bool(store.get("bodies_done")),
-                     "reactions": reaction_report(store)},
+                     "reactions": reaction_report(store), "discussions": store.get("entry_comments", {}),
+                     "personal_requested": store.get("personal_requested", {})},
     }
 
 

@@ -76,6 +76,7 @@ def excerpt(text, limit=220):
     return text[:limit].rsplit(" ", 1)[0].rstrip(" ,;:—–-(«\"") + "…"
 
 
+ENV.policies["json.dumps_kwargs"] = {"sort_keys": True, "ensure_ascii": False}
 ENV.filters["ru_date"] = ru_date
 ENV.filters["plural"] = plural
 ENV.filters["profile_url"] = lambda value: (f"https://{value.replace('_', '-')}.livejournal.com/" if isinstance(value, str) and re.fullmatch(r"[a-zA-Z0-9_-]{1,15}", value) else "")
@@ -263,12 +264,13 @@ def threaded(comments):
     return result
 
 
-def build_archive(store: Store, report: dict, *, images=False, userpics=False, client_cancel=None, progress=None, budget=None):
+def build_archive(store: Store, report: dict, *, images=False, userpics=False, client_cancel=None, progress=None, budget=None, media=None):
     folder, user = store.folder, report["username"]
     cancel = client_cancel or threading.Event()
-    media = Media(folder, images, cancel, budget=budget)
+    media = media or Media(folder, images, cancel, budget=budget)
+    media.enabled = images
     entries, comments = store.entries(), store.comments()
-    report["format_version"] = "0.5.1"
+    report["format_version"] = "0.6.0"
     report.setdefault("issues", [])
     report["reactions"] = reaction_report(store)
     if report.get("status") == "complete" and not (report["reactions"]["complete"] and report["reactions"]["authors_complete"]):
@@ -316,7 +318,7 @@ def build_archive(store: Store, report: dict, *, images=False, userpics=False, c
             links[(url.hostname, url.path)] = str(entry["itemid"]) + ".html"
     comment_ids = {int(c["id"]) for c in comments}
     (folder / "assets").mkdir(exist_ok=True)
-    for asset in ("archive.css", "archive.js", "theme.js", "common.js", "favicon.svg", "favicon.ico"):
+    for asset in ("archive.css", "archive.js", "theme.js", "common.js", "favicon.svg", "favicon.ico", "timeline.js"):
         shutil.copyfile(ROOT / "static" / asset, folder / "assets" / asset)
     search, summaries = [], []
     labels = {"public": "Открытая", "private": "Личная", "usemask": "Для друзей / группы"}
@@ -394,6 +396,10 @@ def build_archive(store: Store, report: dict, *, images=False, userpics=False, c
             report["issues"].append("Скачивание изображений прекращено по общему пределу HTTP-запросов.")
     with store.db:
         store.set("media", {**store.get("media", {}), **media.mapping})
+    from .personal import render_personal
+    render_personal(store, report)
+    from .progress import write_timeline
+    write_timeline(store, report)
     export_json(store, split=True)
     atomic_write(folder / "export-report.json", dumps(report))
     # JS file rather than fetch(): search also works when opened through file://.

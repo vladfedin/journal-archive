@@ -5,6 +5,7 @@
 {% block title %}{{ summary.title }} · {{ user }}{% endblock %}
 {% block body %}
 <main class="main reading"><nav class="reading-nav" aria-label="Записи"><a href="../index.html">← Все записи</a><span>{% if newer %}<a href="{{ newer.itemid }}.html">Новее</a>{% endif %}{% if older %}<a href="{{ older.itemid }}.html">Старее →</a>{% endif %}</span></nav>
+{% if preview %}<p class="inline-status">Загрузка продолжается · <a href="../timeline.html">Хронология</a></p>{% endif %}
 <article class="post">{% if entry.source_status %}<p class="inline-status" title="При последней проверке ЖЖ не вернул эту запись">Ранее сохранённая версия</p>{% endif %}
 {{ show_userpic(summary.userpic,user) }}
 <div class="entry-meta"><time datetime="{{ summary.date }}">{{ summary.date|ru_date(true,true) }}</time>{% if summary.security != 'public' %}<span class="state">{{ summary.security_label }}</span>{% endif %}<a href="{{ original }}" rel="noreferrer noopener">ЖЖ ↗</a></div><h1>{{ summary.title }}</h1>

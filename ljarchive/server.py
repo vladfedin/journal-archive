@@ -23,7 +23,7 @@ TERMINAL = {"complete", "partial", "cancelled", "error", "demo", "idle"}
 
 
 class Jobs:
-    PARAMS = ("username", "archive", "mode", "date_from", "date_to", "urls", "entry_limit", "images", "delay", "max_requests")
+    PARAMS = ("username", "archive", "mode", "date_from", "date_to", "urls", "entry_limit", "images", "delay", "max_requests", "account", "messages")
 
     def __init__(self, output: Path):
         self.output = output.resolve()
@@ -86,7 +86,7 @@ class Jobs:
             if not path.is_file() or not (folder / "archive.sqlite3").is_file():
                 return
             report = json.loads(path.read_text(encoding="utf-8"))
-            if report.get("format_version") == "0.5.1":
+            if report.get("format_version") == "0.6.0":
                 return
             from .storage import Store
             from .render import build_archive
@@ -157,6 +157,10 @@ class Jobs:
                 else:
                     data["mode"] = "latest"
                     data["archive"] = archive_slug(data["username"], data["entry_limit"])
+                for key in ("account", "messages"):
+                    data.setdefault(key, False)
+                    if not isinstance(data[key], bool):
+                        raise ExportError("Некорректная настройка личных данных.")
                 data.setdefault("images", False)
                 data.setdefault("delay", 3)
             self.cancel = threading.Event()
@@ -185,11 +189,11 @@ class Jobs:
                     report = sync(data["username"], password, self.output, images=data["images"],
                                   delay=data["delay"], cancel=self.cancel, progress=self.progress,
                                   max_requests=data["max_requests"], mode=scope["mode"], start=scope["start"],
-                                  end=scope["end"], urls=scope["urls"], archive=slug)
+                                  end=scope["end"], urls=scope["urls"], archive=slug, account=data.get("account", False), messages=data.get("messages", False))
                 else:
                     report = export(data["username"], password, self.output, images=data["images"],
                                     delay=data["delay"], cancel=self.cancel, progress=self.progress,
-                                    entry_limit=data["entry_limit"], max_requests=data["max_requests"])
+                                    entry_limit=data["entry_limit"], max_requests=data["max_requests"], account=data.get("account", False), messages=data.get("messages", False))
                 password = ""
             message = "Лимит запросов" if report.get("request_limit_reached") else ""
             if report["status"] not in ("complete", "demo") and not message:
@@ -321,6 +325,26 @@ def make_server(output: Path, port=8787):
                 return self.json(jobs.snapshot())
             if path == "/api/archives":
                 return self.json(jobs.archives())
+            if path.startswith("/api/timeline/"):
+                slug = path.removeprefix("/api/timeline/")
+                from .storage import Store
+                from .progress import timeline
+                import sqlite3
+                try:
+                    jobs.task_path(slug)
+                    folder = (jobs.output / slug).resolve()
+                    if not folder.is_relative_to(jobs.output):
+                        return self.json({"error": "Нет доступа."}, 403)
+                    store = Store.reader(folder)
+                    try:
+                        data = timeline(store, task=True)
+                    finally:
+                        store.close()
+                    state = jobs.snapshot()
+                    data["active"] = state.get("entry_id") if state.get("slug") == slug and state.get("phase") not in TERMINAL else None
+                    return self.json(data)
+                except (ExportError, OSError, sqlite3.Error):
+                    return self.json({"entries": [], "gaps": [], "known": 0, "expected": 0, "ready": 0, "partial": 0})
             if path.startswith("/static/"):
                 target = (ROOT / "static" / path.removeprefix("/static/")).resolve()
                 if not target.is_relative_to((ROOT / "static").resolve()):
@@ -337,6 +361,31 @@ def make_server(output: Path, port=8787):
                         jobs.refresh_format(relative.parts[0])
                     except (ExportError, OSError, ValueError):
                         return self.json({"error": "Не удалось обновить оформление архива. Проверьте папку и свободное место."}, 409)
+                active = jobs.snapshot().get("slug") == relative.parts[0] and jobs.snapshot().get("phase") not in TERMINAL
+                if len(relative.parts) == 3 and relative.parts[1] == "assets" and relative.parts[2] in {"archive.css", "archive.js", "theme.js", "common.js", "timeline.js", "favicon.svg", "favicon.ico"}:
+                    if active or not target.exists():
+                        return self.file(ROOT / "static" / relative.parts[2])
+                if (active or not target.exists()) and ((len(relative.parts) == 3 and relative.parts[1] == "entries" and target.stem.isdigit() and target.suffix == ".html") or (len(relative.parts) == 2 and target.name in ("index.html", "timeline.html"))):
+                    from .storage import Store
+                    from .progress import preview_entry
+                    from .render import ENV
+                    import sqlite3
+                    try:
+                        store = Store.reader(jobs.output / relative.parts[0])
+                        try:
+                            if relative.parts[1] == "entries":
+                                html = preview_entry(store, int(target.stem))
+                            else:
+                                html = ENV.get_template("timeline.html").render(user=store.get("username"), report={"created_at": store.get("started_at", "")}, source="/api/timeline/" + relative.parts[0])
+                        finally:
+                            store.close()
+                        if html:
+                            body = html.replace('<body>', '<body data-library-url="/">', 1).encode("utf-8")
+                            self.response_headers(200, "text/html; charset=utf-8", len(body))
+                            self.wfile.write(body)
+                            return
+                    except (sqlite3.Error, OSError):
+                        pass
                 return self.file(target, archive=True)
             if path.startswith("/download/") and path.endswith((".zip", ".json")):
                 extension = ".activitystreams.json" if path.endswith(".activitystreams.json") else Path(path).suffix

@@ -70,8 +70,8 @@ def url_id(user, url):
 
 
 class SyncExporter(Exporter):
-    def __init__(self, folder, client, scope, *, images=False, progress=None):
-        super().__init__(folder, client, images=images, progress=progress)
+    def __init__(self, folder, client, scope, *, images=False, progress=None, account=False, messages=False):
+        super().__init__(folder, client, images=images, progress=progress, account=account, messages=messages)
         self.scope = scope
         self.selected_ids = set()
         self.state = {}
@@ -94,7 +94,7 @@ class SyncExporter(Exporter):
             with store.db:
                 store.db.execute("DELETE FROM days")
                 for key, value in (("days_loaded", False), ("posts_done", False), ("bodies_done", False),
-                                   ("meta_done", False), ("entry_comments", {}), ("sync_reaction_counts", []),
+                                   ("meta_done", False), ("sync_reaction_counts", []),
                                    ("sync_candidates", []), ("sync_cursor", "1970-01-01 00:00:00"), ("sync_scan_done", False)):
                     store.set(key, value)
                 store.set("sync_job", self.state)
@@ -111,6 +111,10 @@ class SyncExporter(Exporter):
             return
         with self.store.db:
             self.store.save_entry(entry)
+            if entry["itemid"] not in self.state["seen"]:
+                statuses = self.store.get("entry_comments", {})
+                statuses[str(entry["itemid"])] = {"next_page": 1, "done": False}
+                self.store.set("entry_comments", statuses)
         self.checkpoint(seen=sorted(set(self.state["seen"]) | {entry["itemid"]}),
                         unavailable=sorted(set(self.state["unavailable"]) - {entry["itemid"]}))
 
@@ -156,7 +160,8 @@ class SyncExporter(Exporter):
                             store.db.execute("INSERT OR REPLACE INTO days(day,expected) VALUES (?,?)", (value, int(day["count"])))
                     store.set("days_loaded", True)
                 self.checkpoint(calendar_loaded=True)
-            for day in store.db.execute("SELECT * FROM days WHERE done!=1 ORDER BY day DESC").fetchall():
+            # Calendar first, then each day's posts with their discussions and media.
+            for day in store.db.execute("SELECT * FROM days WHERE done!=1 ORDER BY day").fetchall():
                 self.update("posts", f"Записи за {day['day']}…")
                 year, month, number = map(int, day["day"].split("-"))
                 result = self.client.call("getevents", selecttype="day", year=year, month=month, day=number,
@@ -171,6 +176,18 @@ class SyncExporter(Exporter):
                 complete = len({e["itemid"] for e in entries}) == day["expected"]
                 with store.db:
                     store.db.execute("UPDATE days SET done=? WHERE day=?", (1 if complete else 2, day["day"]))
+                previous_selection = self.selected_ids
+                self.selected_ids = {int(e["itemid"]) for e in entries}
+                try:
+                    self.recent_comments()
+                except IncompleteData:
+                    pass  # Whole-journal repair passes revisit only the pending discussions.
+                finally:
+                    self.selected_ids = previous_selection
+                    with store.db:
+                        store.set("bodies_done", False)
+                        store.set("meta_done", False)
+
             if store.db.execute("SELECT 1 FROM days WHERE done=2").fetchone():
                 self.reconcile_posts()
             # Recheck saved entries absent from the current calendar response. Keep their old text.
@@ -234,7 +251,11 @@ class SyncExporter(Exporter):
                 store.db.execute("UPDATE days SET done=1 WHERE day=?", (day["day"],))
 
     def comments(self):
-        self.recent_comments()
+        failure = None
+        try:
+            self.recent_comments()
+        except IncompleteData as exc:
+            failure = exc
         statuses = self.store.get("entry_comments", {})
         missing = []
         incomplete_entries = set()
@@ -243,7 +264,7 @@ class SyncExporter(Exporter):
         with self.store.db:
             for item in comments:
                 eid = int(item.get("jitemid", 0))
-                if eid not in self.selected_ids:
+                if eid not in self.selected_ids or not statuses.get(str(eid), {}).get("done"):
                     continue
                 if item["id"] not in statuses[str(eid)].get("seen_ids", []):
                     # Absence is not proof of deletion; retain earlier text explicitly.
@@ -256,6 +277,8 @@ class SyncExporter(Exporter):
                     incomplete_entries.add(eid)
         for entry in self.store.entries():
             eid = int(entry["itemid"])
+            if not statuses.get(str(eid), {}).get("done"):
+                continue
             if eid in self.selected_ids and len(statuses[str(eid)].get("seen_ids", [])) < int(entry.get("reply_count", 0) or 0):
                 missing.append(f"entry-{eid}")
                 incomplete_entries.add(eid)
@@ -271,6 +294,8 @@ class SyncExporter(Exporter):
                 self.store.set("entry_comments", statuses)
                 self.store.set("bodies_done", False)
             raise IncompleteData(f"Не подтверждена полнота комментариев: {len(missing)} пропусков. Следующий запуск повторит проверку веток.")
+        if failure:
+            raise failure
         self.checkpoint(phase="reactions")
 
     def save_thread(self, items, users):
@@ -286,6 +311,8 @@ class SyncExporter(Exporter):
 
     def report(self, error=None, cancelled=False):
         counts = self.store.counts()
+        statuses = self.store.get("entry_comments", {})
+        selected = self.selected_ids or set(self.state.get("selected", self.state.get("seen", [])))
         comments = self.store.comments()
         missing = [{"id": c["id"], "state": c["state"]} for c in comments if "body" not in c and c["state"] not in ("D", "X")]
         unavailable = self.state.get("unavailable", [])
@@ -301,7 +328,7 @@ class SyncExporter(Exporter):
                 "screened_comments": sum(c["state"] == "S" for c in comments),
                 "deleted_comments": sum(c["state"] in ("D", "X") for c in comments), "missing_comments": missing,
                 "pending_days": [dict(r) for r in self.store.db.execute("SELECT day,expected FROM days WHERE done!=1")],
-                "orphan_entry_ids": [], "pending_comment_entry_ids": [], "unknown_encoding_entry_ids": [],
+                "orphan_entry_ids": [], "pending_comment_entry_ids": [eid for eid in sorted(selected) if not statuses.get(str(eid), {}).get("done")], "unknown_encoding_entry_ids": [],
                 "entry_limit": None, "issues": issues, "images_requested": self.images,
                 "scope": "Накопительный архив. Последнее обновление: " + {"full": "весь журнал с проверкой", "period": f"период {self.scope.start or 'с начала'} — {self.scope.end or 'по сегодня'}", "urls": "записи по указанным URL"}[self.scope.mode] + ". Даты относятся к публикации записей; их комментарии загружаются за всё время.",
                 "sync": {**self.state, "selected_count": len(self.selected_ids)},
@@ -341,24 +368,38 @@ class SyncExporter(Exporter):
                     store.set("journal_id", self.client.journal_id)
                     if getattr(self.client, "userpics", None) is not None:
                         store.set("userpic_catalog", self.client.userpics)
+                failures = []
+                def stage(operation, label):
+                    try:
+                        self.retry_missing(operation, label)
+                    except IncompleteData as exc:
+                        failures.append(str(exc))
                 if self.state["phase"] == "posts":
-                    self.retry_missing(self.posts, "записи")
-                self.selected_ids = set(self.state.get("selected", []))
+                    stage(self.posts, "записи")
+                self.selected_ids = set(self.state.get("selected", self.state.get("seen", [])))
                 if self.state.get("unavailable"):
-                    self.retry_missing(self.unavailable_posts, "записи")
-                if self.state["phase"] == "comments":
-                    self.retry_missing(self.comments, "комментарии")
-                self.userpic_metadata()
-                if self.state["phase"] == "reactions":
-                    if self.reactions(entry_ids=self.selected_ids, checkpoint="sync_reaction_counts"):
-                        self.checkpoint(phase="render")
+                    stage(self.unavailable_posts, "записи")
+                if self.state["phase"] == "comments" or (self.state["phase"] == "posts" and self.selected_ids):
+                    stage(self.comments, "комментарии")
+                if not failures:
+                    stage(self.userpic_metadata, "юзерпики")
+                if self.state["phase"] in ("comments", "reactions"):
+                    try:
+                        if self.reactions(entry_ids=self.selected_ids, checkpoint="sync_reaction_counts") and not failures:
+                            self.checkpoint(phase="render")
+                    except IncompleteData as exc:
+                        failures.append(str(exc))
+                if store.db.execute("SELECT 1 FROM days WHERE done!=1").fetchone():
+                    self.checkpoint(phase="posts")
+                self.personal()
+                error = " ".join(failures) or None
             except Cancelled as exc:
                 error, cancelled = str(exc), True
             except ExportError as exc:
                 error = str(exc)
             report = self.report(error, cancelled)
             report = build_archive(store, report, images=self.images and not cancelled, userpics=not cancelled,
-                                   client_cancel=self.client.cancel, progress=self.progress, budget=self.client.budget)
+                                   client_cancel=self.client.cancel, progress=self.progress, budget=self.client.budget, media=getattr(self, "_media", None))
             complete = self.state["phase"] == "render" and not error and report["status"] == "complete"
             if complete:
                 self.checkpoint(phase="done", done=True, finished_at=now())
@@ -376,18 +417,20 @@ class SyncExporter(Exporter):
             self.update(report["status"], "Обновление сохранено.", report=report)
             return report
         finally:
+            if getattr(self, "_media", None):
+                self._media.close()
             self.client.close()
             store.close()
 
 
 def sync(user, password, output, *, mode="full", start=None, end=None, urls=None, images=False,
-         delay=3, max_requests=None, cancel=None, progress=None, archive=None):
+         delay=3, max_requests=None, cancel=None, progress=None, archive=None, account=False, messages=False):
     user = username(user)
     scope = validate_scope(user, mode, start, end, urls)
     slug = target_slug(user, archive)
     budget = RequestBudget(max_requests, progress)
     client = LiveJournalClient(user, password, delay=delay, cancel=cancel, budget=budget, progress=progress)
-    return SyncExporter(Path(output) / slug, client, scope, images=images, progress=progress).run()
+    return SyncExporter(Path(output) / slug, client, scope, images=images, progress=progress, account=account, messages=messages).run()
 
 
 def target_slug(user, archive=None):

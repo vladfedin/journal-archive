@@ -266,6 +266,64 @@ def to_activitystreams(data):
     for oid, children in replies.items():
         if oid in objects:
             objects[oid]["replies"] = {"type": "Collection", "totalItems": len(children), "items": children}
+    account = data.get("account", {})
+    sections = account.get("sections", {})
+    profile_data = (sections.get("profile", {}).get("data") or {})
+    if owner and profile_data:
+        actor = dict(owner)
+        if isinstance(profile_data.get("fullname"), str):
+            actor["name"] = profile_data["fullname"]
+        items.append(actor)
+    graph = sections.get("friends", {}).get("data") or {}
+    for key in ("friends", "friendofs"):
+        edges = graph.get(key, [])
+        for friend in edges if isinstance(edges, list) else []:
+            if not isinstance(friend, dict):
+                continue
+            other = person(friend.get("username"), friend.get("userid"))
+            if not other or not owner:
+                continue
+            if friend.get("type") == "community":
+                other["type"] = "Group"
+            items.append({"id": identity("follow-" + key, friend.get("username")), "type": "Follow",
+                          "actor": owner if key == "friends" else other,
+                          "object": other if key == "friends" else owner})
+    inbox = account.get("messages", [])
+    message_ids = {}
+    for record in inbox:
+        mid = record.get("msgid")
+        if type(mid) is int:
+            message_ids[mid] = None if mid in message_ids else identity("message", record["qid"])
+    for record in inbox:
+        outgoing = record.get("type") == 19
+        obj = {"id": identity("message", record["qid"]), "type": "Note", "ja:kind": "message", "ja:security": "private"}
+        sender = owner if outgoing else person(record.get("from"))
+        receiver = person(record.get("to")) if outgoing else owner
+        if sender:
+            obj["attributedTo"] = sender
+        if receiver:
+            obj["to"] = [receiver]
+        if isinstance(record.get("subject"), str):
+            obj["name"] = html.unescape(bleach.clean(record["subject"], tags=[], strip=True))
+        if isinstance(record.get("state"), str):
+            obj["ja:state"] = record["state"]
+        if type(record.get("when")) is int:
+            from datetime import datetime, timezone
+            try:
+                obj["published"] = datetime.fromtimestamp(record["when"], timezone.utc).isoformat()
+            except (ValueError, OverflowError, OSError):
+                pass
+        if type(record.get("parent")) is int and message_ids.get(record["parent"]):
+            obj["inReplyTo"] = message_ids[record["parent"]]
+        if isinstance(record.get("body"), str):
+            parser = Content(base)
+            parser.feed(record["body"])
+            parser.close()
+            obj["content"] = bleach.clean("".join(parser.parts), tags=TAGS, attributes=ATTRS, protocols=["http", "https"], strip=True)
+            obj["mediaType"] = "text/html"
+            if parser.images:
+                obj["attachment"] = [image(value, media) for value in parser.images]
+        items.append(obj)
     source = json.dumps(data, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
     return {"@context": CONTEXT, "id": namespace + "archive", "type": "Collection", "name": user,
             "totalItems": len(items), "items": items, "ja:profileVersion": PROFILE_VERSION,
