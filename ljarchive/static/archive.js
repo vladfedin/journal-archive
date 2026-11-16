@@ -149,6 +149,7 @@ document.addEventListener("DOMContentLoaded", () => {
         const card = el("article", "entry-row entry-card"), meta = el("div", "entry-meta"), title = el("h2"), link = el("a", "", e.title);
         const time = el("time", "", ruDate(e.date)); if (e.date) time.dateTime = e.date;
         link.href = d?.url || e.url; title.append(link); meta.append(time);
+        if (e.repost) meta.append(el("span", "state repost-label", "Перепост"));
         if (e.security !== "public") meta.append(el("span", "state", e.security_label));
         if (view === "full" && e.userpic?.path) {
           const avatar = el("a", "userpic-link"), image = el("img", "userpic");

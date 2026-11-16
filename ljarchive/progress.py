@@ -5,6 +5,7 @@ from html.parser import HTMLParser
 from urllib.parse import urljoin
 
 from .storage import atomic_write, dumps
+from .entries import is_repost, repost_url
 
 
 class Images(HTMLParser):
@@ -77,8 +78,11 @@ def timeline(store, *, task=False):
     items, by_day = [], Counter()
     from .render import plain
     for row in store.db.execute('''SELECT id,json_extract(payload,'$.eventtime'),
-            json_extract(payload,'$.subject'),json_extract(payload,'$.reply_count') FROM entries ORDER BY 2,id'''):
-        eid, date, title, expected = row
+            json_extract(payload,'$.subject'),json_extract(payload,'$.reply_count'),json_extract(payload,'$.repost') FROM entries ORDER BY 2,id'''):
+        eid, date, title, expected, repost = row
+        repost = is_repost({"repost": repost})
+        if repost:
+            expected = 0
         if task and selected is not None and sync_state.get('phase') != 'posts' and eid not in selected:
             continue
         if task and sync_state.get('phase') == 'posts' and sync_state.get('scope', {}).get('mode') == 'period':
@@ -90,17 +94,17 @@ def timeline(store, *, task=False):
         status, mat = statuses.get(str(eid), {}), dict(materials.get(str(eid), {}))
         if 'urls' in mat:
             mat['saved'] = sum(bool(mapping.get(u)) for u in mat.pop('urls'))
-        done = status.get('done', bodies_done)
+        done = repost or status.get('done', bodies_done)
         state = 'pending' if not done else 'ready'
-        if status.get('error') or (done and mat.get('saved', 0) < mat.get('requested', 0)):
+        if (status.get('error') and not repost) or (done and mat.get('saved', 0) < mat.get('requested', 0)):
             state = 'partial'
         elif not done and counts[eid]:
             state = 'loading'
         items.append({'id': eid, 'date': date, 'title': plain(title) or 'Без заголовка',
-                      'url': f'entries/{eid}.html', 'state': state, 'error': status.get('error'),
-                      'comments': counts[eid], 'expected_comments': expected, 'pages': status.get('pages'),
+                      'url': f'entries/{eid}.html', 'state': state, 'repost': repost, 'error': None if repost else status.get('error'),
+                      'comments': 0 if repost else counts[eid], 'expected_comments': expected, 'pages': status.get('pages'),
                       'page': status.get('last_valid_page', max(0, status.get('next_page', 1) - 1)), 'materials': mat,
-                      'top': authors[eid].most_common(3)})
+                      'top': [] if repost else authors[eid].most_common(3)})
     gaps = []
     for row in store.db.execute('SELECT day,expected FROM days ORDER BY day'):
         missing = max(0, row[1] - by_day[row[0]])
@@ -130,7 +134,7 @@ def preview_entry(store, eid):
     if not row:
         return None
     entry, user = json.loads(row[0]), store.get('username')
-    comments = threaded(store.comments(eid))
+    comments = [] if is_repost(entry) else threaded(store.comments(eid))
     pictures = describe(store, [entry], comments)
     media = Media(store.folder, False, threading.Event())
     media.mapping = store.get('media', {})
@@ -147,7 +151,7 @@ def preview_entry(store, eid):
         security = entry.get('security', 'public')
         summary = {'title': plain(entry.get('subject')) or 'Без заголовка', 'date': entry.get('eventtime', ''),
                    'security': security, 'security_label': {'private': 'Личная', 'usemask': 'Для друзей / группы'}.get(security, security),
-                   'userpic': pictures['post'].get(str(eid)), 'tags': [], 'reactions': reaction_view(store.reactions('post').get(eid))}
+                   'repost': is_repost(entry), 'repost_url': repost_url(entry), 'userpic': pictures['post'].get(str(eid)), 'tags': [], 'reactions': reaction_view(store.reactions('post').get(eid))}
         return ENV.get_template('entry.html').render(user=user, entry=entry, summary=summary, comments=comments,
                      content=safe_content(entry.get('event'), url, {}, media, set(), expand_cuts=True), original=url,
                      post_autoformat=needs_autoformat(entry.get('event'), entry.get('props')), current=[], newer=None, older=None,

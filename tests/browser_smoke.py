@@ -19,6 +19,7 @@ from ljarchive.server import make_server
 def main():
     with tempfile.TemporaryDirectory(prefix='ljarchive-browser-') as directory:
         root = Path(directory)
+        moved_root = root.with_name(root.name + "-moved")
         server = make_server(root, 0)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
@@ -259,6 +260,18 @@ def main():
                 assert page.evaluate('document.documentElement.dataset.theme') == 'dark'
                 expect(page.locator('#theme-toggle')).to_have_attribute('aria-label', 'Включить светлую тему')
                 page.screenshot(path=str(root / 'entry-mobile-dark.png'), full_page=True)
+                page.goto(base)
+                page.locator('#move-storage').click()
+                expect(page.locator('#storage-dialog')).to_be_visible()
+                page.locator('#storage-path').fill(str(moved_root))
+                assert not page.evaluate('document.documentElement.scrollWidth > innerWidth')
+                page.locator('#storage-submit').click()
+                expect(page.locator('#storage-dialog')).not_to_be_visible(timeout=20000)
+                expect(page.locator('#output-path')).to_have_text(str(moved_root))
+                assert not root.exists()
+                root = moved_root
+                page.goto(base + '/archive/example_journal/statistics.html')
+                expect(page.locator('h1')).to_have_text('Статистика')
                 assert not errors, errors
                 browser.close()
                 screenshots = os.environ.get('LJARCHIVE_SCREENSHOTS')
@@ -273,6 +286,8 @@ def main():
             server.shutdown()
             server.server_close()
             thread.join(5)
+            import shutil
+            shutil.rmtree(moved_root, ignore_errors=True)
 
 
 if __name__ == '__main__':

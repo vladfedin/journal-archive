@@ -270,7 +270,7 @@ def build_archive(store: Store, report: dict, *, images=False, userpics=False, c
     media = media or Media(folder, images, cancel, budget=budget)
     media.enabled = images
     entries, comments = store.entries(), store.comments()
-    report["format_version"] = "0.7.0"
+    report["format_version"] = "0.7.1"
     report.setdefault("issues", [])
     report["reactions"] = reaction_report(store)
     if report.get("status") == "complete" and not (report["reactions"]["complete"] and report["reactions"]["authors_complete"]):
@@ -323,6 +323,7 @@ def build_archive(store: Store, report: dict, *, images=False, userpics=False, c
     search, summaries = [], []
     labels = {"public": "Открытая", "private": "Личная", "usemask": "Для друзей / группы"}
     from .comment_state import comment_view
+    from .entries import is_repost, repost_url
     try:
         for index, entry in enumerate(entries):
             if progress:
@@ -330,12 +331,12 @@ def build_archive(store: Store, report: dict, *, images=False, userpics=False, c
             eid = int(entry["itemid"])
             title = plain(entry.get("subject")) or "Без заголовка"
             url = original_url(user, entry)
-            entry_comments = threaded(by_entry[eid])
+            entry_comments = [] if is_repost(entry) else threaded(by_entry[eid])
             props = entry.get("props") if isinstance(entry.get("props"), dict) else {}
             security = entry.get("security", "public")
             tags = [t.strip() for t in text_value(entry.get("props", {}).get("taglist", "")).split(",") if t.strip()]
             date = entry.get("eventtime", "")
-            summary = {"userpic": pictures["post"].get(str(eid)), "id": eid, "title": title, "date": date, "year": date[:4], "tags": tags,
+            summary = {"repost": is_repost(entry), "repost_url": repost_url(entry), "userpic": pictures["post"].get(str(eid)), "id": eid, "title": title, "date": date, "year": date[:4], "tags": tags,
                        "security": security, "security_label": labels.get(security, security),
                        "comments": len(entry_comments), "screened": sum(c["state"] == "S" for c in entry_comments),
                        "excerpt": excerpt(plain(entry.get("event"))), "url": f"entries/{eid}.html",

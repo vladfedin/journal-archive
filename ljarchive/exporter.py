@@ -8,6 +8,7 @@ from pathlib import Path
 from .client import APIError, Cancelled, ExportError, IncompleteData, LiveJournalClient, RequestBudget, username
 from .storage import Store, atomic_write, dumps
 from .comment_state import DELETED, merge_comment
+from .entries import is_repost
 
 
 def now():
@@ -206,6 +207,8 @@ class Exporter:
             raise IncompleteData(f"Запрошены последние {expected} записей, ЖЖ вернул {len(entries)}.")
 
     def discussion_complete(self, entry, status):
+        if is_repost(entry):
+            return True
         store, eid = self.store, int(entry["itemid"])
         saved = store.db.execute("SELECT payload FROM comments WHERE entry_id=?", (eid,)).fetchall()
         import json
@@ -229,7 +232,7 @@ class Exporter:
             self.client.check()
             eid = int(entry["itemid"])
             status = statuses.setdefault(str(eid), {"next_page": 1, "done": False})
-            if status.get("done"):
+            if status.get("done") and (not is_repost(entry) or status.get("skipped") == "repost"):
                 continue
             try:
                 self.discussion(entry, status, statuses)
@@ -253,6 +256,12 @@ class Exporter:
 
     def discussion(self, entry, status, statuses):
         store, eid = self.store, int(entry["itemid"])
+        if is_repost(entry):
+            status.clear()
+            status.update(done=True, scope="original-journal", skipped="repost", seen_ids=[])
+            with store.db:
+                store.set("entry_comments", statuses)
+            return
         page = max(1, int(status.get("next_page", 1)))
         while True:
             self.update("comments", f"Комментарии к записи #{eid} · страница {page}", entry_id=eid,
@@ -510,6 +519,8 @@ class Exporter:
             statuses = store.get("entry_comments", {})
             for entry in store.entries():
                 eid = int(entry["itemid"])
+                if is_repost(entry):
+                    continue
                 if not statuses.get(str(eid), {}).get("done"):
                     pending_comments.append(eid)
                 count = store.db.execute("SELECT COUNT(*) FROM comments WHERE entry_id=?", (eid,)).fetchone()[0]

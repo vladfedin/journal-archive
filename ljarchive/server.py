@@ -27,7 +27,8 @@ class Jobs:
     PARAMS = ("username", "archive", "mode", "date_from", "date_to", "urls", "entry_limit", "images", "delay", "max_requests", "account", "messages")
 
     def __init__(self, output: Path):
-        self.output = output.resolve()
+        from .relocation import resolve_output
+        self.output = resolve_output(output)
         self.output.mkdir(parents=True, exist_ok=True)
         self.tasks = self.output / ".jobs"
         self.tasks.mkdir(exist_ok=True, mode=0o700)
@@ -37,6 +38,8 @@ class Jobs:
         self.thread = None
         self.stopping = False
         self.current = None
+        self.move_thread = None
+        self.relocation = {"phase": "idle"}
         records = []
         for file in self.tasks.glob("*.json"):
             try:
@@ -52,6 +55,32 @@ class Jobs:
                 self.state.update(phase="cancelled", message="Загрузка прервана. Можно продолжить.", cancelling=False)
             self.current = latest["parameters"]
             self.persist()
+
+    def move(self, value):
+        from .relocation import target_path, relocate
+        with self.lock:
+            if self.stopping or (self.thread and self.thread.is_alive()):
+                raise ExportError("Перенос доступен после завершения загрузки.")
+            if self.move_thread and self.move_thread.is_alive():
+                raise ExportError("Перенос уже выполняется.")
+            target = target_path(self.output, value)
+            source = self.output
+            self.relocation = {"phase": "copying", "source": str(source), "target": str(target), "completed": 0, "total": 0}
+            def update(**values):
+                with self.lock:
+                    self.relocation.update(values)
+            def switch(folder):
+                with self.lock:
+                    self.output, self.tasks = folder, folder / ".jobs"
+            def worker():
+                try:
+                    warning = relocate(source, target, switch, update)
+                    update(phase="complete", message=warning or "Перенесено")
+                except (ExportError, OSError) as exc:
+                    update(phase="error", message=str(exc))
+            self.move_thread = threading.Thread(target=worker, daemon=True)
+            self.move_thread.start()
+            return dict(self.relocation)
 
     def task_path(self, slug):
         import re
@@ -82,13 +111,13 @@ class Jobs:
         self.task_path(slug)
         folder = self.output / slug
         with self.lock:
-            if self.thread and self.thread.is_alive():
+            if self.relocation["phase"] == "copying" or (self.thread and self.thread.is_alive()):
                 return
             path = folder / "export-report.json"
             if not path.is_file() or not (folder / "archive.sqlite3").is_file():
                 return
             report = json.loads(path.read_text(encoding="utf-8"))
-            if report.get("format_version") == "0.7.0":
+            if report.get("format_version") == "0.7.1":
                 return
             from .storage import Store
             from .render import build_archive
@@ -118,6 +147,8 @@ class Jobs:
 
     def start(self, data, demo=False):
         with self.lock:
+            if self.relocation["phase"] == "copying":
+                raise ExportError("Дождитесь завершения переноса архивов.")
             if self.stopping:
                 raise ExportError("Приложение завершается. Откройте новую версию.")
             if self.thread and self.thread.is_alive():
@@ -245,7 +276,7 @@ class Jobs:
                            resumable=state["phase"] != "complete", message=state.get("message", ""))
             except (OSError, ValueError, KeyError, TypeError, ExportError):
                 continue
-        return {"output": str(self.output), "archives": sorted(found.values(), key=lambda row: row.get("created_at") or "", reverse=True)}
+        return {"output": str(self.output), "relocation": dict(self.relocation), "archives": sorted(found.values(), key=lambda row: row.get("created_at") or "", reverse=True)}
 
 
 def make_server(output: Path, port=8787):
@@ -411,7 +442,7 @@ def make_server(output: Path, port=8787):
                     activity = extension == ".activitystreams.json"
                     filename = "activitystreams.json" if activity else "archive.json"
                     with jobs.lock:
-                        if jobs.thread and jobs.thread.is_alive():
+                        if jobs.relocation["phase"] == "copying" or (jobs.thread and jobs.thread.is_alive()):
                             return self.json({"error": "Дождитесь окончания выгрузки перед скачиванием JSON."}, 409)
                         if not (folder / "archive.sqlite3").is_file():
                             target = folder / "data" / filename
@@ -440,7 +471,7 @@ def make_server(output: Path, port=8787):
                         return self.file(target, download=slug + ".json")
                 # Hold the job lock through ZIP construction to avoid mixing snapshots.
                 with jobs.lock:
-                    if jobs.thread and jobs.thread.is_alive():
+                    if jobs.relocation["phase"] == "copying" or (jobs.thread and jobs.thread.is_alive()):
                         return self.json({"error": "Дождитесь окончания выгрузки перед скачиванием ZIP."}, 409)
                     try:
                         jobs.refresh_format(slug)
@@ -476,6 +507,8 @@ def make_server(output: Path, port=8787):
             except (ValueError, UnicodeDecodeError):
                 return self.json({"error": "Некорректный JSON."}, 400)
             try:
+                if self.path == "/api/storage/move":
+                    return self.json(jobs.move(data.get("path")), 202)
                 if self.path == "/api/export":
                     return self.json(jobs.start(data), 202)
                 if self.path == "/api/demo":
@@ -495,6 +528,8 @@ def make_server(output: Path, port=8787):
                     def shutdown():
                         if jobs.thread and jobs.thread.is_alive():
                             jobs.thread.join()
+                        if jobs.move_thread and jobs.move_thread.is_alive():
+                            jobs.move_thread.join()
                         self.server.shutdown()
                     self.json({"message": "Сохраняем прогресс и завершаем приложение."})
                     self.wfile.flush()
@@ -529,4 +564,6 @@ def run_server(server, open_browser=True):
             print("Сохраняем прогресс…", flush=True)
             server.jobs.thread.join(timeout=65)
     finally:
+        if server.jobs.move_thread and server.jobs.move_thread.is_alive():
+            server.jobs.move_thread.join()
         server.server_close()

@@ -26,7 +26,9 @@ def title_of(entry):
 
 def statistics(data):
     entries = {int(e['itemid']): e for e in data.get('entries', [])}
-    comments = {int(c['id']): c for c in data.get('comments', [])}
+    from .entries import is_repost
+    repost_ids = {eid for eid, entry in entries.items() if is_repost(entry)}
+    comments = {int(c['id']): c for c in data.get('comments', []) if int(c.get('jitemid') or 0) not in repost_ids}
     journal = data.get('journal', {})
     names = {int(u['id']): u.get('username') for u in data.get('users', [])}
     owner_name = (journal.get('username') or '').lower().replace('-', '_')
@@ -129,14 +131,14 @@ def statistics(data):
                             'previous_url': f'entries/{a[2]}.html#comment-{a[1]}'})
     coverage = data.get('coverage', {})
     discussions = coverage.get('discussions', {})
-    confirmed = sum(bool(discussions.get(str(eid), {}).get('done')) for eid in entries)
+    confirmed = sum(eid in repost_ids or bool(discussions.get(str(eid), {}).get('done')) for eid in entries)
     # A period refresh may be complete while other discussions remain unknown.
     complete = confirmed == len(entries) if discussions else bool(coverage.get('comments_done'))
     post_years = [d.year for e in entries.values() if (d := date_of(e, 'eventtime'))]
     years = sorted(set(map(int, yearly)) | set(post_years))
     years = list(range(years[0], years[-1] + 1)) if years and years[-1] - years[0] <= 300 else years
     return {'schema_version': 1, 'journal': journal, 'years': list(map(str, years)), 'yearly': yearly,
-            'totals': {'posts': len(entries), 'comments': len(comments), 'people': len(people),
+            'totals': {'posts': len(entries), 'reposts': len(repost_ids), 'comments': len(comments), 'people': len(people),
                        'deleted': deleted, 'unknown_dates': unknown_dates, 'anonymous': anonymous,
                        'missing_parents': dangling},
             'coverage': {'discussions_complete': complete, 'confirmed_posts': confirmed,

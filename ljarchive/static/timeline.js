@@ -13,7 +13,7 @@ window.ArchiveTimeline=class {
     this.viewport=node('div','timeline-viewport');this.viewport.tabIndex=0;this.viewport.setAttribute('aria-label','Записи по времени. Прокрутите вправо или выберите год.');
     this.track=node('div','timeline-track');this.viewport.append(this.track);
     this.tip=node('div','timeline-tip');this.tip.hidden=true;this.tip.setAttribute('role','status');
-    const legend=node('div','timeline-legend');for(const [cls,text] of [['pending','Ожидают'],['loading','Загружаются'],['ready','Сохранены'],['partial','Есть пропуски']]){legend.append(node('span',cls,text));}
+    const legend=node('div','timeline-legend');for(const [cls,text] of [['pending','Ожидают'],['loading','Загружаются'],['ready','Сохранены'],['partial','Есть пропуски'],['repost','Перепосты']]){legend.append(node('span',cls,text));}
     root.replaceChildren(this.head,this.overview,this.viewport,this.tip,legend);this.viewport.onscroll=()=>this.draw();
     this.viewport.onkeydown=e=>{if(e.target!==this.viewport)return;if(['ArrowRight','ArrowLeft','Home','End'].includes(e.key)){e.preventDefault();this.viewport.scrollLeft=e.key==='Home'?0:e.key==='End'?this.track.offsetWidth:this.viewport.scrollLeft+(e.key==='ArrowRight'?120:-120);}};
     this.resize=new ResizeObserver(()=>this.draw());this.resize.observe(this.viewport);
@@ -33,14 +33,15 @@ window.ArchiveTimeline=class {
   description(item){
     if(!item.id)return `${item.date} · запись ещё не получена`;
     const m=item.materials||{}, who=(item.top||[]).map(([name,n])=>`${name}: ${n}`).join(', ');
-    return `${item.date} · ${item.title}\nКомментарии: ${item.comments}${item.expected_comments!=null?' / '+item.expected_comments:''}${item.pages!=null?' · страницы: '+item.page+' / '+item.pages:''}\nМатериалы: ${m.saved||0} / ${m.requested??'?'}${who?'\nЧаще комментировали: '+who:''}${item.error?'\n'+item.error:''}`;
+    if(item.repost)return `${item.date} · ${item.title} · Перепост\nМатериалы: ${m.saved||0} / ${m.requested??'?'}`;
+    return `${item.date} · ${item.title}${item.repost?' · Перепост':''}\nКомментарии: ${item.comments}${item.expected_comments!=null?' / '+item.expected_comments:''}${item.pages!=null?' · страницы: '+item.page+' / '+item.pages:''}\nМатериалы: ${m.saved||0} / ${m.requested??'?'}${who?'\nЧаще комментировали: '+who:''}${item.error?'\n'+item.error:''}`;
   }
   draw(){
     const start=Math.max(0,Math.floor(this.viewport.scrollLeft/this.slot)-4),end=Math.min(this.items.length,Math.ceil((this.viewport.scrollLeft+this.viewport.clientWidth)/this.slot)+4);
     const focused=document.activeElement?.dataset?.timelineIndex;const nodes=[];
     for(let n=start;n<end;n++){
       const item=this.items[n],m=item.materials||{},total=Math.max(item.expected_comments||0,item.comments||0)+(m.requested||0)+1;
-      const done=1+(item.comments||0)+(m.saved||0),bar=document.createElement(item.id?'a':'span');bar.className='timeline-bar '+item.state+(item.id===this.active?' active':'');
+      const done=1+(item.comments||0)+(m.saved||0),bar=document.createElement(item.id?'a':'span');bar.className='timeline-bar '+item.state+(item.repost?' repost':'')+(item.id===this.active?' active':'');
       bar.style.left=(n*this.slot)+'px';bar.style.height=(item.id?Math.min(116,18+Math.log2(total)*10):14)+'px';
       bar.dataset.timelineIndex=String(n);if(item.id)bar.href=this.base+item.url;
       const description=this.description(item);bar.title=description;bar.setAttribute('aria-label',description);
@@ -57,7 +58,7 @@ window.ArchiveTimeline=class {
   drawOverview(){
     const width=Math.round(this.viewport.clientWidth),height=32;if(!width)return;this.overview.width=width;this.overview.height=height;
     const ctx=this.overview.getContext('2d'),n=this.items.length;if(!n)return;
-    for(let x=0;x<width;x++){const from=Math.min(n-1,Math.floor(x*n/width)),to=Math.max(from+1,Math.floor((x+1)*n/width));let state='ready',h=4;const priority={ready:0,pending:1,loading:2,partial:3};for(let i=from;i<to;i++){const item=this.items[i];if(priority[item.state]>priority[state])state=item.state;h=Math.max(h,item.id?Math.min(27,5+Math.log2(1+(item.expected_comments||item.comments||0))*2.2):4);}ctx.fillStyle={ready:'#6c917b',partial:'#c59254',loading:'#688da3',pending:'#b9bbb580'}[state];ctx.fillRect(x,height-h,1,h);}
+    for(let x=0;x<width;x++){const from=Math.min(n-1,Math.floor(x*n/width)),to=Math.max(from+1,Math.floor((x+1)*n/width));let state='ready',h=4;const priority={ready:0,repost:1,pending:2,loading:3,partial:4};for(let i=from;i<to;i++){const item=this.items[i];const status=item.repost&&item.state==='ready'?'repost':item.state;if(priority[status]>priority[state])state=status;h=Math.max(h,item.id?Math.min(27,5+Math.log2(1+(item.expected_comments||item.comments||0))*2.2):4);}ctx.fillStyle={ready:'#6c917b',repost:'#9980b8',partial:'#c59254',loading:'#688da3',pending:'#b9bbb580'}[state];ctx.fillRect(x,height-h,1,h);}
     const left=this.viewport.scrollLeft/(n*this.slot)*width,span=Math.min(width,this.viewport.clientWidth/(n*this.slot)*width);ctx.strokeStyle='#6688a1';ctx.lineWidth=2;ctx.strokeRect(left+1,1,Math.max(3,span-2),height-2);
   }
 };

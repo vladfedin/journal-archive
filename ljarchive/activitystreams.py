@@ -164,6 +164,11 @@ def to_activitystreams(data):
         if isinstance(state, str):
             obj["ja:state"] = state
         if is_post:
+            from .entries import is_repost, repost_url
+            if is_repost(record):
+                obj["ja:repost"] = True
+                if repost_url(record):
+                    obj["ja:originalURL"] = repost_url(record)
             author = person(record.get("poster"), record.get("posterid")) or owner
             url = entry_url(record)
             if isinstance(record.get("security"), str):
