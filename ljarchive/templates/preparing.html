@@ -1,0 +1,13 @@
+{% extends 'base.html' %}
+{% block title %}Подготовка архива{% endblock %}
+{% block head %}<script defer src="/static/preparing.js"></script>{% endblock %}
+{% block body %}
+<main class="main reading preparing" data-preparing="{{ slug }}">
+<h1>Подготовка архива</h1>
+<p id="preparing-stage" role="status">Чтение архива…</p>
+<progress id="preparing-progress" aria-label="Подготовка архива"></progress>
+<p class="fine" id="preparing-count"></p>
+<button class="btn" id="preparing-retry" hidden>Повторить</button>
+<noscript><p>Включите JavaScript или обновите страницу через некоторое время.</p></noscript>
+</main>
+{% endblock %}

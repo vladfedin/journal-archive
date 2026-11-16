@@ -269,8 +269,9 @@ def build_archive(store: Store, report: dict, *, images=False, userpics=False, c
     cancel = client_cancel or threading.Event()
     media = media or Media(folder, images, cancel, budget=budget)
     media.enabled = images
+    media.load_state(store)
     entries, comments = store.entries(), store.comments()
-    report["format_version"] = "0.7.2"
+    report["format_version"] = "0.7.3"
     report.setdefault("issues", [])
     report["reactions"] = reaction_report(store)
     if report.get("status") == "complete" and not (report["reactions"]["complete"] and report["reactions"]["authors_complete"]):
@@ -384,10 +385,16 @@ def build_archive(store: Store, report: dict, *, images=False, userpics=False, c
         media.close()
     image_map = {url: media.mapping[url] for url in media.used_urls["images"]}
     report["images_saved"] = sum(bool(path) for path in image_map.values())
-    report["images_failed"] = media.failed
+    from .media import error_message
+    report["media_errors"] = {url: {**media.errors.get(url, {"status": "unknown", "reason": "unknown"}),
+                                    "message": error_message(media.errors.get(url, {}))}
+                              for url in sorted(media.mapping) if not media.mapping[url]}
+    report["images_failed"] = [url for url, error in report["media_errors"].items() if error["status"] == "failed"]
     report["images_unavailable"] = sum(path is None for path in image_map.values())
-    if media.failed:
-        report["issues"].append(f"Не удалось сохранить {len(media.failed)} изображений. Их ссылки оставлены на страницах.")
+    report["issues"] = [issue for issue in report["issues"] if not re.fullmatch(
+        r"Не удалось сохранить \d+ изображений\. Их ссылки оставлены на страницах\.", issue)]
+    if report["images_failed"]:
+        report["issues"].append(f"Не удалось сохранить {len(report['images_failed'])} изображений. Их ссылки оставлены на страницах.")
     if (images or userpics) and cancel.is_set():
         report["status"] = "cancelled"
         report["issues"].append("Скачивание изображений остановлено. Полученные тексты сохранены.")
@@ -401,13 +408,19 @@ def build_archive(store: Store, report: dict, *, images=False, userpics=False, c
         if budget.exhausted and images and report["images_unavailable"]:
             report["issues"].append("Скачивание изображений прекращено по общему пределу HTTP-запросов.")
     with store.db:
-        store.set("media", {**store.get("media", {}), **media.mapping})
+        media.save_state(store)
+    if progress:
+        progress(phase='render', message='Профиль и переписка', completed=0, total=0)
     from .personal import render_personal
     render_personal(store, report)
     from .progress import write_timeline
     write_timeline(store, report)
+    if progress:
+        progress(phase='render', message='Статистика', completed=0, total=0)
     from .statistics import write_statistics
     write_statistics(store, report)
+    if progress:
+        progress(phase='render', message='JSON', completed=0, total=0)
     export_json(store, split=True)
     atomic_write(folder / "export-report.json", dumps(report))
     # JS file rather than fetch(): search also works when opened through file://.
@@ -416,5 +429,7 @@ def build_archive(store: Store, report: dict, *, images=False, userpics=False, c
     atomic_write(folder / "report.html", ENV.get_template("report.html").render(user=user, report=report))
     atomic_write(folder / "help.html", ENV.get_template("help.html").render(user=user, report=report))
     from .integrity import write_manifest
+    if progress:
+        progress(phase='render', message='Проверка файлов', completed=0, total=0)
     write_manifest(folder)
     return report

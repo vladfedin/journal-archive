@@ -244,6 +244,7 @@ class Personal:
         media = getattr(self.exporter, '_media', None)
         if media is None:
             media = self.exporter._media = Media(self.store.folder, self.exporter.images, self.client.cancel, self.client.budget)
+            media.load_state(self.store)
         urls, embeds = set(), set()
         if account:
             urls.update(self.store.get('userpic_catalog', {}).get('pickwurls') or [])
@@ -264,7 +265,7 @@ class Personal:
             self.exporter.update('personal', 'Материалы профиля и переписки')
             media.get(url, required=category == 'userpics', category=category)
             with self.store.db:
-                self.store.set('media', {**self.store.get('media', {}), **media.mapping})
+                media.save_state(self.store)
 
 
 def render_personal(store, report):

@@ -35,6 +35,7 @@ function showStatus(s){lastState=s;if(!s.phase||s.phase==='idle'||s.job_id&&s.jo
   $('requests-count').textContent=`${s.requests_used||0}${s.request_limit?' / '+s.request_limit:''} запросов`;
   $('progress').hidden=terminal.has(s.phase)||!$('job-timeline').hidden;if(s.total){$('progress').max=s.total;$('progress').value=s.completed||0;}else $('progress').removeAttribute('value');
   $('open-result').hidden=!s.archive_url;if(s.archive_url)$('open-result').href=s.archive_url;
+  $('job-statistics').hidden=!s.archive_url;if(s.archive_url)$('job-statistics').href=s.archive_url.replace(/index\.html$/,'statistics.html');
   $('job-report').hidden=!s.archive_url;if(s.archive_url)$('job-report').href=s.archive_url.replace(/index\.html$/,'report.html');
   $('job-message').textContent=s.message||'';$('job-message').hidden=!s.message||!['partial','error','cancelled'].includes(s.phase)||!!s.request_limit_reached;
   $('job-action').disabled=!!s.cancelling;$('job-action').textContent=!terminal.has(s.phase)?'Остановить':['complete','demo'].includes(s.phase)?'Закрыть':s.phase==='error'?'Повторить':'Продолжить';
@@ -49,7 +50,7 @@ async function library(){const data=await api('/api/archives');storageStatus(dat
     const more=el('details','more'),summary=el('summary','','⋯');summary.setAttribute('aria-label','Действия с архивом '+archive.username);const menu=el('div','menu');
     if(archive.resumable){const resume=el('button','','Продолжить');resume.type='button';resume.dataset.resume='';resume.onclick=()=>openDialog('resume',archive);menu.append(resume);}
     const update=el('button','','Обновить');update.type='button';update.dataset.update='';update.onclick=()=>openDialog('update',archive);menu.append(update);
-    if(archive.url){menu.append(el('hr'));for(const [text,url] of [['Скачать JSON',archive.activitystreams_url],['Исходный JSON',archive.json_url],['Скачать ZIP',archive.zip_url],['Хронология',archive.url.replace('index.html','timeline.html')],['Профиль',archive.url.replace('index.html','account.html')],['Переписка',archive.url.replace('index.html','messages.html')],['Состояние архива',archive.report_url]]){const a=el('a','',text);a.href=url;menu.append(a);}}
+    if(archive.url){menu.append(el('hr'));for(const [text,url] of [['Скачать JSON',archive.activitystreams_url],['Исходный JSON',archive.json_url],['Скачать ZIP',archive.zip_url],['Статистика',archive.url.replace('index.html','statistics.html')],['Хронология',archive.url.replace('index.html','timeline.html')],['Профиль',archive.url.replace('index.html','account.html')],['Переписка',archive.url.replace('index.html','messages.html')],['Состояние архива',archive.report_url]]){const a=el('a','',text);a.href=url;menu.append(a);}}
     more.append(summary,menu);actions.append(more);cell.append(actions);row.append(cell);$('archives').append(row);
   }setBusy(busy);
 }

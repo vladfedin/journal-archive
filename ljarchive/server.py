@@ -39,6 +39,9 @@ class Jobs:
         self.stopping = False
         self.current = None
         self.move_thread = None
+        self.preparation_lock = threading.Lock()
+        self.preparations = {}
+        self.preparation_threads = []
         self.relocation = {"phase": "idle"}
         records = []
         for file in self.tasks.glob("*.json"):
@@ -106,7 +109,44 @@ class Jobs:
                 "images": bool(report.get("images_requested")), "delay": 3,
                 "max_requests": report.get("request_limit", 50 if report.get("entry_limit") else None)}
 
-    def refresh_format(self, slug):
+    def prepare_format(self, slug):
+        """Return immediately; a separate status endpoint stays responsive during rendering."""
+        self.task_path(slug)
+        if self.stopping or self.relocation['phase'] == 'copying' or (self.thread and self.thread.is_alive()):
+            return None
+        folder = self.output / slug
+        path = folder / 'export-report.json'
+        with self.preparation_lock:
+            if self.preparations.get(slug, {}).get('phase') == 'preparing':
+                return dict(self.preparations[slug])
+            if not path.is_file() or not (folder / 'archive.sqlite3').is_file():
+                return None
+            if json.loads(path.read_text(encoding='utf-8')).get('format_version') == __version__:
+                return None
+            self.preparations[slug] = {'phase': 'preparing', 'message': 'Чтение архива', 'completed': 0, 'total': 0}
+            def update(**values):
+                with self.preparation_lock:
+                    self.preparations[slug].update({k: v for k, v in values.items() if k != 'phase'})
+            def worker():
+                try:
+                    self.refresh_format(slug, progress=update)
+                    state = {'phase': 'complete'}
+                except Exception:
+                    state = {'phase': 'error', 'message': 'Не удалось подготовить архив. Проверьте папку и свободное место.'}
+                with self.preparation_lock:
+                    self.preparations[slug].update(state)
+            thread = threading.Thread(target=worker, daemon=True)
+            self.preparation_threads = [t for t in self.preparation_threads if t.is_alive()]
+            self.preparation_threads.append(thread)
+            thread.start()
+            return dict(self.preparations[slug])
+
+    def preparation(self, slug):
+        self.task_path(slug)
+        with self.preparation_lock:
+            return dict(self.preparations.get(slug, {'phase': 'complete'}))
+
+    def refresh_format(self, slug, progress=None):
         """Rebuild derived pages on first opening an older archive, without network access."""
         self.task_path(slug)
         folder = self.output / slug
@@ -117,13 +157,13 @@ class Jobs:
             if not path.is_file() or not (folder / "archive.sqlite3").is_file():
                 return
             report = json.loads(path.read_text(encoding="utf-8"))
-            if report.get("format_version") == "0.7.2":
+            if report.get("format_version") == __version__:
                 return
             from .storage import Store
             from .render import build_archive
             store = Store(folder)
             try:
-                build_archive(store, report, images=False)
+                build_archive(store, report, images=False, progress=progress)
             finally:
                 store.close()
 
@@ -367,6 +407,11 @@ def make_server(output: Path, port=8787):
                 return self.json(jobs.snapshot())
             if path == "/api/archives":
                 return self.json(jobs.archives())
+            if path.startswith('/api/preparation/'):
+                try:
+                    return self.json(jobs.preparation(path.removeprefix('/api/preparation/')))
+                except ExportError as exc:
+                    return self.json({'error': str(exc)}, 400)
             if path.startswith("/api/timeline/"):
                 slug = path.removeprefix("/api/timeline/")
                 from .storage import Store
@@ -398,9 +443,16 @@ def make_server(output: Path, port=8787):
                 icon = relative.parts[1:] in {("assets", "favicon.svg"), ("assets", "favicon.ico")}
                 if any(part.startswith(".") for part in relative.parts) or not target.is_relative_to(jobs.output) or (not icon and target.suffix not in {".html", ".css", ".js", ".json", ".jpg", ".png", ".gif", ".webp", ".avif"}):
                     return self.json({"error": "Нет доступа."}, 403)
-                if relative.parts and target.name == "index.html":
+                if len(relative.parts) == 2 and target.suffix == '.html':
                     try:
-                        jobs.refresh_format(relative.parts[0])
+                        preparation = jobs.prepare_format(relative.parts[0])
+                        if preparation:
+                            from .render import ENV
+                            body = ENV.get_template('preparing.html').render(app=True, source=True,
+                                user='', report={}, slug=relative.parts[0]).encode('utf-8')
+                            self.response_headers(200, 'text/html; charset=utf-8', len(body))
+                            self.wfile.write(body)
+                            return
                     except (ExportError, OSError, ValueError):
                         return self.json({"error": "Не удалось обновить оформление архива. Проверьте папку и свободное место."}, 409)
                 active = jobs.snapshot().get("slug") == relative.parts[0] and jobs.snapshot().get("phase") not in TERMINAL
@@ -530,6 +582,8 @@ def make_server(output: Path, port=8787):
                             jobs.thread.join()
                         if jobs.move_thread and jobs.move_thread.is_alive():
                             jobs.move_thread.join()
+                        for thread in jobs.preparation_threads:
+                            thread.join()
                         self.server.shutdown()
                     self.json({"message": "Сохраняем прогресс и завершаем приложение."})
                     self.wfile.flush()
@@ -566,4 +620,6 @@ def run_server(server, open_browser=True):
     finally:
         if server.jobs.move_thread and server.jobs.move_thread.is_alive():
             server.jobs.move_thread.join()
+        for thread in server.jobs.preparation_threads:
+            thread.join()
         server.server_close()

@@ -14,6 +14,13 @@
   const link = (url, text) => {
     const n = node('a', text); n.href = url; return n;
   };
+  const discussionURL = (person, year) => 'discussions.html?' + new URLSearchParams({person, ...(year ? {year} : {})});
+  const initial = new URLSearchParams(location.search);
+  if (initial.has('year')) $('stats-year').value = initial.get('year');
+  if (people.has(initial.get('person'))) {
+    const person = people.get(initial.get('person'));
+    $('stats-search').value = person.name; $('stats-owner').checked = person.owner;
+  }
   let page = 0, edgeLimit = 40;
   function metric(person, year) {
     const row = year ? person.years[year] : person;
@@ -29,7 +36,7 @@
   function fitYears() {
     const table = $('stats-people'), style = getComputedStyle(table);
     const fixed = parseFloat(style.getPropertyValue('--stats-name-width')) + parseFloat(style.getPropertyValue('--stats-total-width'));
-    const minimum = $('stats-metric').value === 'share' ? 52 : 38;
+    const minimum = 38;
     const width = Math.max(minimum, Math.min(56, Math.floor((table.parentElement.clientWidth - fixed) / Math.max(1, data.years.length))));
     table.style.setProperty('--stats-year-width', width + 'px');
   }
@@ -43,6 +50,7 @@
     const pages = Math.max(1, Math.ceil(visible.length / 30));
     page = Math.min(page, pages - 1);
     const table = $('stats-people'); table.replaceChildren();
+    table.classList.toggle('stats-percent', $('stats-metric').value === 'share');
     table.style.setProperty('--stats-years', String(data.years.length));
     fitYears();
     const head = node('thead'), hr = node('tr');
@@ -55,13 +63,17 @@
     for (const p of data.people.filter(p => own || !p.owner)) for (const y of data.years) peak = Math.max(peak, metric(p, y));
     for (const p of subset) {
       const tr = node('tr'), name = node('th', p.name); name.scope = 'row'; name.title = p.name;
-      tr.append(name, node('td', format(metric(p, year)), 'stats-total'));
+      const total = node('td', undefined, 'stats-total'); total.append(link(discussionURL(p.id, year), format(metric(p, year))));
+      tr.append(name, total);
       for (const y of data.years) {
         const td = node('td');
         if (p.years[y]) {
-          const value = metric(p, y), a = link(p.years[y].url, format(value));
+          const value = metric(p, y), a = link(discussionURL(p.id, y), format(value));
+          if ($('stats-metric').value === 'share') {
+            a.replaceChildren(node('span', value.toLocaleString('ru', {maximumFractionDigits: 1})), node('small', '%'));
+          }
           a.className = 'heat heat-' + Math.max(1, Math.ceil(Math.log1p(value) / Math.log1p(peak || 1) * 5));
-          a.title = `${p.name} · ${y}: ${number(p.years[y].comments)} комм. / ${number(p.years[y].posts)} записей`;
+          a.title = `${p.name} · ${y}: ${format(value)} · ${number(p.years[y].comments)} комм. / ${number(p.years[y].posts)} записей`;
           td.append(a);
         } else {
           const zero = node('span', '·', 'heat heat-zero'); zero.title = 'Нет сохранённых комментариев'; td.append(zero);

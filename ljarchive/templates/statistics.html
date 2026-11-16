@@ -9,7 +9,7 @@
 <div class="view-switch" role="group" aria-label="Раздел статистики"><button data-stats-tab="explore" aria-pressed="true">Исследовать</button><button data-stats-tab="findings" aria-pressed="false">Находки</button></div>
 <section id="stats-explore">
 <div class="stats-controls"><label>Год <select id="stats-year"><option value="">Все годы</option>{% for year in stats.years %}<option>{{ year }}</option>{% endfor %}</select></label><label>Показатель <select id="stats-metric"><option value="comments">Комментарии</option><option value="posts">Обсуждённые записи</option><option value="share">Доля комментариев</option></select></label><label class="stats-check"><input type="checkbox" id="stats-owner"> С автором журнала</label><input id="stats-search" class="input" type="search" aria-label="Найти участника" placeholder="Участник"></div>
-<h2>Люди по годам</h2><p class="fine">Год комментария. Число в ячейке открывает обсуждение.</p>
+<h2>Люди по годам</h2><p class="fine">Год комментария. Число в ячейке открывает записи и комментарии.</p>
 <div class="stats-scroll" tabindex="0" role="region" aria-label="Участники по годам"><table class="stats-heat" id="stats-people"></table></div>
 <div class="heat-legend" aria-label="Зелёная шкала активности"><span>Меньше</span>{% for level in range(1,6) %}<i class="heat-{{ level }}" aria-hidden="true"></i>{% endfor %}<span>Больше</span></div>
 <div class="stats-pager"><button class="btn" id="stats-prev">←</button><span id="stats-page" aria-live="polite"></span><button class="btn" id="stats-next">→</button></div>

@@ -23,6 +23,7 @@ def title_of(entry):
 
 
 def statistics(data):
+    from .comment_state import comment_view
     entries = {int(e['itemid']): e for e in data.get('entries', [])}
     from .entries import is_repost
     repost_ids = {eid for eid, entry in entries.items() if is_repost(entry)}
@@ -33,6 +34,7 @@ def statistics(data):
     owner_id = journal.get('id')
     people, yearly, edges = {}, {}, {}
     events, by_entry = defaultdict(list), defaultdict(list)
+    comment_index = []
     unknown_dates = anonymous = deleted = dangling = 0
 
     def author(c):
@@ -54,6 +56,14 @@ def statistics(data):
         day, person = date_of(c), authors[cid]
         year = str(day.year) if day else None
         link = f'entries/{eid}.html#comment-{cid}'
+        view = comment_view(c)
+        excerpt = unescape(re.sub(r'<[^>]*>', ' ', str(view['display_body'] or '')))
+        excerpt = ' '.join(excerpt.split())
+        comment_index.append({'id': cid, 'entry': eid, 'person': person, 'year': year,
+                              'date': str(c.get('date') or (day.isoformat() if day else '')),
+                              'day': day.isoformat() if day else '', 'url': link,
+                              'excerpt': excerpt[:180] + ('…' if len(excerpt) > 180 else ''),
+                              'state': c.get('state', 'A'), 'state_label': view['state_label']})
         deleted += c.get('state') in ('D', 'X')
         unknown_dates += day is None
         anonymous += person is None
@@ -143,6 +153,9 @@ def statistics(data):
                          'posts_complete': bool(coverage.get('posts_done')), 'scope': data.get('scope', {})},
             'people': sorted(people.values(), key=lambda p: (-p['comments'], p['id'])),
             'edges': sorted(edges.values(), key=lambda e: (-e['count'], e['source'], e['target'])),
+            'discussions': {'posts': [{'id': eid, 'title': title_of(entry), 'date': entry.get('eventtime', ''),
+                                       'url': f'entries/{eid}.html'} for eid, entry in sorted(entries.items())],
+                            'comments': sorted(comment_index, key=lambda c: (c['day'], c['id']))},
             'revivals': sorted(revivals, key=lambda r: (-r['days'], r['entry']))[:30],
             'returns': sorted(returns, key=lambda r: (-r['days'], r['person']))[:30]}
 
@@ -164,6 +177,13 @@ def write_statistics_data(folder, data, report):
     from .storage import atomic_write, dumps
     atomic_write(folder / 'data' / 'statistics.json', dumps(data) + '\n')
     atomic_write(folder / 'assets' / 'statistics-data.js',
-                 'window.ARCHIVE_STATS=' + dumps(data).replace('<', '\\u003c') + ';')
+                 'window.ARCHIVE_STATS=' + dumps({k: v for k, v in data.items() if k != 'discussions'}).replace('<', '\\u003c') + ';')
+    atomic_write(folder / 'assets' / 'discussions-data.js',
+                 'window.ARCHIVE_DISCUSSIONS=' + dumps({**data.get('discussions', {}),
+                    'people': [{'id': p['id'], 'name': p['name']} for p in data['people']]}).replace('<', '\\u003c') + ';')
+    from pathlib import Path
+    atomic_write(folder / 'assets' / 'discussions.js', (Path(__file__).parent / 'static' / 'discussions.js').read_bytes())
+    atomic_write(folder / 'discussions.html', ENV.get_template('discussions.html').render(
+        user=report['username'], report=report))
     atomic_write(folder / 'statistics.html', ENV.get_template('statistics.html').render(
         user=report['username'], report=report, stats=data))

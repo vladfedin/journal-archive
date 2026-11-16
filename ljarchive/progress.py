@@ -29,7 +29,7 @@ def capture_materials(exporter, entry):
     if media is None:
         media = exporter._media = Media(store.folder, exporter.images, exporter.client.cancel,
                                        getattr(exporter.client, 'budget', None))
-        media.mapping.update(store.get('media', {}))
+        media.load_state(store)
     comments = store.comments(eid)
     parser = Images(original_url(exporter.client.user, entry))
     pictures = set()
@@ -49,7 +49,7 @@ def capture_materials(exporter, entry):
                           'urls': [u for u, _ in requested], 'requested': len(requested), 'saved': sum(bool(media.mapping.get(u)) for u, _ in requested)}
         with store.db:
             store.set('entry_materials', state)
-            store.set('media', {**store.get('media', {}), **media.mapping})
+            media.save_state(store)
     checkpoint()
     for url, category in requested:
         exporter.client.check()

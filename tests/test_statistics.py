@@ -65,6 +65,26 @@ def test_empty_archive_and_same_identity_after_rename():
     assert next(p for p in stats['people'] if p['id'] == 'user:2')['comments'] == 4
 
 
+def test_discussion_index_matches_every_person_year_and_retains_unknown_dates():
+    source = fixture()
+    source['comments'][2]['body'] = '<b>Test &amp; text</b>'
+    stats = statistics(source)
+    index = stats['discussions']
+    assert len(index['comments']) == stats['totals']['comments']
+    assert index['posts'][0]['title'] == 'Old post'
+    assert next(c for c in index['comments'] if c['id'] == 3)['excerpt'] == 'Test & text'
+    assert next(c for c in index['comments'] if c['id'] == 1)['state_label'] == 'Удалён'
+    assert next(c for c in index['comments'] if c['id'] == 2)['state_label'] == 'Скрыт'
+    for person in stats['people']:
+        rows = [c for c in index['comments'] if c['person'] == person['id']]
+        assert len(rows) == person['comments']
+        assert len({c['entry'] for c in rows}) == person['posts']
+        for year, bucket in person['years'].items():
+            selected = [c for c in rows if c['year'] == year]
+            assert len(selected) == bucket['comments']
+            assert len({c['entry'] for c in selected}) == bucket['posts']
+
+
 def test_real_getcomments_utc_dates_populate_years_edges_and_findings():
     source = fixture()
     for c in source['comments']:
