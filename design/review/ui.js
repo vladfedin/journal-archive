@@ -45,10 +45,9 @@ if(page==='library'){
     if(!limitEdited)$('request-limit').value=value==='latest'?'50':'';
     $('request-limit').required=value==='latest';
   }
-  function openDialog(kind){mode=kind;document.querySelectorAll('.more[open]').forEach(el=>el.open=false);const resume=kind==='resume',isNew=kind==='new';$('dialog-title').textContent=resume?'Продолжить загрузку':kind==='verify'?'Проверить и обновить':isNew?'Новый архив':'Обновить архив';$('submit-export').textContent=resume?'Продолжить':kind==='verify'?'Проверить':isNew?'Создать':'Обновить';$('username').value=isNew?'':'fieldnotes';$('username').readOnly=!isNew;$('password').value='';$('password').type='password';$('username-field').hidden=resume;$('credentials').style.gridTemplateColumns=resume?'1fr':'';$('scope-fields').hidden=resume;$('resume-note').hidden=!resume;document.querySelector('[data-scope=latest]').hidden=!isNew;document.querySelector('[data-scope=urls]').hidden=isNew;if(!resume){limitEdited=false;setScope(isNew||kind==='verify'?'full':'period');}else{$('resume-note').textContent='fieldnotes · '+scopeNames[taskScope];$('request-limit').required=false;}dialog.showModal();}
+  function openDialog(kind){mode=kind;document.querySelectorAll('.more[open]').forEach(el=>el.open=false);const resume=kind==='resume',isNew=kind==='new';$('dialog-title').textContent=resume?'Продолжить загрузку':isNew?'Новый архив':'Обновить архив';$('submit-export').textContent=resume?'Продолжить':isNew?'Создать':'Обновить';$('username').value=isNew?'':'fieldnotes';$('username').readOnly=!isNew;$('password').value='';$('password').type='password';$('username-field').hidden=resume;$('credentials').style.gridTemplateColumns=resume?'1fr':'';$('scope-fields').hidden=resume;$('resume-note').hidden=!resume;document.querySelector('[data-scope=latest]').hidden=!isNew;document.querySelector('[data-scope=urls]').hidden=isNew;if(!resume){limitEdited=false;setScope(isNew?'full':'period');}else{$('resume-note').textContent='fieldnotes · '+scopeNames[taskScope];$('request-limit').required=false;}dialog.showModal();}
   document.querySelectorAll('[data-new]').forEach(b=>b.onclick=()=>openDialog('new'));
   document.querySelectorAll('[data-update]').forEach(b=>b.onclick=()=>openDialog('update'));
-  document.querySelectorAll('[data-verify]').forEach(b=>b.onclick=()=>openDialog('verify'));
   document.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>dialog.close());
   document.querySelectorAll('[data-scope]').forEach(b=>b.onclick=()=>setScope(b.dataset.scope));
   dialog.addEventListener('click',e=>{if(e.target===dialog){const r=dialog.getBoundingClientRect();if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom)dialog.close();}});
@@ -72,7 +71,6 @@ if(page==='library'){
   if(params.has('job')){if(params.get('job')==='limit'){taskLimit=50;taskScope='latest';}job(params.get('job'));}
   if(params.has('new'))openDialog('new');
   if(params.has('update'))openDialog('update');
-  if(params.has('verify'))openDialog('verify');
   if(params.has('resume')){job('stopped');openDialog('resume');}
 }
 if(page==='archive'){
