@@ -123,6 +123,7 @@ def preview_entry(store, eid):
     from .render import ENV, safe_content, original_url, plain, threaded, needs_autoformat
     from .userpics import describe
     from .presentation import reaction_view
+    from .comment_state import comment_view
     from .media import Media
     import threading
     row = store.db.execute('SELECT payload FROM entries WHERE id=?', (eid,)).fetchone()
@@ -137,11 +138,12 @@ def preview_entry(store, eid):
     try:
         names = {c['id']: c.get('user') or 'Аноним' for c in comments}
         for c in comments:
+            c.update(comment_view(c))
             c.update(user=names[c['id']], parent_user=names.get(c.get('parentid')), by_owner=names[c['id']] == user,
-                     userpic_view=pictures['comment'].get(str(c['id'])), state_label={'S': 'Скрыт', 'D': 'Удалён', 'X': 'Удалён'}.get(c['state'], ''),
+                     userpic_view=pictures['comment'].get(str(c['id'])),
                      subject_text=plain(c.get('subject')), autoformat=needs_autoformat(c.get('body'), c.get('props')),
                      reaction_view=reaction_view(c.get('reactions')),
-                     html=safe_content(c.get('body', 'Текст пока не получен.'), url, {}, media, set()))
+                     html=safe_content(c['display_body'], url, {}, media, set()))
         security = entry.get('security', 'public')
         summary = {'title': plain(entry.get('subject')) or 'Без заголовка', 'date': entry.get('eventtime', ''),
                    'security': security, 'security_label': {'private': 'Личная', 'usemask': 'Для друзей / группы'}.get(security, security),

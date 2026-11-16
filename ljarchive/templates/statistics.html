@@ -1,0 +1,26 @@
+{% extends 'base.html' %}
+{% block title %}Статистика · {{ user }}{% endblock %}
+{% block head %}<script defer src="assets/statistics-data.js"></script><script defer src="assets/statistics.js"></script>{% endblock %}
+{% block body %}
+<main class="main stats-main">
+<div class="heading"><h1>Статистика</h1><a href="data/statistics.json" download>JSON ↓</a></div>
+<p class="muted">{{ stats.totals.people|plural('участник','участника','участников') }} · {{ stats.totals.comments|plural('комментарий','комментария','комментариев') }}{% if stats.years %} · {{ stats.years|first }}–{{ stats.years|last }}{% endif %}</p>
+{% if report.status == "demo" %}<p class="inline-status">Пример · вымышленные данные</p>{% elif not stats.coverage.discussions_complete or not stats.coverage.posts_complete %}<p class="inline-status"><a href="report.html">Архив неполный</a> · статистика по полученным данным</p>{% endif %}
+<div class="view-switch" role="group" aria-label="Раздел статистики"><button data-stats-tab="explore" aria-pressed="true">Исследовать</button><button data-stats-tab="findings" aria-pressed="false">Находки</button></div>
+<section id="stats-explore">
+<div class="stats-controls"><label>Год <select id="stats-year"><option value="">Все годы</option>{% for year in stats.years %}<option>{{ year }}</option>{% endfor %}</select></label><label>Показатель <select id="stats-metric"><option value="comments">Комментарии</option><option value="posts">Обсуждённые записи</option><option value="share">Доля комментариев</option></select></label><label class="stats-check"><input type="checkbox" id="stats-owner"> С автором журнала</label><input id="stats-search" class="input" type="search" aria-label="Найти участника" placeholder="Участник"></div>
+<h2>Люди по годам</h2><p class="fine">Год комментария. Число в ячейке открывает обсуждение.</p>
+<div class="stats-scroll" tabindex="0" role="region" aria-label="Участники по годам"><table class="stats-heat" id="stats-people"></table></div>
+<div class="stats-pager"><button class="btn" id="stats-prev">←</button><span id="stats-page" aria-live="polite"></span><button class="btn" id="stats-next">→</button></div>
+<h2>Кто кому отвечал</h2><p class="fine">Стрелка идёт от автора ответа к собеседнику. Показаны до 20 участников и 40 связей; все связи — в таблице.</p>
+<svg id="stats-graph" viewBox="0 0 760 490" role="img" aria-label="Граф ответов между комментаторами"><title>Ответы между участниками</title></svg>
+<div class="stats-scroll" tabindex="0" role="region" aria-label="Связи участников"><table class="stats-edges"><thead><tr><th>Кто</th><th>Кому</th><th>Ответов</th><th>Обсуждение</th></tr></thead><tbody id="stats-edges"></tbody></table></div><button class="btn" id="stats-more-edges" hidden>Ещё связи</button>
+</section>
+<section id="stats-findings" hidden>
+<h2>Старые записи ожили</h2><p class="fine">Самые длинные паузы перед новым комментарием — от года.</p><div id="stats-revivals" class="stats-findings"></div>
+<h2>Возвращения</h2><p class="fine">Перерывы между комментариями одного человека в этом архиве — от года.</p><div id="stats-returns" class="stats-findings"></div>
+</section>
+<details class="stats-notes"><summary>Как считается</summary><p>Скрытые и удалённые комментарии учитываются, если сохранились автор и дата. Удаление не считается ошибкой загрузки. Доли рассчитаны от всех комментариев выбранного года, включая ответы автора журнала и анонимные.</p><p>Обсуждённые записи — число разных постов, в которых участвовал человек. Граф показывает только прямые ответы между разными известными авторами. Ответы к самому посту и ссылки на отсутствующего родителя не создают связь.</p><p>Без известной даты: {{ stats.totals.unknown_dates }}. Без известного автора: {{ stats.totals.anonymous }}. Удалённых: {{ stats.totals.deleted }}. Отсутствующих родителей: {{ stats.totals.missing_parents }}.</p><p>Пустая ячейка означает отсутствие сохранённых комментариев, а не доказанное отсутствие общения. «Возвращение» относится только к данным архива. Время реакций неизвестно — они не включены в хронологию.</p></details>
+<noscript><p>Для графиков включите JavaScript. <a href="data/statistics.json">Данные статистики в JSON</a>.</p></noscript>
+</main>
+{% endblock %}

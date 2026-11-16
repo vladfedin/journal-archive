@@ -66,10 +66,13 @@ def create_demo(folder: Path, progress=None):
                 store.save_entry({"itemid": eid, "anum": 1, "eventtime": date, "subject": title,
                                   "event": body, "security": security, "props": {"taglist": tags}})
                 store.save_reactions("post", eid, demo_reactions([eid + 2]))
+            author_ids = {name: uid + 1 for uid, name in enumerate(dict.fromkeys(c[3] for c in comments))}
             for cid, eid, parent, user, state, body in comments:
-                store.db.execute("INSERT OR REPLACE INTO users VALUES (?,?)", (cid, user))
-                store.db.execute("INSERT OR REPLACE INTO comment_meta VALUES (?,?,?)", (cid, cid, state))
-                store.save_comment({"id": cid, "jitemid": eid, "parentid": parent, "posterid": cid,
+                uid = 0 if user == "Аноним" else author_ids[user]
+                if uid:
+                    store.db.execute("INSERT OR REPLACE INTO users VALUES (?,?)", (uid, user))
+                store.db.execute("INSERT OR REPLACE INTO comment_meta VALUES (?,?,?)", (cid, uid, state))
+                store.save_comment({"id": cid, "jitemid": eid, "parentid": parent, "posterid": uid,
                                     "userpic": owner_pic if user == "example_journal" else reply_pic, "body": body, "date": entries[6 - eid][1].replace(" ", "T") + "Z"})
                 groups = [2, 1] if cid == 4 else [cid % 3]
                 store.save_reactions("comment", cid, demo_reactions(groups))

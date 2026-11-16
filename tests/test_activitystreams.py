@@ -67,7 +67,10 @@ def test_relationships_and_selected_pictures_survive_in_standard_projection(sour
         assert item['inReplyTo'] == parent['id']
         assert item['id'] in parent['replies']['items']
         assert item['context'] == post(doc, original['jitemid'])['id']
-        assert item['attributedTo']['name'] == original['user']
+        if original['user']:
+            assert item['attributedTo']['name'] == original['user']
+        else:
+            assert 'attributedTo' not in item
         pic = source['userpics']['comment'][str(original['id'])]
         assert item['icon']['ja:localPath'] == pic['path']
         assert item['ja:state'] == original['state']

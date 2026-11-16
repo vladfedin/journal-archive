@@ -298,17 +298,6 @@ class SyncExporter(Exporter):
             raise failure
         self.checkpoint(phase="reactions")
 
-    def save_thread(self, items, users):
-        super().save_thread(items, users)
-        with self.store.db:
-            for item in items:
-                if "body" not in item and item.get("state") not in ("D", "X"):
-                    row = self.store.db.execute("SELECT payload FROM comments WHERE id=?", (item["id"],)).fetchone()
-                    current = json.loads(row[0])
-                    current.update(item)
-                    current["source_status"] = "body_not_returned"
-                    self.store.save_comment(current)
-
     def report(self, error=None, cancelled=False):
         counts = self.store.counts()
         statuses = self.store.get("entry_comments", {})

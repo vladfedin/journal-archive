@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .client import APIError, Cancelled, ExportError, IncompleteData, LiveJournalClient, RequestBudget, username
 from .storage import Store, atomic_write, dumps
+from .comment_state import DELETED, merge_comment
 
 
 def now():
@@ -44,12 +45,12 @@ def normalize_thread(nodes, entry_id):
                 "state": node.get("state") or "A", "subject": node.get("subject", ""),
                 "date": node.get("datepost", ""), "props": node.get("props", {}),
                 "dtalkid": int(node["dtalkid"])}
-        for key in ("userpic", "poster_userpic_url"):
+        for key in ("userpic", "poster_userpic_url", "datepostunix", "is_show", "is_loaded"):
             if key in node:
                 item[key] = node[key]
         if "body" in node and node["body"] is not None:
             item["body"] = node["body"]
-        elif node.get("is_loaded", node.get("_loaded")) in (1, "1", True):
+        elif item["state"] not in DELETED and node.get("is_loaded", node.get("_loaded")) in (1, "1", True):
             item["body"] = ""
         name = node.get("postername", node.get("user"))
         if poster and isinstance(name, str) and name:
@@ -321,6 +322,7 @@ class Exporter:
                         raise IncompleteData(str(exc)) from exc
                     self.save_thread(expanded_items, expanded_users)
                     status["seen_ids"] = sorted(set(status["seen_ids"]) | {int(c["id"]) for c in expanded_items})
+                self.confirm_deleted(eid, status)
                 status["done"] = self.discussion_complete(entry, status)
                 with store.db:
                     store.set("userpic_comments_requested", sorted(set(store.get("userpic_comments_requested", [])) | {eid}))
@@ -338,17 +340,49 @@ class Exporter:
         from .progress import capture_materials
         capture_materials(self, entry)
 
-    def save_thread(self, items, users):
+    def save_thread(self, items, users, *, evidence="getcomments"):
         store = self.store
         with store.db:
+            import json
             for item in items:
+                row = store.db.execute("SELECT payload FROM comments WHERE id=?", (item["id"],)).fetchone()
+                current = merge_comment(json.loads(row[0]) if row else None, item, evidence=evidence)
+                store.save_comment(current)
                 store.db.execute("INSERT OR REPLACE INTO comment_meta VALUES (?,?,?)",
-                                 (item["id"], item["posterid"], item["state"]))
-                previous = store.db.execute("SELECT json_type(payload,'$.body') FROM comments WHERE id=?", (item["id"],)).fetchone()
-                if "body" in item or not previous or previous[0] is None:
-                    store.save_comment(item)
+                                 (current["id"], current["posterid"], current["state"]))
             for uid, name in users.items():
                 store.db.execute("INSERT OR REPLACE INTO users VALUES (?,?)", (uid, name))
+
+    def confirm_deleted(self, eid, status):
+        """Check bodyless nodes against explicit export metadata, never infer deletion.
+
+        At most three windows per discussion pass, through the shared budget.
+        Normal discussions and explicit tombstones incur no additional requests.
+        """
+        if not callable(getattr(self.client, "comments", None)):
+            return
+        pending = {c['id']: c for c in self.store.comments(eid)
+                   if c['id'] in status.get('seen_ids', []) and c.get('state') not in DELETED
+                   and ('body' not in c or c.get('source_status') == 'body_not_returned')}
+        for _ in range(3):
+            if not pending:
+                break
+            start = min(pending)
+            page, raw = self.client.comments('comment_meta', start)
+            atomic_write(self.folder / 'raw' / f'deletion-meta-{eid}-{start}.xml', raw)
+            matched = []
+            for meta in page.comments:
+                if meta['id'] in pending:
+                    old = pending.pop(meta['id'])
+                    if meta.get('state') in DELETED:
+                        item = {**old, **meta}
+                        item.pop('source_status', None)
+                        item.pop('body', None)
+                        matched.append(item)
+            self.save_thread(matched, page.users, evidence="comment_meta")
+            # A window that does not confirm the requested ID is not a deletion.
+            boundary = max((c['id'] for c in page.comments), default=start)
+            pending = {cid: c for cid, c in pending.items() if cid > boundary}
 
     def reconcile_posts(self):
         self.update("posts", "Проверяем записи по списку синхронизации ЖЖ…")

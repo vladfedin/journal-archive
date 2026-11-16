@@ -125,6 +125,10 @@ class Store:
         for row in rows:
             item = json.loads(row[0])
             item["state"] = row[1] or item.get("state", "A")
+            if item["state"] in ("D", "X"):
+                # Older versions kept the latest state in comment_meta only.
+                # Do not present that confirmed tombstone as a failed download.
+                item.pop("source_status", None)
             poster = row[2] if row[2] is not None else item.get("posterid", 0)
             item["posterid"] = poster
             item["user"] = row[3] or None

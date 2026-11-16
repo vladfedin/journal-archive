@@ -156,6 +156,11 @@ def to_activitystreams(data):
             obj["ja:metadataOnly"] = True
         if state in ("D", "X"):
             obj.update(type="Tombstone", formerType="Note")
+            obj["ja:contentStatus"] = "retained-before-deletion" if "body" in record else "deleted"
+            deletion = record.get("deletion", {})
+            if deletion.get("observed_at"):
+                obj["ja:deletionObservedAt"] = deletion["observed_at"]
+            obj["ja:deletedAfterArchive"] = bool(deletion.get("after_archive"))
         if isinstance(state, str):
             obj["ja:state"] = state
         if is_post:
@@ -208,7 +213,7 @@ def to_activitystreams(data):
             obj["mediaType"] = "text/html"
             if parser.images:
                 obj["attachment"] = [image(value, media) for value in parser.images]
-        else:
+        elif state not in ("D", "X"):
             obj["ja:contentStatus"] = "unavailable" if body is None else "unknown-encoding"
         tags = props.get("taglist")
         if isinstance(tags, str):

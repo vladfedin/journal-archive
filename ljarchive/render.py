@@ -270,7 +270,7 @@ def build_archive(store: Store, report: dict, *, images=False, userpics=False, c
     media = media or Media(folder, images, cancel, budget=budget)
     media.enabled = images
     entries, comments = store.entries(), store.comments()
-    report["format_version"] = "0.6.3"
+    report["format_version"] = "0.7.0"
     report.setdefault("issues", [])
     report["reactions"] = reaction_report(store)
     if report.get("status") == "complete" and not (report["reactions"]["complete"] and report["reactions"]["authors_complete"]):
@@ -318,11 +318,11 @@ def build_archive(store: Store, report: dict, *, images=False, userpics=False, c
             links[(url.hostname, url.path)] = str(entry["itemid"]) + ".html"
     comment_ids = {int(c["id"]) for c in comments}
     (folder / "assets").mkdir(exist_ok=True)
-    for asset in ("archive.css", "archive.js", "theme.js", "common.js", "favicon.svg", "favicon.ico", "timeline.js"):
+    for asset in ("archive.css", "archive.js", "theme.js", "common.js", "favicon.svg", "favicon.ico", "timeline.js", "statistics.js"):
         shutil.copyfile(ROOT / "static" / asset, folder / "assets" / asset)
     search, summaries = [], []
     labels = {"public": "Открытая", "private": "Личная", "usemask": "Для друзей / группы"}
-    states = {"A": "", "S": "Скрыт", "D": "Удалён", "X": "Удалён", "F": "Заморожен"}
+    from .comment_state import comment_view
     try:
         for index, entry in enumerate(entries):
             if progress:
@@ -349,8 +349,8 @@ def build_archive(store: Store, report: dict, *, images=False, userpics=False, c
                 item["userpic_view"] = pictures["comment"].get(str(item["id"]))
                 item["by_owner"] = item["user"] == user
                 item["parent_user"] = authors.get(int(item.get("parentid") or 0))
-                item["state_label"] = states.get(item["state"], "Состояние: " + item["state"])
-                item["html"] = safe_content(item.get("body", "Текст комментария недоступен."), url, links, media, comment_ids)
+                item.update(comment_view(item))
+                item["html"] = safe_content(item["display_body"], url, links, media, comment_ids)
                 item["subject_text"] = plain(item.get("subject"))
                 item["autoformat"] = needs_autoformat(item.get("body"), item.get("props"))
                 item["reaction_view"] = reaction_view(item.get("reactions"))
@@ -400,6 +400,8 @@ def build_archive(store: Store, report: dict, *, images=False, userpics=False, c
     render_personal(store, report)
     from .progress import write_timeline
     write_timeline(store, report)
+    from .statistics import write_statistics
+    write_statistics(store, report)
     export_json(store, split=True)
     atomic_write(folder / "export-report.json", dumps(report))
     # JS file rather than fetch(): search also works when opened through file://.

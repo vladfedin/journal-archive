@@ -96,6 +96,7 @@ def capture_authors(store, client, targets, progress=None):
 
 def capture_reactions(store, client, progress=None, *, entry_ids=None, checkpoint=None):
     entries, comments = store.entries(), store.comments()
+    comments = [c for c in comments if c.get("state") not in ("D", "X")]
     if entry_ids is not None:
         entries = [e for e in entries if int(e["itemid"]) in entry_ids]
         comments = [c for c in comments if int(c.get("jitemid", 0)) in entry_ids and c.get("source_status") != "not_returned"]
@@ -177,6 +178,7 @@ def capture_reactions(store, client, progress=None, *, entry_ids=None, checkpoin
 
 def reaction_report(store):
     entries, comments = store.entries(), store.comments()
+    comments = [c for c in comments if c.get("state") not in ("D", "X")]
     posts_saved = sum("reactions" in item for item in entries)
     comments_saved = sum("reactions" in item for item in comments)
     posts_authors = sum(item.get("reactions", {}).get("authors", {}).get("status") == "complete" for item in entries)
