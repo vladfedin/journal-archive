@@ -24,10 +24,11 @@ def resolve(item, kind, catalog=None, media=None, owner=None):
     for field in ('poster_userpic_url', 'userpic'):
         if field in item:
             value = item[field]
+            present = bool(value)
             if isinstance(value, dict):
                 value = value.get('url')
             url = picture_url(value)
-            result.update(url=url, selection='selected' if url else 'none' if not value else 'unknown')
+            result.update(url=url, selection='selected' if url else 'unknown' if present else 'none')
             break
     else:
         if kind == 'comment':

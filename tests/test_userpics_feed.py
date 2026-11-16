@@ -47,6 +47,7 @@ def test_selected_comment_pictures_are_preserved_per_reply_and_unknown_is_not_de
     assert resolve({'posterid': 5}, 'comment', catalog)['url'] is None
     assert resolve({'userpic': '', 'posterid': 5}, 'comment', catalog)['selection'] == 'none'
     assert resolve({'userpic': 'file:///etc/passwd'}, 'comment')['url'] is None
+    assert resolve({'userpic': {'picid': 9, 'userid': 5}}, 'comment')['selection'] == 'unknown'
 
 
 def test_userpics_download_without_post_images_and_resume_only_missing_file(tmp_path, monkeypatch):
