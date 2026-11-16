@@ -21,7 +21,7 @@ function icons() { document.querySelectorAll('[data-icon]').forEach(el => { el.i
 const isReader = ['archive','entry','status'].includes(page);
 $('review').innerHTML = `<div class="review-bar"><div class="review-inner"><span>Макет · Без подключения к ЖЖ</span><a href="review.html">Сценарии</a><a href="index.html">Архивы</a><a href="index.html?new=1">Создание</a><a href="index.html?job=waiting">Пауза</a><a href="entry.html">Запись</a><a href="help.html">Помощь</a></div></div>`;
 $('header').innerHTML = `<div class="header-inner"><a class="brand" href="${isReader?'archive.html':'index.html'}"><span class="mark">${svg('archive')}</span>${isReader?'fieldnotes':'Архив ЖЖ'}</a><nav class="nav" aria-label="Разделы">${isReader?'<a href="archive.html">Записи</a>':'<a href="index.html" '+(page==='library'?'aria-current="page"':'')+'>Архивы</a>'}<a href="help.html" ${page==='help'?'aria-current="page"':''}>Помощь</a><button class="icon" id="theme" aria-label="Тёмная тема" title="Тёмная тема">${svg('moon')}</button>${isReader?'<details class="more"><summary aria-label="Действия с архивом">⋯</summary><div class="menu"><button data-json>Скачать JSON</button><a href="status.html?complete=1">Состояние архива</a></div></details>':''}</nav></div>`;
-$('footer').innerHTML = isReader?'<span>fieldnotes</span><a href="status.html?complete=1">Состояние архива</a>':'<span>Архив ЖЖ · 0.3</span><a href="#" id="quit">Завершить приложение</a>';
+$('footer').innerHTML = isReader?'<span>fieldnotes · сохранено 15 ноября 2026</span><a href="status.html?complete=1">Состояние архива</a>':'<span>Архив ЖЖ · 0.3</span><a href="#" id="quit">Завершить приложение</a>';
 function setTheme(dark) { document.documentElement.dataset.theme=dark?'dark':'light'; $('theme').innerHTML=svg(dark?'sun':'moon'); $('theme').setAttribute('aria-label',dark?'Светлая тема':'Тёмная тема'); $('theme').title=dark?'Светлая тема':'Тёмная тема'; }
 let chosen; try { chosen=localStorage.getItem('journal-review-theme'); } catch (_) {}
 setTheme(chosen ? chosen==='dark' : matchMedia('(prefers-color-scheme: dark)').matches);
@@ -33,19 +33,22 @@ document.querySelectorAll('[data-json]').forEach(btn=>btn.onclick=()=>{const blo
 document.querySelectorAll('[data-zip]').forEach(btn=>btn.onclick=()=>toast('В релизе эта команда скачает страницы и данные одним ZIP-файлом.'));
 document.querySelectorAll('[data-person],[data-original]').forEach(a=>a.onclick=e=>{e.preventDefault();toast('В рабочем архиве ссылка ведёт в ЖЖ. Здесь показаны вымышленные данные.');});
 if($('quit'))$('quit').onclick=e=>{e.preventDefault();toast('Это макет. В приложении команда сохранит прогресс и завершит работу.');};
-document.addEventListener('click',event=>{document.querySelectorAll('.more[open]').forEach(menu=>{if(!menu.contains(event.target))menu.open=false;});});
+// Меню и списки авторов реакций закрываются нажатием мимо и клавишей Esc; открыт только один.
+const popups='.more[open],.reaction[open]';
+document.addEventListener('click',event=>{document.querySelectorAll(popups).forEach(menu=>{if(!menu.contains(event.target))menu.open=false;});});
+document.addEventListener('keydown',event=>{if(event.key!=='Escape')return;document.querySelectorAll(popups).forEach(menu=>{menu.open=false;menu.querySelector('summary').focus();});});
 if(page==='library'){
   const dialog=$('export-dialog');let mode='new',scope='full',jobState='running',stepTimer;
   let limitEdited=false,taskLimit=null,taskScope='full';
   const scopeNames={full:'весь журнал',period:'за период',latest:'тест (последние 10 записей)',urls:'по ссылкам'};
   function setScope(value){
     scope=value;
-    document.querySelectorAll('[data-scope]').forEach(b=>b.setAttribute('aria-selected',String(b.dataset.scope===value)));
+    document.querySelectorAll('[data-scope]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.scope===value)));
     $('period-fields').hidden=value!=='period';$('url-fields').hidden=value!=='urls';
     if(!limitEdited)$('request-limit').value=value==='latest'?'50':'';
     $('request-limit').required=value==='latest';
   }
-  function openDialog(kind){mode=kind;document.querySelectorAll('.more[open]').forEach(el=>el.open=false);const resume=kind==='resume',isNew=kind==='new';$('dialog-title').textContent=resume?'Продолжить загрузку':isNew?'Новый архив':'Обновить архив';$('submit-export').textContent=resume?'Продолжить':isNew?'Создать':'Обновить';$('username').value=isNew?'':'fieldnotes';$('username').readOnly=!isNew;$('password').value='';$('password').type='password';$('username-field').hidden=resume;$('credentials').style.gridTemplateColumns=resume?'1fr':'';$('scope-fields').hidden=resume;$('resume-note').hidden=!resume;document.querySelector('[data-scope=latest]').hidden=!isNew;document.querySelector('[data-scope=urls]').hidden=isNew;if(!resume){limitEdited=false;setScope(isNew?'full':'period');}else{$('resume-note').textContent='fieldnotes · '+scopeNames[taskScope];$('request-limit').required=false;}dialog.showModal();}
+  function openDialog(kind){mode=kind;document.querySelectorAll('.more[open]').forEach(el=>el.open=false);const resume=kind==='resume',isNew=kind==='new';$('dialog-title').textContent=resume?'Продолжить загрузку':isNew?'Новый архив':'Обновить архив';$('submit-export').textContent=resume?'Продолжить':isNew?'Создать':'Обновить';$('username').value=isNew?'':'fieldnotes';$('username').readOnly=!isNew;$('password').value='';$('password').type='password';$('username-field').hidden=resume;$('credentials').style.gridTemplateColumns=resume?'1fr':'';$('scope-fields').hidden=resume;$('resume-note').hidden=!resume;document.querySelector('[data-scope=latest]').hidden=!isNew;document.querySelector('[data-scope=urls]').hidden=isNew;if(!resume){limitEdited=false;setScope(isNew?'full':'period');}else{$('resume-note').textContent='fieldnotes · '+scopeNames[taskScope];$('request-limit').required=false;}dialog.showModal();(isNew?$('username'):$('password')).focus();}
   document.querySelectorAll('[data-new]').forEach(b=>b.onclick=()=>openDialog('new'));
   document.querySelectorAll('[data-update]').forEach(b=>b.onclick=()=>openDialog('update'));
   document.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>dialog.close());
@@ -75,11 +78,14 @@ if(page==='library'){
 }
 if(page==='archive'){
  const entries=[...document.querySelectorAll('.entry-row')];
- function filter(){const term=$('search').value.trim().toLowerCase();let count=0;for(const row of entries){const text=(row.textContent+' '+(row.dataset.search||'')).toLowerCase();row.hidden=!!(term&&!text.includes(term)||$('year').value&&row.dataset.year!==$('year').value||$('tag').value&&row.dataset.tag!==$('tag').value||$('access').value&&row.dataset.access!==$('access').value);if(!row.hidden)count++;}const active=term||$('year').value||$('tag').value||$('access').value;$('found').textContent=active?`Найдено: ${count}`:'268 записей';$('reset').hidden=!active;$('no-results').hidden=!!count;document.querySelector('.pager').hidden=!!active;}
+ // Год ставится перед первой видимой записью каждого года — как закладки в тетради.
+ function yearMarks(){document.querySelectorAll('.year-mark').forEach(m=>m.remove());let last;for(const row of $('entry-list').querySelectorAll('.entry-row')){if(row.hidden||row.dataset.year===last)continue;last=row.dataset.year;const mark=document.createElement('div');mark.className='year-mark';mark.setAttribute('aria-hidden','true');mark.textContent=last;row.before(mark);}}
+ function filter(){const term=$('search').value.trim().toLowerCase();let count=0;for(const row of entries){const text=(row.textContent+' '+(row.dataset.search||'')).toLowerCase();row.hidden=!!(term&&!text.includes(term)||$('year').value&&row.dataset.year!==$('year').value||$('tag').value&&row.dataset.tag!==$('tag').value||$('access').value&&row.dataset.access!==$('access').value);if(!row.hidden)count++;}const active=term||$('year').value||$('tag').value||$('access').value;$('found').textContent=active?`Найдено: ${count}`:'268 записей';$('reset').hidden=!active;$('no-results').hidden=!!count;document.querySelector('.pager').hidden=!!active;yearMarks();}
  for(const id of ['search','year','tag','access'])$(id).addEventListener(id==='search'?'input':'change',filter);
  $('reset').onclick=()=>{for(const id of ['search','year','tag','access'])$(id).value='';filter();};
- $('sort').onchange=()=>{const order=$('sort').value==='old'?[...entries].reverse():entries;order.forEach(row=>$('entry-list').append(row));};
+ $('sort').onchange=()=>{const order=$('sort').value==='old'?[...entries].reverse():entries;order.forEach(row=>$('entry-list').append(row));yearMarks();};
  $('next-page').onclick=e=>{e.preventDefault();toast('В макете показаны пять записей. В архиве здесь следующая страница.');};
+ yearMarks();
  if(params.has('tag')){$('tag').value=params.get('tag');filter();}
  document.addEventListener('keydown',e=>{if(e.key==='/'&&!['INPUT','TEXTAREA','SELECT'].includes(document.activeElement.tagName)){e.preventDefault();$('search').focus();}});
 }
