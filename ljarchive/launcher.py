@@ -97,7 +97,7 @@ def inspect_server(session, port, instance=None):
     if not version:
         # 0.3–0.6.1 had no version endpoint, and their Server header was stale.
         footer = re.search(r'<footer\b[^>]*>(.*?)</footer>', response.text, re.S | re.I)
-        text = html.unescape(re.sub(r'<[^>]*>', '', footer[1])) if footer else ''
+        text = html.unescape(re.sub(r'<[^>]*>', ' ', footer[1])) if footer else ''
         match = re.search(r'Архив ЖЖ\s*·\s*([0-9]+\.[0-9]+\.[0-9]+)\b', text)
         version = match[1] if match else None
     version_tuple(version)

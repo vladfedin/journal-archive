@@ -32,7 +32,7 @@ def check_upgrade(binary, directory, env):
             self.wfile.write(body)
         def do_GET(self):
             if self.path == '/':
-                return self.send('<footer>Архив ЖЖ · 0.3.0</footer>', mime='text/html')
+                return self.send('<footer class="footer"><span>Архив ЖЖ · 0.3.0</span><button id="quit">Завершить приложение</button></footer>', mime='text/html')
             if self.path == '/api/archives' and 'ljarchive_session=legacy' in self.headers.get('Cookie', ''):
                 return self.send({'output': str(previous_output), 'archives': []})
             self.send({}, 404)

@@ -48,7 +48,7 @@ def legacy_server(output, version='0.3.0', *, header='LJLocalArchive/0.3', refus
             self.wfile.write(body)
         def do_GET(self):
             if self.path == '/':
-                return self.response(200, f'<footer>Архив ЖЖ · {version}</footer>', 'text/html')
+                return self.response(200, f'<footer class="footer"><span>Архив ЖЖ · {version}</span><button id="quit">Завершить приложение</button></footer>', 'text/html')
             if 'ljarchive_session=legacy' not in self.headers.get('Cookie', ''):
                 return self.response(403, {})
             if self.path == '/api/archives':
