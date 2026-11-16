@@ -10,8 +10,14 @@ from pathlib import Path
 
 root = Path(__file__).resolve().parents[1]
 name = "LiveJournalArchive"
+from video_runtime import prepare
+runtime = prepare(root)
 command = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--name", name,
-           "--collect-data", "ljarchive", "--distpath", str(root / "dist"),
+           "--collect-data", "ljarchive",
+           "--collect-all", "yt_dlp", "--collect-all", "yt_dlp_ejs", "--collect-all", "imageio_ffmpeg",
+           "--copy-metadata", "yt-dlp", "--copy-metadata", "yt-dlp-ejs",
+           "--add-data", str(root / 'docs' / 'licenses') + __import__('os').pathsep + 'licenses',
+           "--add-binary", str(runtime) + __import__("os").pathsep + "video-runtime", "--distpath", str(root / "dist"),
            "--workpath", str(root / "build"), "--specpath", str(root / "build"),
            "--paths", str(root), "--noupx"]
 if sys.platform == "darwin":

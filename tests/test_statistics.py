@@ -113,3 +113,13 @@ def test_supported_dates_preserve_local_date_and_unknown_dates_remain_unknown():
     for bad in ('2005-02-30 04:15:04 UTC', 'unknown', '2005-04-18 garbage', None):
         assert date_of({'date': bad}) is None
         assert published(bad) is None
+
+
+def test_year_totals_use_publication_year_and_include_posts_without_comments():
+    data = fixture()
+    data['entries'].append({'itemid': 3, 'subject': 'Silent post', 'eventtime': '2005-01-01 00:00:00'})
+    stats = statistics(data)
+    assert stats['published'] == {'2000': 1, '2005': 1, '2010': 1}
+    assert stats['yearly']['2010']['comments'] == 4
+    assert sum(stats['published'].values()) == stats['totals']['posts'] == 3
+    assert len(stats['discussions']['posts']) == 3

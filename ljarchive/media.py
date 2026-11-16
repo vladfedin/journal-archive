@@ -65,8 +65,10 @@ class Media:
         self.attempted = set()
         self.verified_files = set()
         self.used_urls = {"images": set(), "userpics": set()}
+        self.videos, self.video_embeds = {}, {}
 
     def load_state(self, store):
+        self.videos, self.video_embeds = store.get('videos', {}), store.get('video_embeds', {})
         self.mapping = {**store.get("media", {}), **self.mapping}
         self.errors = {**store.get("media_errors", {}), **self.errors}
         self.errors = {url: error for url, error in self.errors.items() if not self.mapping.get(url)}

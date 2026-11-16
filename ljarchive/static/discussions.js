@@ -4,6 +4,7 @@
   if (!data) return;
   const $ = id => document.getElementById(id), params = new URLSearchParams(location.search);
   const person = params.get('person'), year = params.get('year');
+  const byPublication = params.get('kind') === 'posts';
   const people = new Map(data.people.map(p => [p.id, p.name]));
   const posts = new Map(data.posts.map(p => [p.id, p]));
   const node = (tag, text, cls) => {const n = document.createElement(tag); if (text !== undefined) n.textContent = text; if (cls) n.className = cls; return n;};
@@ -12,15 +13,18 @@
     const m = /^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}:\d{2}))?/.exec(text || '');
     return m ? `${m[3]}.${m[2]}.${m[1]}${m[4] ? ' · ' + m[4] : ''}` : 'Дата неизвестна';
   };
-  $('discussion-title').textContent = [people.get(person) || 'Обсуждения', year].filter(Boolean).join(' · ');
+  $('discussion-title').textContent = [byPublication ? 'Записи' : people.get(person) || 'Обсуждения', year].filter(Boolean).join(' · ');
   const back = new URLSearchParams();
   if (person) back.set('person', person);
   if (year) back.set('year', year);
   $('discussion-back').href = 'statistics.html?' + back;
-  const matching = data.comments.filter(c => (!person || c.person === person) && (!year || c.year === year));
+  const selectedPosts = new Set(data.posts.filter(p => !year || p.date?.startsWith(year + '-')).map(p => p.id));
+  const matching = data.comments.filter(c => byPublication ? selectedPosts.has(c.entry) : (!person || c.person === person) && (!year || c.year === year));
   const grouped = new Map();
+  if (byPublication) for (const id of selectedPosts) grouped.set(id, []);
   for (const c of matching) {if (!grouped.has(c.entry)) grouped.set(c.entry, []); grouped.get(c.entry).push(c);}
   const groups = [...grouped].sort((a, b) => {
+    if (byPublication) return (posts.get(b[0])?.date || '').localeCompare(posts.get(a[0])?.date || '') || b[0] - a[0];
     const left = a[1].at(-1), right = b[1].at(-1);
     return right.day.localeCompare(left.day) || right.id - left.id;
   });
@@ -49,7 +53,7 @@
       }
       more.onclick = appendComments; appendComments(); card.append(items, more); list.append(card);
     }
-    if (!groups.length) list.append(node('p', 'Нет комментариев по этим условиям', 'muted'));
+    if (!groups.length) list.append(node('p', 'Нет записей по этим условиям', 'muted'));
     $('discussion-page').textContent = `${page + 1} / ${pages}`;
     $('discussion-prev').disabled = page === 0; $('discussion-next').disabled = page + 1 === pages;
   }

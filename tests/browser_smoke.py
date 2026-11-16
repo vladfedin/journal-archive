@@ -82,13 +82,19 @@ def main():
                 expect(page.locator('.entry-card')).to_have_count(6)
                 page.get_by_role('link', name='Статистика ↗').click()
                 expect(page.locator('h1')).to_have_text('Статистика')
-                expect(page.locator('#stats-people tbody tr')).not_to_have_count(0)
+                expect(page.locator('#stats-people .stats-participants tr')).not_to_have_count(0)
                 assert page.locator('#stats-people a.heat').count() > 0
+                expect(page.locator('.stats-totals tr')).to_have_count(2)
+                expect(page.locator('.stats-totals tr').first).to_contain_text('12')
+                page.locator('.stats-totals a[href=\"discussions.html?kind=posts&year=2008\"]').click()
+                expect(page.locator('#discussion-count')).to_contain_text('Записей: 1')
+                page.locator('#discussion-back').click()
+                page.locator('#stats-year').select_option('')
                 for width in (1440, 320):
                     page.set_viewport_size({'width': width, 'height': 1100})
                     scroll = page.locator('.stats-scroll').first
                     scroll.evaluate('e => e.scrollLeft = 300')
-                    cells = page.locator('#stats-people tbody tr').first.evaluate('e => [...e.children].slice(0,2).map(c => {let b=c.getBoundingClientRect();return {left:b.left,right:b.right}})')
+                    cells = page.locator('#stats-people .stats-participants tr').first.evaluate('e => [...e.children].slice(0,2).map(c => {let b=c.getBoundingClientRect();return {left:b.left,right:b.right}})')
                     assert abs(cells[0]['right'] - cells[1]['left']) < 1, cells
                     scroll.evaluate('e => e.scrollLeft = 0')
                 page.set_viewport_size({'width': 1440, 'height': 1100})
@@ -97,11 +103,11 @@ def main():
                 assert page.locator('#stats-graph .graph-edge').count() > 0
                 page.locator('#stats-metric').select_option('posts')
                 page.locator('#stats-year').select_option('2012')
-                expect(page.locator('#stats-people tbody')).to_contain_text('old_friend')
+                expect(page.locator('#stats-people .stats-participants')).to_contain_text('old_friend')
                 page.locator('#stats-search').fill('old_friend')
-                expect(page.locator('#stats-people tbody tr')).to_have_count(1)
+                expect(page.locator('#stats-people .stats-participants tr')).to_have_count(1)
                 page.locator('#stats-metric').select_option('share')
-                expect(page.locator('#stats-people tbody')).to_contain_text('%')
+                expect(page.locator('#stats-people .stats-participants')).to_contain_text('%')
                 scroll = page.locator('.stats-scroll').first
                 assert scroll.evaluate('e => e.scrollWidth <= e.clientWidth + 1')
                 cell = page.locator('#stats-people a.heat').first
@@ -131,7 +137,7 @@ def main():
                 assert stats_json['totals']['unknown_dates'] == 0
                 assert sum(y['comments'] for y in stats_json['yearly'].values()) == 12
                 page.goto((root / 'example_journal/statistics.html').as_uri())
-                expect(page.locator('#stats-people tbody')).to_contain_text('old_friend')
+                expect(page.locator('#stats-people .stats-participants')).to_contain_text('old_friend')
                 page.locator('#stats-people a.heat').first.click()
                 expect(page.locator('.discussion-card')).not_to_have_count(0)
                 assert page.url.startswith('file:')

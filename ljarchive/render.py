@@ -22,8 +22,8 @@ from .storage import Store, atomic_write, dumps
 
 ROOT = Path(__file__).parent
 ENV = Environment(loader=FileSystemLoader(ROOT / "templates"), autoescape=select_autoescape(["html"]))
-TAGS = frozenset("p br div span a b strong i em u s del blockquote pre code ul ol li h1 h2 h3 h4 h5 h6 hr img table thead tbody tr td th caption dl dt dd sub sup details summary figure figcaption".split())
-ATTRS = {"a": ["href", "title"], "img": ["src", "alt", "title", "width", "height"],
+TAGS = frozenset("p br div span a b strong i em u s del blockquote pre code ul ol li h1 h2 h3 h4 h5 h6 hr img video table thead tbody tr td th caption dl dt dd sub sup details summary figure figcaption".split())
+ATTRS = {"a": ["href", "title"], "video": ["src"], "img": ["src", "alt", "title", "width", "height"],
          "details": ["class", "open"], "summary": ["class"],
          "td": ["colspan", "rowspan"], "th": ["colspan", "rowspan"]}
 BLOCK_MARKUP = re.compile(r"<(?:p|div|blockquote|ul|ol|li|table|h[1-6]|pre|figure|figcaption)\b", re.I)
@@ -185,6 +185,19 @@ class Content(HTMLParser):
         if tag in ("pre", "code"):
             self.preserve_depth += 1
         attrs = dict(attrs)
+        if tag == 'video':
+            from .video import canonical_video
+            url = canonical_video(attrs.get('src'), self.base)
+            record = self.media.videos.get(url, {})
+            path = record.get('path')
+            local = self.media.folder / path if path else None
+            if (record.get('status') == 'saved' and local and local.is_file()
+                    and local.resolve().is_relative_to(self.media.folder.resolve())):
+                self.out.append('<video controls preload="none" src="../' + html.escape(path, quote=True) + '"></video>')
+            if url:
+                self.out.append('<a class="video-original" href="' + html.escape(url, quote=True) +
+                                '" target="_blank" rel="noreferrer noopener">Видео в оригинале ↗</a>')
+            return
         if tag == "img":
             src = urljoin(self.base, attrs.get("src", ""))
             local = self.media.get(src)
@@ -204,7 +217,7 @@ class Content(HTMLParser):
     def handle_endtag(self, tag):
         if tag in ("pre", "code"):
             self.preserve_depth = max(0, self.preserve_depth - 1)
-        if tag not in ("img", "br", "hr"):
+        if tag not in ("img", "br", "hr", "video"):
             self.out.append(f"</{tag}>")
 
     def handle_data(self, data):
@@ -221,6 +234,9 @@ class Content(HTMLParser):
 
 def safe_content(value, base, links, media, comment_ids, *, expand_cuts=False):
     source = text_value(value)
+    source = re.sub(r'<(script|style)\b[^>]*>.*?</\1\s*>', "", source, flags=re.I | re.S)
+    from .video import video_markup
+    source = video_markup(source, base, media)
     # Preserve LJ user links and cut contents; scripts and embeds never run offline.
     lj_markup = LJUserMarkup(expand_cuts)
     lj_markup.feed(source)
@@ -271,7 +287,7 @@ def build_archive(store: Store, report: dict, *, images=False, userpics=False, c
     media.enabled = images
     media.load_state(store)
     entries, comments = store.entries(), store.comments()
-    report["format_version"] = "0.7.3"
+    report["format_version"] = "0.7.4"
     report.setdefault("issues", [])
     report["reactions"] = reaction_report(store)
     if report.get("status") == "complete" and not (report["reactions"]["complete"] and report["reactions"]["authors_complete"]):
@@ -328,6 +344,8 @@ def build_archive(store: Store, report: dict, *, images=False, userpics=False, c
     from .progress import material_progress, coverage_notice
     comment_statuses, material_records = store.get("entry_comments", {}), store.get("entry_materials", {})
     saved_media = store.get("media", {})
+    from .video import missing_by_entry
+    missing_videos = missing_by_entry(store)
     try:
         for index, entry in enumerate(entries):
             if progress:
@@ -371,7 +389,7 @@ def build_archive(store: Store, report: dict, *, images=False, userpics=False, c
                         post_autoformat=needs_autoformat(entry.get("event"), entry.get("props")),
                         current=current, newer=neighbours[0], older=neighbours[1],
                         coverage_notice=coverage_notice(comment_statuses.get(str(eid), {}),
-                            material_progress(material_records.get(str(eid), {}), {**saved_media, **media.mapping}), repost=is_repost(entry)),
+                            material_progress(material_records.get(str(eid), {}), {**saved_media, **media.mapping}), repost=is_repost(entry), videos=missing_videos.get(eid, 0)),
                         report=report)
             atomic_write(folder / "entries" / f"{eid}.html", rendered)
             feed = ENV.get_template("feed-post.html").render(content=safe_content(entry.get("event"), url, links, media, comment_ids),
@@ -399,7 +417,13 @@ def build_archive(store: Store, report: dict, *, images=False, userpics=False, c
         report["status"] = "cancelled"
         report["issues"].append("Скачивание изображений остановлено. Полученные тексты сохранены.")
     # Content completeness and media availability are reported separately.
-    report["media_complete"] = not report["images_unavailable"]
+    from .video import video_report
+    report['videos'] = video_report(store, selected)
+    report["media_complete"] = not report["images_unavailable"] and not (report.get('videos_requested') and report['videos']['missing'])
+    if report.get('videos_requested') and report['videos']['missing']:
+        if report['status'] == 'complete': report['status'] = 'partial'
+        issue = 'Не все видео получены. Можно продолжить загрузку.'
+        if issue not in report['issues']: report['issues'].append(issue)
     if images and not report["media_complete"] and report["status"] == "complete":
         report["status"] = "partial"
         report["issues"].append("Не все изображения получены.")

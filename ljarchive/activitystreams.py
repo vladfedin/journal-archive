@@ -210,6 +210,18 @@ def to_activitystreams(data):
             obj["mediaType"] = "text/html"
             if parser.images:
                 obj["attachment"] = [image(value, media) for value in parser.images]
+            from .video import VideoRefs, embed_key
+            video_refs = VideoRefs(url or base)
+            video_refs.feed(body); video_refs.close()
+            for module in video_refs.modules:
+                resolved = data.get('video_embeds', {}).get(embed_key(url or base, module))
+                if resolved: video_refs.urls.add(resolved)
+            for video_url in sorted(video_refs.urls):
+                saved = data.get('videos', {}).get(video_url, {})
+                attachment = {'type': 'Video', 'url': video_url}
+                if saved.get('title'): attachment['name'] = saved['title']
+                if saved.get('path'): attachment['ja:localPath'] = saved['path']
+                obj.setdefault('attachment', []).append(attachment)
         elif state not in ("D", "X"):
             obj["ja:contentStatus"] = "unavailable" if body is None else "unknown-encoding"
         tags = props.get("taglist")

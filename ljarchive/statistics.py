@@ -106,6 +106,12 @@ def statistics(data):
             bucket['posts'] = len(bucket['posts'])
     for totals in yearly.values():
         totals['posts'] = len(totals['posts'])
+    published_counts = {}
+    for entry in entries.values():
+        day = date_of(entry, 'eventtime')
+        if day:
+            year = str(day.year)
+            published_counts[year] = published_counts.get(year, 0) + 1
     revivals = []
     for eid, rows in by_entry.items():
         if eid not in entries:
@@ -146,6 +152,7 @@ def statistics(data):
     years = sorted(set(map(int, yearly)) | set(post_years))
     years = list(range(years[0], years[-1] + 1)) if years and years[-1] - years[0] <= 300 else years
     return {'schema_version': 1, 'journal': journal, 'years': list(map(str, years)), 'yearly': yearly,
+            'published': published_counts,
             'totals': {'posts': len(entries), 'reposts': len(repost_ids), 'comments': len(comments), 'people': len(people),
                        'deleted': deleted, 'unknown_dates': unknown_dates, 'anonymous': anonymous,
                        'missing_parents': dangling},

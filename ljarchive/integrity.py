@@ -17,9 +17,9 @@ def file_hash(path):
 def write_manifest(folder):
     files = {}
     for path in sorted(folder.rglob("*")):
-        if path.is_file() and not path.is_symlink() and path.suffix in (".html", ".css", ".js", ".json", ".jpg", ".png", ".gif", ".webp", ".avif", ".svg", ".ico"):
+        if path.is_file() and not path.is_symlink() and path.suffix in (".html", ".css", ".js", ".json", ".jpg", ".png", ".gif", ".webp", ".avif", ".svg", ".ico", ".mp4", ".webm", ".ogv", ".mov", ".m4v"):
             relative = path.relative_to(folder)
-            if relative.parts[0] not in ("raw", "quarantine") and str(relative) != "integrity.json":
+            if relative.parts[0] not in ("raw", "quarantine", ".video-work") and str(relative) != "integrity.json":
                 files[relative.as_posix()] = file_hash(path)
     atomic_write(folder / "integrity.json", json.dumps({"algorithm": "sha256", "files": files}, indent=2) + "\n")
 

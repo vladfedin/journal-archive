@@ -129,3 +129,26 @@ def test_activitystreams_download_from_legacy_zip_without_database(local_server,
         (folder / 'data/activitystreams.json').unlink()
         (folder / 'data/archive.json').write_text('{broken', encoding='utf-8')
         assert session.get(base + '/download/fixture.activitystreams.json').status_code == 409
+
+
+def test_local_video_ranges_seek_and_partial_downloads_are_not_exported(local_server):
+    server, base = local_server
+    folder = server.jobs.output / 'fixture'
+    create_demo(folder)
+    payload = (Path(__file__).parent / 'fixtures/video.mp4').read_bytes()
+    (folder / 'media/video.mp4').write_bytes(payload)
+    (folder / '.video-work').mkdir()
+    (folder / '.video-work/private-part.mp4').write_bytes(b'partial')
+    with requests.Session() as session:
+        session.get(base)
+        url = base + '/archive/fixture/media/video.mp4'
+        for header, expected, bounds in [('bytes=10-99', payload[10:100], f'bytes 10-99/{len(payload)}'),
+                                         ('bytes=-100', payload[-100:], f'bytes {len(payload)-100}-{len(payload)-1}/{len(payload)}')]:
+            response = session.get(url, headers={'Range': header})
+            assert response.status_code == 206 and response.content == expected
+            assert response.headers['Content-Range'] == bounds
+        assert session.get(url, headers={'Range': 'bytes=999999-'}).status_code == 416
+        assert session.get(url, headers={'Range': 'bytes=0-1,3-4'}).status_code == 416
+        assert session.get(url).content == payload
+        zipped = zipfile.ZipFile(io.BytesIO(session.get(base + '/download/fixture.zip').content))
+        assert not any('.video-work' in path for path in zipped.namelist())

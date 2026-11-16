@@ -66,16 +66,20 @@ def material_progress(record, mapping):
     return result
 
 
-def coverage_notice(status, materials, *, repost=False):
+def coverage_notice(status, materials, *, repost=False, videos=0):
     parts = []
     if status.get('error') and not repost:
         parts.append('Комментарии получены не полностью')
     if materials.get('missing'):
         parts.append(f"Не загружены изображения: {materials['missing']}")
+    if videos:
+        parts.append(f"Не загружены видео: {videos}")
     return ' · '.join(parts)
 
 
 def timeline(store, *, task=False):
+    from .video import missing_by_entry
+    missing_videos = missing_by_entry(store)
     statuses = store.get('entry_comments', {})
     materials = store.get('entry_materials', {})
     sync_state = store.get('sync_job', {})
@@ -113,14 +117,14 @@ def timeline(store, *, task=False):
         mat = material_progress(materials.get(str(eid), {}), mapping)
         done = repost or status.get('done', bodies_done)
         state = 'pending' if not done else 'ready'
-        if (status.get('error') and not repost) or (done and mat.get('saved', 0) < mat.get('requested', 0)):
+        if (status.get('error') and not repost) or (done and mat.get('saved', 0) < mat.get('requested', 0)) or missing_videos.get(eid):
             state = 'partial'
         elif not done and counts[eid]:
             state = 'loading'
         items.append({'id': eid, 'date': date, 'title': plain(title) or 'Без заголовка',
                       'url': f'entries/{eid}.html', 'state': state, 'repost': repost, 'error': None if repost else status.get('error'),
                       'comments_complete': bool(done), 'screened': 0 if repost else screened[eid],
-                      'notice': coverage_notice(status, mat, repost=repost),
+                      'notice': coverage_notice(status, mat, repost=repost, videos=missing_videos.get(eid, 0)),
                       'comments': 0 if repost else counts[eid], 'expected_comments': expected, 'pages': status.get('pages'),
                       'page': status.get('last_valid_page', max(0, status.get('next_page', 1) - 1)), 'materials': mat,
                       'top': [] if repost else authors[eid].most_common(3)})
@@ -146,6 +150,7 @@ def preview_entry(store, eid):
     from .render import ENV, safe_content, original_url, plain, threaded, needs_autoformat
     from .userpics import describe
     from .presentation import reaction_view
+    from .video import missing_by_entry
     from .comment_state import comment_view
     from .media import Media
     import threading
@@ -157,6 +162,7 @@ def preview_entry(store, eid):
     pictures = describe(store, [entry], comments)
     media = Media(store.folder, False, threading.Event())
     media.mapping = store.get('media', {})
+    media.videos, media.video_embeds = store.get('videos', {}), store.get('video_embeds', {})
     url = original_url(user, entry)
     try:
         names = {c['id']: c.get('user') or 'Аноним' for c in comments}
@@ -175,7 +181,8 @@ def preview_entry(store, eid):
                      content=safe_content(entry.get('event'), url, {}, media, set(), expand_cuts=True), original=url,
                      post_autoformat=needs_autoformat(entry.get('event'), entry.get('props')), current=[], newer=None, older=None,
                      coverage_notice=coverage_notice(store.get('entry_comments', {}).get(str(eid), {}),
-                         material_progress(store.get('entry_materials', {}).get(str(eid), {}), media.mapping), repost=is_repost(entry)),
+                         material_progress(store.get('entry_materials', {}).get(str(eid), {}), media.mapping), repost=is_repost(entry),
+                         videos=missing_by_entry(store).get(eid, 0)),
                      preview=True, report={'created_at': store.get('started_at', '')})
     finally:
         media.close()

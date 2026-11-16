@@ -57,7 +57,22 @@
     const columns = ['Участник', year || 'Всего', ...data.years];
     columns.forEach(value => { const th = node('th', value); th.scope = 'col'; hr.append(th); });
     head.append(hr); table.append(head);
-    const body = node('tbody');
+    const totals = node('tbody', undefined, 'stats-totals');
+    for (const [label, kind, all, values] of [
+      ['Комментарии', 'comments', data.totals.comments, Object.fromEntries(data.years.map(y => [y, data.yearly[y]?.comments || 0]))],
+      ['Записи', 'posts', data.totals.posts, data.published || {}]
+    ]) {
+      const row = node('tr'), heading = node('th', label); heading.scope = 'row'; row.append(heading);
+      for (const y of [year, ...data.years]) {
+        const value = y ? values[y] || 0 : all, cell = node('td');
+        if (value) cell.append(link('discussions.html?' + new URLSearchParams({kind, ...(y ? {year: y} : {})}), number(value)));
+        else cell.textContent = '0';
+        row.append(cell);
+      }
+      totals.append(row);
+    }
+    table.append(totals);
+    const body = node('tbody', undefined, 'stats-participants');
     const subset = visible.slice(page * 30, page * 30 + 30);
     let peak = 0;
     for (const p of data.people.filter(p => own || !p.owner)) for (const y of data.years) peak = Math.max(peak, metric(p, y));

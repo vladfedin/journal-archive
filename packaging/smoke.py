@@ -19,6 +19,11 @@ with tempfile.TemporaryDirectory(prefix="ljarchive-ЖЖ-") as directory:
     env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "VIRTUAL_ENV")}
     diagnostic_log = Path(directory) / 'native.log'
     env['LJARCHIVE_DIAGNOSTIC_LOG'] = str(diagnostic_log)
+    video_tools = Path(directory) / 'video-tools.json'
+    subprocess.run([str(binary), '--self-test-video-tools', str(video_tools)], cwd=directory, env=env, check=True, timeout=90)
+    tools = json.loads(video_tools.read_text(encoding='utf-8'))
+    assert tools['deno'].startswith('deno 2.') and tools['ffmpeg'].startswith('ffmpeg version')
+    assert len(tools['extractors']) == 3
     subprocess.run([str(binary), "demo", "--output", str(folder)], cwd=directory, env=env, check=True, timeout=90)
     data = json.loads((folder / "data/archive.json").read_text(encoding="utf-8"))
     assert len(data["entries"]) == 6 and len(data["comments"]) == 12

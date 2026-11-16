@@ -65,8 +65,9 @@ def normalize_thread(nodes, entry_id):
 
 
 class Exporter:
-    def __init__(self, folder: Path, client: LiveJournalClient, *, images=True, progress=None, entry_limit=None, account=False, messages=False):
+    def __init__(self, folder: Path, client: LiveJournalClient, *, images=True, progress=None, entry_limit=None, account=False, messages=False, videos=False):
         self.folder, self.client, self.images = folder, client, images
+        self.videos = videos
         self.progress = progress or (lambda **kwargs: None)
         self.entry_limit = validate_entry_limit(entry_limit)
         self.store = Store(folder)
@@ -348,6 +349,18 @@ class Exporter:
         # Filled by the per-entry media stage; the final renderer also uses this cache.
         from .progress import capture_materials
         capture_materials(self, entry)
+        from .video import capture_videos
+        capture_videos(self, entry)
+
+    def video_stage(self):
+        if not self.videos:
+            return
+        from .video import capture_videos
+        selected = getattr(self, 'selected_ids', None)
+        for entry in self.store.entries():
+            if selected is None or int(entry['itemid']) in selected:
+                self.client.check()
+                capture_videos(self, entry)
 
     def save_thread(self, items, users, *, evidence="getcomments"):
         store = self.store
@@ -544,7 +557,7 @@ class Exporter:
                 "orphan_entry_ids": orphaned, "unknown_encoding_entry_ids": unknown_encoding,
                 "entry_limit": entry_limit, "pending_comment_entry_ids": pending_comments,
                 **(budget.snapshot() if budget else store.get("last_request_stats", {})),
-                "issues": issues, "images_requested": self.images,
+                "issues": issues, "images_requested": self.images, "videos_requested": self.videos,
                 "scope": (f"Пробный архив: последние {entry_limit} записей по дате публикации на момент выбора и их комментарии. Проверяются страницы getcomments и наличие текстов, включая скрытые."
                           if entry_limit is not None else "Личный журнал владельца. Полнота проверяется по календарю и метаданным API ЖЖ на момент выгрузки."),
                 "limitations": "Удалённые тексты и данные, которые ЖЖ не отдаёт владельцу, восстановить нельзя. Изменения во время выгрузки могут потребовать нового снимка."}
@@ -608,6 +621,7 @@ class Exporter:
                 except IncompleteData as exc:
                     failures.append(str(exc))
                 self.personal()
+                self.video_stage()
                 error = " ".join(failures) or None
             except Cancelled as exc:
                 error, cancelled = str(exc), True
@@ -631,17 +645,18 @@ class Exporter:
             if getattr(self, "_media", None):
                 self._media.close()
             self.client.close()
+            if getattr(self, "_videos", None): self._videos.close()
             store.close()
 
 
 def export(user, password, output, *, images=False, delay=2, cancel=None, progress=None,
-           entry_limit=10, max_requests=50, account=False, messages=False):
+           entry_limit=10, max_requests=50, account=False, messages=False, videos=False):
     user = username(user)
     entry_limit = validate_entry_limit(entry_limit)
     budget = RequestBudget(max_requests, progress=progress)
     client = LiveJournalClient(user, password, delay=delay, cancel=cancel, budget=budget, progress=progress)
     try:
         return Exporter(Path(output) / archive_slug(user, entry_limit), client, images=images,
-                        progress=progress, entry_limit=entry_limit, account=account, messages=messages).run()
+                        progress=progress, entry_limit=entry_limit, account=account, messages=messages, videos=videos).run()
     finally:
         client.close()

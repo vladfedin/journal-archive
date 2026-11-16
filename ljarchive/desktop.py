@@ -21,6 +21,25 @@ def main():
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+    if len(sys.argv) == 3 and sys.argv[1] == '--self-test-video-tools':
+        import json
+        import subprocess
+        from pathlib import Path
+        import imageio_ffmpeg
+        import yt_dlp
+        import yt_dlp_ejs
+        root = Path(getattr(sys, '_MEIPASS', Path(__file__).parent.parent / 'build'))
+        deno = root / 'video-runtime' / ('deno.exe' if os.name == 'nt' else 'deno')
+        ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+        flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+        def run(*command):
+            return subprocess.run(command, check=True, timeout=30, stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT, text=True, encoding='utf-8', creationflags=flags).stdout.splitlines()[0]
+        assert (Path(yt_dlp_ejs.__file__).parent / 'yt/solver/core.min.js').is_file()
+        from yt_dlp.extractor import YoutubeIE, VKIE, VimeoIE
+        Path(sys.argv[2]).write_text(json.dumps({'deno': run(str(deno), '--version'),
+            'ffmpeg': run(ffmpeg, '-version'), 'extractors': [cls.IE_NAME for cls in (YoutubeIE, VKIE, VimeoIE)]}), encoding='utf-8')
+        return
     if len(sys.argv) > 1:
         from .__main__ import main as cli
         return cli()

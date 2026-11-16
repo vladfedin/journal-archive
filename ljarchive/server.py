@@ -24,7 +24,7 @@ TERMINAL = {"complete", "partial", "cancelled", "error", "demo", "idle"}
 
 
 class Jobs:
-    PARAMS = ("username", "archive", "mode", "date_from", "date_to", "urls", "entry_limit", "images", "delay", "max_requests", "account", "messages")
+    PARAMS = ("username", "archive", "mode", "date_from", "date_to", "urls", "entry_limit", "images", "videos", "delay", "max_requests", "account", "messages")
 
     def __init__(self, output: Path):
         from .relocation import resolve_output
@@ -106,7 +106,7 @@ class Jobs:
                 "mode": "latest" if report.get("entry_limit") else scope.get("mode", "full"),
                 "entry_limit": report.get("entry_limit"), "date_from": scope.get("start"),
                 "date_to": scope.get("end"), "urls": scope.get("urls", []),
-                "images": bool(report.get("images_requested")), "delay": 3,
+                "images": bool(report.get("images_requested")), "videos": bool(report.get("videos_requested")), "delay": 3,
                 "max_requests": report.get("request_limit", 50 if report.get("entry_limit") else None)}
 
     def prepare_format(self, slug):
@@ -236,6 +236,9 @@ class Jobs:
                     data.setdefault(key, False)
                     if not isinstance(data[key], bool):
                         raise ExportError("Некорректная настройка личных данных.")
+                data.setdefault("videos", False)
+                if not isinstance(data["videos"], bool):
+                    raise ExportError("Некорректная настройка видео.")
                 data.setdefault("images", False)
                 data.setdefault("delay", 3)
             self.cancel = threading.Event()
@@ -261,12 +264,12 @@ class Jobs:
                 password = data.pop("password")
                 if data.get("sync_scope"):
                     scope = data["sync_scope"]
-                    report = sync(data["username"], password, self.output, images=data["images"],
+                    report = sync(data["username"], password, self.output, images=data["images"], videos=data.get("videos", False),
                                   delay=data["delay"], cancel=self.cancel, progress=self.progress,
                                   max_requests=data["max_requests"], mode=scope["mode"], start=scope["start"],
                                   end=scope["end"], urls=scope["urls"], archive=slug, account=data.get("account", False), messages=data.get("messages", False))
                 else:
-                    report = export(data["username"], password, self.output, images=data["images"],
+                    report = export(data["username"], password, self.output, images=data["images"], videos=data.get("videos", False),
                                     delay=data["delay"], cancel=self.cancel, progress=self.progress,
                                     entry_limit=data["entry_limit"], max_requests=data["max_requests"], account=data.get("account", False), messages=data.get("messages", False))
                 password = ""
@@ -342,7 +345,7 @@ def make_server(output: Path, port=8787):
             except Exception:
                 return False
 
-        def response_headers(self, code, content_type, length, *, cookie=False, download=None):
+        def response_headers(self, code, content_type, length, *, cookie=False, download=None, extra=None):
             self.send_response(code)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(length))
@@ -351,11 +354,13 @@ def make_server(output: Path, port=8787):
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("Referrer-Policy", "no-referrer")
             self.send_header("X-Frame-Options", "DENY")
-            self.send_header("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
+            self.send_header("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
             if cookie:
                 self.send_header("Set-Cookie", f"ljarchive_session={token}; HttpOnly; SameSite=Strict; Path=/")
             if download:
                 self.send_header("Content-Disposition", f'attachment; filename="{download}"')
+            for key, value in (extra or {}).items():
+                self.send_header(key, value)
             self.end_headers()
 
         def json(self, value, code=200):
@@ -371,6 +376,36 @@ def make_server(output: Path, port=8787):
                 mime = "application/activity+json"
             if path.suffix in (".html", ".css", ".js", ".json"):
                 mime += "; charset=utf-8"
+            from .video import VIDEO_SUFFIXES
+            if path.suffix in VIDEO_SUFFIXES:
+                import re
+                size = path.stat().st_size
+                start, end, code = 0, size - 1, 200
+                headers = {'Accept-Ranges': 'bytes'}
+                if self.headers.get('Range'):
+                    match = re.fullmatch(r'bytes=(\d*)-(\d*)', self.headers['Range'])
+                    if match and any(match.groups()):
+                        if match[1]:
+                            start = int(match[1]); end = min(int(match[2]), size - 1) if match[2] else size - 1
+                        else:
+                            start = max(0, size - int(match[2]))
+                    else:
+                        start = size
+                    if start >= size or end < start:
+                        self.response_headers(416, mime, 0, extra={'Content-Range': f'bytes */{size}'})
+                        return
+                    code = 206; headers['Content-Range'] = f'bytes {start}-{end}/{size}'
+                remaining = max(0, end - start + 1)
+                self.response_headers(code, mime, remaining, extra=headers)
+                with path.open('rb') as stream:
+                    stream.seek(start)
+                    while remaining:
+                        block = stream.read(min(65536, remaining))
+                        if not block: break
+                        try: self.wfile.write(block)
+                        except (BrokenPipeError, ConnectionResetError): break
+                        remaining -= len(block)
+                return
             if archive and path.suffix == ".html":
                 # App navigation belongs to the served page, not the portable archive.
                 body = path.read_bytes().replace(b"<body>", b'<body data-library-url="/">', 1)
@@ -441,7 +476,7 @@ def make_server(output: Path, port=8787):
                 relative = Path(path.removeprefix("/archive/"))
                 target = (jobs.output / relative).resolve()
                 icon = relative.parts[1:] in {("assets", "favicon.svg"), ("assets", "favicon.ico")}
-                if any(part.startswith(".") for part in relative.parts) or not target.is_relative_to(jobs.output) or (not icon and target.suffix not in {".html", ".css", ".js", ".json", ".jpg", ".png", ".gif", ".webp", ".avif"}):
+                if any(part.startswith(".") for part in relative.parts) or not target.is_relative_to(jobs.output) or (not icon and target.suffix not in {".html", ".css", ".js", ".json", ".jpg", ".png", ".gif", ".webp", ".avif", ".mp4", ".webm", ".ogv", ".mov", ".m4v"}):
                     return self.json({"error": "Нет доступа."}, 403)
                 if len(relative.parts) == 2 and target.suffix == '.html':
                     try:
@@ -532,7 +567,7 @@ def make_server(output: Path, port=8787):
                     with TemporaryFile() as buffer:
                         with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
                             for member in folder.rglob("*"):
-                                if member.is_file() and not member.is_symlink() and member.suffix not in (".sqlite3", ".tmp", ".lock") and member.relative_to(folder).parts[0] != "quarantine" and member.resolve().is_relative_to(folder):
+                                if member.is_file() and not member.is_symlink() and member.suffix not in (".sqlite3", ".tmp", ".lock") and member.relative_to(folder).parts[0] not in ("quarantine", ".video-work") and member.resolve().is_relative_to(folder):
                                     archive.write(member, str(Path(slug) / member.relative_to(folder)))
                         length = buffer.tell()
                         buffer.seek(0)

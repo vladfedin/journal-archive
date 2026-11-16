@@ -71,8 +71,8 @@ def url_id(user, url):
 
 
 class SyncExporter(Exporter):
-    def __init__(self, folder, client, scope, *, images=False, progress=None, account=False, messages=False):
-        super().__init__(folder, client, images=images, progress=progress, account=account, messages=messages)
+    def __init__(self, folder, client, scope, *, images=False, progress=None, account=False, messages=False, videos=False):
+        super().__init__(folder, client, images=images, progress=progress, account=account, messages=messages, videos=videos)
         self.scope = scope
         self.selected_ids = set()
         self.state = {}
@@ -321,7 +321,7 @@ class SyncExporter(Exporter):
                 "deleted_comments": sum(c["state"] in ("D", "X") for c in comments), "missing_comments": missing,
                 "pending_days": [dict(r) for r in self.store.db.execute("SELECT day,expected FROM days WHERE done!=1")],
                 "orphan_entry_ids": [], "pending_comment_entry_ids": [eid for eid in sorted(selected) if not statuses.get(str(eid), {}).get("done")], "unknown_encoding_entry_ids": [],
-                "entry_limit": None, "issues": issues, "images_requested": self.images,
+                "entry_limit": None, "issues": issues, "images_requested": self.images, "videos_requested": self.videos,
                 "scope": "Накопительный архив. Последнее обновление: " + {"full": "весь журнал с проверкой", "period": f"период {self.scope.start or 'с начала'} — {self.scope.end or 'по сегодня'}", "urls": "записи по указанным URL"}[self.scope.mode] + ". Даты относятся к публикации записей; их комментарии загружаются за всё время.",
                 "sync": {**self.state, "selected_count": len(self.selected_ids)},
                 "integrity_before": self.store.get("integrity_before", {}),
@@ -384,6 +384,7 @@ class SyncExporter(Exporter):
                 if store.db.execute("SELECT 1 FROM days WHERE done!=1").fetchone():
                     self.checkpoint(phase="posts")
                 self.personal()
+                self.video_stage()
                 error = " ".join(failures) or None
             except Cancelled as exc:
                 error, cancelled = str(exc), True
@@ -412,17 +413,18 @@ class SyncExporter(Exporter):
             if getattr(self, "_media", None):
                 self._media.close()
             self.client.close()
+            if getattr(self, "_videos", None): self._videos.close()
             store.close()
 
 
 def sync(user, password, output, *, mode="full", start=None, end=None, urls=None, images=False,
-         delay=3, max_requests=None, cancel=None, progress=None, archive=None, account=False, messages=False):
+         delay=3, max_requests=None, cancel=None, progress=None, archive=None, account=False, messages=False, videos=False):
     user = username(user)
     scope = validate_scope(user, mode, start, end, urls)
     slug = target_slug(user, archive)
     budget = RequestBudget(max_requests, progress)
     client = LiveJournalClient(user, password, delay=delay, cancel=cancel, budget=budget, progress=progress)
-    return SyncExporter(Path(output) / slug, client, scope, images=images, progress=progress, account=account, messages=messages).run()
+    return SyncExporter(Path(output) / slug, client, scope, images=images, progress=progress, account=account, messages=messages, videos=videos).run()
 
 
 def target_slug(user, archive=None):
