@@ -116,7 +116,7 @@ def stop_previous(session, peer, timeout):
     deadline = time.monotonic() + timeout
     while True:
         try:
-            with socket.create_connection(('127.0.0.1', peer['port']), timeout=.5):
+            with socket.create_connection(('127.0.0.1', peer['port']), timeout=3):
                 pass
         except ConnectionRefusedError:
             return  # serve() closed the listener after the export worker finished.
@@ -164,6 +164,12 @@ def prepare_server(output, port=8787, *, timeout=180):
                 output = Path(previous_output).resolve()
                 stop_previous(session, peer, timeout)
                 port = peer['port']
+            if not peer and port:
+                try:
+                    with socket.create_connection(('127.0.0.1', port), timeout=3):
+                        port = 0
+                except OSError:
+                    pass
             try:
                 server = make_server(output, port)
             except OSError as exc:
