@@ -2,41 +2,12 @@
 {% set years = entries|map(attribute='year')|select|list %}
 {% from 'reactions.html' import show_reactions %}
 {% block head %}<script defer src="assets/search-data.js"></script>{% endblock %}
-{% block brand %}<span class="brand-name">Журнал</span><span class="brand-light">/ архив</span>{% endblock %}
-{% block masthead %}
-<div class="journal-head">
-  <h1>{{ user }}</h1>
-  <p>{{ report.entries_saved|plural('запись', 'записи', 'записей') }} · {{ report.comments_saved|plural('комментарий', 'комментария', 'комментариев') }}{% if years %} · {{ years|min }}{% if years|min != years|max %}—{{ years|max }}{% endif %}{% endif %}</p>
-</div>
-{% endblock %}
 {% block body %}
-<main class="archive-layout">
-  <section class="archive-main">
-    <h2 class="visually-hidden">Записи</h2>
-    <div class="search-box"><input id="search" type="search" placeholder="Поиск по записям и комментариям" aria-label="Поиск по архиву" autocomplete="off" enterkeyhint="search"><kbd aria-hidden="true">/</kbd></div>
-    <button id="toggle-filters" class="filters-toggle" type="button" aria-expanded="false" aria-controls="filters">Фильтры</button>
-    <div id="filters" class="filters">
-      <label><span class="visually-hidden">Год публикации</span><select id="year"><option value="">Все годы</option>{% for year in years|unique|sort(reverse=true) %}<option>{{ year }}</option>{% endfor %}</select></label>
-      <label><span class="visually-hidden">Метка</span><select id="tag"><option value="">Все метки</option></select></label>
-      <label><span class="visually-hidden">Доступ в ЖЖ</span><select id="security"><option value="">Любой доступ</option><option value="public">Открытые</option><option value="private">Личные</option><option value="usemask">Для друзей / группы</option></select></label>
-    </div>
-    <div class="results-bar"><span id="results-count" aria-live="polite">{{ entries|length|plural('запись', 'записи', 'записей') }}</span><button id="reset-filters" class="text-button" type="button" hidden>Сбросить фильтры</button><label class="sort-label"><span class="visually-hidden">Порядок</span><select id="sort"><option value="new">Сначала новые</option><option value="old">Сначала старые</option></select></label></div>
-    {% if report.status == 'demo' %}<p class="notice">Это вымышленные записи для знакомства с архивом. Данные из ЖЖ не скачивались.</p>{% elif report.status != 'complete' %}<p class="notice">Это частичная выгрузка. <a href="report.html">Что осталось скачать</a></p>{% endif %}
-    <div id="entry-list">{% for entry in entries[:30] %}<article class="entry-card"><div class="entry-meta"><time datetime="{{ entry.date }}">{{ entry.date|ru_date }}</time>{% if entry.security != 'public' %}<span class="badge lock">{{ entry.security_label }}</span>{% endif %}</div><h3><a href="{{ entry.url }}">{{ entry.title }}</a></h3><p class="entry-excerpt">{{ entry.excerpt }}</p><div class="entry-card-bottom">{% if entry.comments %}<a class="comments-link" href="{{ entry.url }}#comments">{{ entry.comments|plural('комментарий', 'комментария', 'комментариев') }}{% if entry.screened %} · {{ entry.screened|plural('скрытый', 'скрытых', 'скрытых') }}{% endif %}</a>{% else %}<span>Без комментариев</span>{% endif %}{% if entry.tags %}<span class="entry-tags">{% for tag in entry.tags %}<a href="index.html?tag={{ tag|urlencode }}">{{ tag }}</a>{% endfor %}</span>{% endif %}</div>{{ show_reactions(entry.reactions, false) }}</article>{% endfor %}</div>
-    <div id="pagination" class="pagination"></div>
-    <noscript><p class="notice">Поиск и фильтры работают с включённым JavaScript. Все записи доступны по ссылкам ниже.</p><ul class="plain-list">{% for entry in entries %}<li><a href="{{ entry.url }}">{{ entry.date|ru_date(false) }} · {{ entry.title }}</a></li>{% endfor %}</ul></noscript>
-  </section>
-  <aside class="archive-aside">
-    <section class="aside-box">
-      <h2>Об архиве</h2>
-      <p>{% if report.status == 'demo' %}Демонстрационный архив с вымышленными записями.{% elif report.entry_limit %}Пробная выгрузка: {{ report.entry_limit|plural('последняя запись', 'последние записи', 'последних записей') }} журнала.{% else %}Все записи журнала с комментариями.{% endif %}</p>
-      <a class="sidebar-report{% if report.status == 'complete' %} is-complete{% endif %}" href="report.html"><strong>{% if report.status == 'complete' %}Тексты выгружены полностью{% elif report.status == 'demo' %}Пример архива{% else %}Архив сохранён частично{% endif %}</strong><span>Отчёт о полноте →</span></a>
-      <p class="fine">В архиве есть личные записи и скрытые комментарии. Храните его как личные документы.</p>
-    </section>
-    <section id="tag-box" class="aside-box" hidden>
-      <h2>Метки</h2>
-      <div id="tag-cloud" class="tag-cloud"></div>
-    </section>
-  </aside>
-</main>
+<main class="main archive-main"><div class="archive-title"><h1>{{ user }}</h1><p>{{ report.entries_saved|plural('запись','записи','записей') }} · {{ report.comments_saved|plural('комментарий','комментария','комментариев') }}{% if years %} · {{ years|min }}{% if years|min != years|max %}–{{ years|max }}{% endif %}{% endif %}</p></div>
+{% if report.status == 'demo' %}<p class="inline-status">Пример · вымышленные данные</p>{% elif report.status != 'complete' %}<p class="inline-status"><a href="report.html">Загрузка не завершена</a></p>{% endif %}
+<div class="archive-tools"><div class="search-field"><span data-icon="search"></span><input class="input" id="search" type="search" placeholder="Поиск по записям и комментариям" aria-label="Поиск по архиву" autocomplete="off"></div></div>
+<div id="filters" class="filter-row"><select id="year" aria-label="Год публикации"><option value="">Все годы</option>{% for year in years|unique|sort(reverse=true) %}<option>{{ year }}</option>{% endfor %}</select><select id="tag" aria-label="Метка"><option value="">Все метки</option></select><select id="security" aria-label="Доступ"><option value="">Любой доступ</option><option value="public">Открытые</option><option value="usemask">Для друзей</option><option value="private">Личные</option></select></div>
+<div class="list-toolbar"><div><span id="results-count" aria-live="polite">{{ entries|length|plural('запись','записи','записей') }}</span> <button class="filter-reset" id="reset-filters" hidden>Сбросить</button></div><select class="sort" id="sort" aria-label="Порядок записей"><option value="new">Сначала новые</option><option value="old">Сначала старые</option></select></div>
+<div id="entry-list">{% set ns = namespace(year=none) %}{% for entry in entries[:30] %}{% if entry.year and entry.year != ns.year %}<div class="year-mark">{{ entry.year }}</div>{% set ns.year = entry.year %}{% endif %}<article class="entry-row entry-card"><div class="entry-meta"><time datetime="{{ entry.date }}">{{ entry.date|ru_date }}</time>{% if entry.security != 'public' %}<span class="state">{{ entry.security_label }}</span>{% endif %}</div><h2><a href="{{ entry.url }}">{{ entry.title }}</a></h2><p class="entry-excerpt">{{ entry.excerpt }}</p><div class="entry-bottom"><a class="count-link" href="{{ entry.url }}#comments" aria-label="{{ entry.comments|plural('комментарий','комментария','комментариев') }}"><span data-icon="comment"></span>{{ entry.comments }}</a><span class="entry-tags">{% for tag in entry.tags %}<a href="?tag={{ tag|urlencode }}">{{ tag }}</a>{% endfor %}</span></div>{{ show_reactions(entry.reactions,false) }}</article>{% endfor %}</div>
+<div id="pagination" class="pager"></div><noscript><p>Все записи:</p><ul>{% for entry in entries %}<li><a href="{{ entry.url }}">{{ entry.date|ru_date(false) }} · {{ entry.title }}</a></li>{% endfor %}</ul></noscript></main>
 {% endblock %}

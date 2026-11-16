@@ -23,10 +23,10 @@ def main():
     image_mode.add_argument("--no-images", dest="images", action="store_false")
     cli.set_defaults(images=False)
     scope = cli.add_mutually_exclusive_group()
-    scope.add_argument("--limit", type=int, default=10, help="Последние N записей (1–50), по умолчанию 10")
+    scope.add_argument("--limit", type=int, help="Тест: последние N записей (1–50)")
     scope.add_argument("--all", action="store_true", help="Весь журнал")
-    cli.add_argument("--max-requests", type=int, default=50, help="Жёсткий предел всех внешних HTTP-запросов за запуск (по умолчанию 50)")
-    cli.add_argument("--delay", type=float, default=2)
+    cli.add_argument("--max-requests", type=int, help="Общий лимит запросов; по умолчанию без лимита, для теста — 50")
+    cli.add_argument("--delay", type=float, default=3)
     demo = sub.add_parser("demo", help="Создать пример архива без входа")
     demo.add_argument("--output", type=Path, default=Path("archives/_demo"))
     build = sub.add_parser("build", help="Пересобрать HTML из сохранённой базы, без сети")
@@ -45,7 +45,7 @@ def main():
     update.add_argument("--url", action="append", default=[])
     update.add_argument("--archive", help="Имя существующей папки архива этого пользователя")
     update.add_argument("--output", type=Path, default=Path("archives"))
-    update.add_argument("--max-requests", type=int, default=50)
+    update.add_argument("--max-requests", type=int)
     update.add_argument("--delay", type=float, default=3)
     update.add_argument("--images", action="store_true")
     verify = sub.add_parser("verify", help="Проверить базу и контрольные суммы файлов без сети")
@@ -122,11 +122,14 @@ def main():
             import signal
             from .exporter import archive_slug, export, validate_entry_limit
             from .client import RequestBudget
-            entry_limit = validate_entry_limit(None if getattr(args, "all", False) else getattr(args, "limit", 10))
+            entry_limit = validate_entry_limit(getattr(args, "limit", None))
+            full_export = args.command == "export" and entry_limit is None
+            if entry_limit is not None and args.max_requests is None:
+                args.max_requests = 50
             RequestBudget(args.max_requests)
             if not math.isfinite(args.delay) or not 1 <= args.delay <= 60:
                 raise ExportError("Пауза должна быть от 1 до 60 секунд.")
-            if args.command == "sync" or getattr(args, "all", False):
+            if args.command == "sync" or full_export:
                 from .sync import sync, validate_scope, target_slug
                 from .client import username
                 args.username = username(args.username)
@@ -149,7 +152,7 @@ def main():
                 report = sync(args.username, password, args.output, mode=args.mode, start=args.date_from, end=args.date_to,
                               urls=args.url, archive=args.archive, images=args.images, delay=args.delay,
                               cancel=cancel, progress=progress, max_requests=args.max_requests)
-            elif getattr(args, "all", False):
+            elif full_export:
                 report = sync(args.username, password, args.output, mode="full", images=args.images,
                               delay=args.delay, cancel=cancel, progress=progress, max_requests=args.max_requests)
             else:
@@ -159,7 +162,7 @@ def main():
             password = ""
             slug = target_slug(args.username, args.archive) if args.command == "sync" else archive_slug(report["username"], entry_limit)
             print((args.output / slug / "index.html").resolve())
-            print(f"HTTP-запросов: {report['requests_used']} / {report['request_limit']}")
+            print(f"HTTP-запросов: {report['requests_used']}" + (f" / {report['request_limit']}" if report["request_limit"] else ""))
             if report["status"] != "complete":
                 raise SystemExit(2)
     except ExportError as exc:

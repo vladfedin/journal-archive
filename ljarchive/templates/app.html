@@ -1,90 +1,25 @@
-<!doctype html>
-<html lang="ru">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="referrer" content="no-referrer">
-  <meta name="color-scheme" content="light dark">
-  <title>Журнал / архив · сохранить ЖЖ</title>
-  <link rel="stylesheet" href="/static/archive.css">
-  <link rel="stylesheet" href="/static/app.css">
-  <script src="/static/theme.js"></script>
-  <script defer src="/static/app.js"></script>
-</head>
-<body class="studio">
-<header class="masthead">
-  <div class="topbar">
-    <a class="brand" href="/"><span class="brand-icon" aria-hidden="true">ж</span><span class="brand-name">Журнал</span><span class="brand-light">/ архив</span></a>
-    <nav class="top-nav" aria-label="Разделы"><a class="nav-export" href="#export">Сохранить журнал</a><a href="#library">Мои архивы <span id="library-count" class="nav-count">0</span></a></nav>
-    <span class="topbar-tools"><span class="local-label"><span class="dot"></span> Работает на вашем компьютере</span><button id="theme-toggle" class="theme-toggle" type="button" hidden><span>Тёмная тема</span></button></span>
-  </div>
-  <div class="journal-head studio-hero">
-    <h1>Живой Журнал. <em>Сохранённый целиком.</em></h1>
-    <p>Записи, комментарии и ветки обсуждений — в одной папке на вашем компьютере. Архив открывается в любом браузере, без сети и без входа в ЖЖ.</p>
-  </div>
-</header>
-<main class="studio-main">
-  <div id="export" class="workspace-grid">
-    <section class="connect-panel">
-      <h2>Подключите свой журнал</h2>
-      <p class="panel-lead">Войдите как владелец журнала — тогда сохранятся и записи под замком, и скрытые комментарии.</p>
-      <form id="export-form">
-        <label for="username">Имя пользователя</label>
-        <div class="input-row"><input id="username" name="username" placeholder="your_journal" autocomplete="username" autocapitalize="none" spellcheck="false" pattern="[A-Za-z0-9_\-]{1,15}" maxlength="15" required><span class="input-suffix">.livejournal.com</span></div>
-        <label for="password">Пароль Живого Журнала</label>
-        <div class="input-row"><input id="password" name="password" type="password" placeholder="Введите пароль" autocomplete="current-password" required maxlength="1024"><button id="show-password" type="button" aria-label="Показать пароль" aria-pressed="false">Показать</button></div>
-        <p class="password-note">Пароль не записывается на диск. Соединение с ЖЖ — по HTTPS.</p>
-        <div class="trial-settings">
-          <div class="setting"><label for="entry-limit">Объём выгрузки</label><select id="entry-limit"><option value="10">Последние 10 записей — пробная выгрузка</option><option value="period">Создать / обновить за период</option><option value="urls">Обновить записи по URL</option><option value="all">Весь журнал — проверить и обновить</option></select></div>
-          <div class="setting setting-narrow"><label for="max-requests">Не больше HTTP-запросов за запуск</label><input id="max-requests" class="field" type="number" inputmode="numeric" min="1" max="10000" step="1" value="50" required></div>
-          <p>В предел входят вход, повторные попытки, реакции и картинки. Когда он достигнут, всё полученное сохранится; продолжить можно новым запуском.</p>
-        </div>
-        <div id="sync-settings" hidden>
-          <label for="target-archive">Архив для обновления</label><select id="target-archive"><option value="">Основной архив пользователя</option></select>
-          <div id="period-settings" hidden><label for="date-from">Записи начиная с</label><input id="date-from" class="field" type="date"><label for="date-to">По дату включительно</label><input id="date-to" class="field" type="date"><p class="fine">Период относится к дате публикации постов. Их комментарии сохраняются за всё время; число лет не ограничено.</p></div>
-          <div id="url-settings" hidden><label for="entry-urls">URL записей своего журнала, по одному на строке</label><textarea id="entry-urls" class="field" rows="3" placeholder="https://your-journal.livejournal.com/12345.html"></textarea><p class="fine">Можно вставить ссылку на комментарий: обновится вся запись с обсуждением.</p></div>
-          <p class="fine">Полученное добавляется в архив. После остановки выберите тот же режим, период и архив: загрузка продолжится с сохранённого места.</p>
-        </div>
-        <label class="checkbox-row"><input id="images" type="checkbox"><span><strong>Скачать изображения</strong><small>Тоже расходуют общий предел запросов. Для пробы выключены.</small></span></label>
-        <p class="included-row">Комментарии к выбранным записям сохраняются всегда, включая скрытые.</p>
-        <details class="advanced"><summary>Дополнительные настройки</summary><label for="delay">Пауза между запросами, секунд</label><input id="delay" class="field" type="number" inputmode="numeric" min="1" max="60" value="2" step="1"><p>После обрыва приложение продолжит с сохранённого места. Для очень большого журнала выгрузка может занять несколько часов.</p></details>
-        <button class="primary-button" id="start" type="submit">Создать архив</button>
-        <p class="form-footnote">Файлы сохранятся на этом компьютере.</p>
-      </form>
-      <div id="job" class="job-panel" hidden aria-live="polite">
-        <div class="job-heading"><strong id="job-title">Готовим архив</strong><span id="job-phase" class="badge"></span></div>
-        <p id="job-message"></p>
-        <progress id="job-progress" aria-label="Прогресс текущего этапа"></progress>
-        <div class="job-counts"><span><strong id="post-count">0</strong> <span id="post-word">записей</span></span><span><strong id="comment-count">0</strong> <span id="comment-word">комментариев</span></span><span id="request-count-wrap"><strong id="request-count">0 / 50</strong> запросов</span></div>
-        <div class="job-actions"><button id="cancel" class="secondary-button" type="button">Остановить и сохранить</button><a id="open-result" class="primary-button compact" hidden>Открыть архив</a></div>
-      </div>
-      <p id="form-error" class="notice" role="alert" hidden></p>
-    </section>
-    <aside class="preview-panel">
-      <h2>Что получится</h2>
-      <p class="panel-lead">Страницы записей с комментариями, связанные между собой. Удобно читать и с компьютера, и с телефона.</p>
-      <div class="paper-preview" aria-hidden="true">
-        <div class="mock-head"><span class="mock-mark">ж</span><span>мой_журнал</span></div>
-        <div class="mock-post"><div class="paper-meta">12 октября 2012, 16:08</div><div class="paper-title">Тот самый осенний день</div><div class="paper-line long"></div><div class="paper-line"></div><div class="paper-line short"></div><div class="paper-tags"><span>#жизнь</span><span>#воспоминания</span></div></div>
-        <div class="mock-comment"><div class="mock-bar"><b>old_friend</b><span class="hidden-tag">Скрытый</span></div><div class="paper-line"></div></div>
-        <div class="mock-comment mock-reply"><div class="mock-bar"><b>мой_журнал</b></div><div class="paper-line short"></div></div>
-      </div>
-      <ul class="feature-list">
-        <li><strong>Найдётся даже фраза из комментария</strong><small>Поиск, годы, метки и уровни доступа</small></li>
-        <li><strong>Ветки сохраняют свой порядок</strong><small>Авторы, ответы и скрытые комментарии</small></li>
-        <li><strong>Одна папка — вся история</strong><small>HTML для чтения, JSON с исходными текстами</small></li>
-      </ul>
-      <button id="demo" class="secondary-button demo-button" type="button">Посмотреть пример архива</button>
-      <span class="demo-caption">Вымышленные записи, вход не нужен.</span>
-    </aside>
-  </div>
-  <p class="quiet-note">Скрытые комментарии сохраняются, если ЖЖ отдаёт их владельцу. Удалённые тексты восстановить нельзя. Приложение проверит полноту выгрузки и покажет всё, что не удалось получить.</p>
-  <section id="library" class="library">
-    <div class="section-top"><h2>Мои архивы</h2><button id="refresh-library" type="button" class="text-button">Обновить список</button></div>
-    <div id="archives"><p class="library-empty">Здесь появятся ваши сохранённые журналы.</p></div>
-    <p class="fine">Папка хранения: <span id="output-path"></span></p>
-  </section>
-</main>
-<footer class="footer"><span>Журнал / архив · версия 0.2</span><button id="quit" type="button" class="text-button">Завершить приложение</button><span>Работает локально, без подписки</span></footer>
-</body>
-</html>
+<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Архивы · Архив ЖЖ</title><link rel="stylesheet" href="/static/archive.css"><script src="/static/theme.js"></script><script defer src="/static/common.js"></script><script defer src="/static/app.js"></script></head><body data-page="library">
+<header class="header"><div class="header-inner"><a class="brand" href="/"><span class="mark" data-icon="archive"></span>Архив ЖЖ</a><nav class="nav" aria-label="Разделы"><a href="/" aria-current="page">Архивы</a><a href="/help">Помощь</a><button class="icon" id="theme-toggle" aria-label="Тёмная тема" hidden><span></span></button></nav></div></header>
+<main class="main">
+<div class="heading"><h1>Архивы</h1><button class="btn primary" data-new><span data-icon="plus"></span>Новый архив</button></div>
+<section class="job" id="job" hidden aria-live="polite">
+<div class="job-top"><div><strong id="job-title"></strong><span class="job-stage" id="job-stage"></span></div><a class="small muted" id="job-report" hidden>Подробности</a></div>
+<progress id="progress" aria-label="Ход загрузки"></progress>
+<div class="job-bottom"><div class="job-counts mono"><span><b id="posts-count">0</b> записей</span><span><b id="comments-count">0</b> комментариев</span><span id="requests-count">0 запросов</span></div><div class="job-buttons"><a class="btn" id="open-result" hidden>Открыть</a><button class="btn" id="job-action">Остановить</button></div></div>
+<p id="job-message" class="job-note" hidden></p></section>
+<p id="app-error" class="notice" role="alert" hidden></p>
+<div id="empty" class="empty" hidden><p>Архивов пока нет</p><button class="btn" data-new><span data-icon="plus"></span>Новый архив</button></div>
+<table class="library" id="library" hidden><thead><tr><th scope="col">Журнал</th><th scope="col">Записи</th><th scope="col">Комментарии</th><th scope="col">Обновлён</th><th scope="col">Статус</th><th scope="col"><span class="sr-only">Действия</span></th></tr></thead><tbody id="archives"></tbody></table>
+<p class="storage"><span data-icon="folder"></span><code id="output-path"></code></p>
+</main><footer class="footer"><span>Архив ЖЖ · 0.3.0</span><button class="btn text" type="button" id="quit">Завершить приложение</button></footer>
+<dialog id="export-dialog" class="dialog" aria-labelledby="dialog-title"><form id="export-form">
+<div class="dialog-head"><h2 id="dialog-title">Новый архив</h2><button class="icon" type="button" data-close aria-label="Закрыть"><span data-icon="x"></span></button></div>
+<div class="form-grid" id="credentials"><div class="field" id="username-field"><label for="username">Пользователь ЖЖ</label><input class="input" id="username" placeholder="username" autocomplete="username" spellcheck="false" autocapitalize="none" required maxlength="15" pattern="[A-Za-z0-9_\-]{1,15}"></div><div class="field"><label for="password">Пароль</label><div class="password-input"><input class="input" type="password" id="password" autocomplete="current-password" required maxlength="1024"><button class="icon" type="button" id="show-password" aria-label="Показать пароль"><span data-icon="eye"></span></button></div></div></div>
+<div id="scope-fields"><div class="segmented" role="group" aria-label="Что загрузить"><button aria-pressed="true" type="button" data-scope="full">Весь журнал</button><button aria-pressed="false" type="button" data-scope="period">За период</button><button aria-pressed="false" type="button" data-scope="latest">Тест <span class="scope-wide">(последние 10 записей)</span><span class="scope-narrow">· 10 записей</span></button><button aria-pressed="false" type="button" data-scope="urls" hidden>По ссылкам</button></div>
+<div id="period-fields" class="form-grid" hidden><div class="field"><label for="date-from">С</label><input class="input" type="date" id="date-from" ></div><div class="field"><label for="date-to">По</label><input class="input" type="date" id="date-to" ></div></div>
+<div class="field" id="url-fields" hidden><label for="entry-urls">Ссылки на записи или комментарии</label><textarea id="entry-urls" placeholder="https://username.livejournal.com/12345.html" spellcheck="false"></textarea></div>
+<label class="check"><input type="checkbox" id="images">Скачать изображения</label>
+<details class="form-advanced"><summary>Настройки загрузки</summary><div class="form-grid"><div class="field"><label for="request-limit">Лимит запросов</label><input class="input" type="number" id="request-limit" placeholder="Без лимита" min="1" max="10000"></div><div class="field"><label for="delay">Пауза, сек.</label><input class="input" type="number" id="delay" value="3" min="1" max="60"></div></div></details></div>
+<p id="resume-note" class="form-note" hidden></p>
+<p id="form-error" class="notice" role="alert" hidden></p><div class="dialog-actions"><a href="/help#limits" target="_blank" rel="noopener" class="limit-caption">Помощь</a><div class="dialog-buttons"><button class="btn" type="button" data-close>Отмена</button><button class="btn primary" type="submit" id="submit-export">Создать</button></div></div>
+</form></dialog><div id="toast" class="toast" role="status" hidden></div></body></html>

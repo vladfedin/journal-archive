@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "livejournal-local-archive"
-version = "0.2.0"
+version = "0.3.0"
 description = "Локальный архив Живого Журнала с комментариями и поиском"
 requires-python = ">=3.10"
 readme = "README.md"
@@ -17,6 +17,7 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest>=8,<10"]
+browser = ["playwright>=1.50,<2"]
 package = ["pyinstaller>=6.16,<7", "build>=1.2,<2"]
 
 [project.scripts]

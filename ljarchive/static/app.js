@@ -1,81 +1,73 @@
-"use strict";
+'use strict';
 const $ = id => document.getElementById(id);
-let busy = false, polling = false;
-const terminal = new Set(["complete", "partial", "cancelled", "error", "demo"]);
-const labels = {waiting: "Пауза", login: "Вход", posts: "Записи", comments: "Комментарии", reactions: "Реакции", render: "Страницы", complete: "Готово", partial: "Частично", cancelled: "Остановлено", error: "Ошибка", demo: "Пример"};
-const MONTHS = "января февраля марта апреля мая июня июля августа сентября октября ноября декабря".split(" ");
-// Русское согласование числительных: 1 запись, 2 записи, 5 записей.
-const form = (n, one, few, many) => { const a = Math.abs(n) % 100, b = a % 10; return b === 1 && a !== 11 ? one : b >= 2 && b <= 4 && (a < 12 || a > 14) ? few : many; };
-const postWord = n => form(n, "запись", "записи", "записей"), commentWord = n => form(n, "комментарий", "комментария", "комментариев");
-const ruDay = value => { const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(value || ""); return m && MONTHS[m[2] - 1] ? `${Number(m[3])} ${MONTHS[m[2] - 1]} ${m[1]}` : ""; };
-
-async function api(path, data) {
-  const res = await fetch(path, {method: data === undefined ? "GET" : "POST", headers: data === undefined ? {} : {"Content-Type": "application/json"}, body: data === undefined ? undefined : JSON.stringify(data), cache: "no-store"});
-  const value = await res.json(); if (!res.ok) throw new Error(value.error || "Не удалось выполнить запрос."); return value;
+const terminal = new Set(['idle','complete','partial','cancelled','error','demo']);
+const labels = {login:'Вход',posts:'Записи',comments:'Комментарии',reactions:'Реакции',render:'Страницы',waiting:'Пауза',complete:'Готов',partial:'Не завершён',cancelled:'Остановлено',error:'Ошибка',demo:'Пример'};
+const scopes = {full:'весь журнал',period:'за период',urls:'по ссылкам',latest:'тест (последние 10 записей)'};
+const el = (tag, cls, text) => {const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n;};
+const day = value => {const m=/^(\d{4})-(\d{2})-(\d{2})/.exec(value||'');return m?`${Number(m[3])} ${'января февраля марта апреля мая июня июля августа сентября октября ноября декабря'.split(' ')[Number(m[2])-1]} ${m[1]}`:'';};
+const dateValue = date => `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;
+let libraryKey='',dismissedJob=null,busy=false,closed=false,submitting=false,pollTimer,mode='new',scope='full',selected=null,limitEdited=false,lastState={},archives=[];
+async function api(path,data){const r=await fetch(path,{method:data===undefined?'GET':'POST',headers:data===undefined?{}:{'Content-Type':'application/json'},body:data===undefined?undefined:JSON.stringify(data),cache:'no-store'});const value=await r.json();if(!r.ok)throw new Error(value.error||'Не удалось выполнить запрос.');return value;}
+function error(message,form=false){const target=$(form?'form-error':'app-error');target.textContent=message;target.hidden=!message;}
+function setBusy(value){busy=value;document.querySelectorAll('[data-new],[data-update],[data-resume]').forEach(b=>b.disabled=value||closed);$('submit-export').disabled=value||submitting||closed;}
+function setScope(value){scope=value;document.querySelectorAll('[data-scope]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.scope===value)));$('period-fields').hidden=value!=='period';$('url-fields').hidden=value!=='urls';$('entry-urls').required=value==='urls';$('entry-urls').disabled=value!=='urls';if(!limitEdited)$('request-limit').value=value==='latest'?'50':'';$('request-limit').required=value==='latest';}
+function openDialog(kind,archive=null){
+  if(busy||closed)return;mode=kind;selected=archive;error('',true);const resume=kind==='resume',isNew=kind==='new';
+  document.querySelectorAll('.more[open]').forEach(menu=>menu.open=false);
+  $('export-form').reset();limitEdited=false;
+  $('dialog-title').textContent=resume?'Продолжить загрузку':isNew?'Новый архив':'Обновить архив';
+  $('submit-export').textContent=resume?'Продолжить':isNew?'Создать':'Обновить';
+  $('username').value=isNew?'':archive.username;$('username').readOnly=!isNew;$('username-field').hidden=resume;
+  $('credentials').classList.toggle('is-resume',resume);$('password').type='password';$('show-password').setAttribute('aria-label','Показать пароль');
+  $('scope-fields').hidden=resume;$('resume-note').hidden=!resume;
+  document.querySelector('[data-scope=latest]').hidden=!isNew;document.querySelector('[data-scope=urls]').hidden=isNew;
+  const to=new Date(),from=new Date(to);from.setDate(from.getDate()-29);$('date-from').value=dateValue(from);$('date-to').value=dateValue(to);
+  if(!resume){setScope(isNew?'full':'period');if(archive?.parameters)$('images').checked=!!archive.parameters.images;}
+  else{$('request-limit').required=false;$('entry-urls').required=false;$('entry-urls').disabled=true;$('resume-note').textContent=archive.username+' · '+(scopes[archive.parameters?.mode]||'загрузка');}
+  $('export-dialog').showModal();(isNew?$('username'):$('password')).focus();
 }
-function error(message) { $("form-error").textContent = message; $("form-error").hidden = !message; }
-function setBusy(value) {
-  busy = value; $("start").disabled = value; $("demo").disabled = value;
-  for (const id of ["username", "password", "images", "delay", "entry-limit", "max-requests", "target-archive", "date-from", "date-to", "entry-urls"]) $(id).disabled = value;
-  $("start").textContent = value ? "Архив создаётся…" : "Создать архив";
-}
-function showStatus(s) {
-  if (!s.phase || s.phase === "idle") return;
-  const appeared = $("job").hidden;
-  $("job").hidden = false; $("job-phase").textContent = labels[s.phase] || s.phase; $("job-title").textContent = terminal.has(s.phase) ? "Результат выгрузки" : "Готовим архив"; $("job-message").textContent = s.message || "";
-  if(s.phase === "waiting" && s.retry_at) $("job-message").textContent += ` Следующая попытка не раньше ${new Date(s.retry_at * 1000).toLocaleString("ru-RU")}.`;
-  $("post-count").textContent = s.entries || 0; $("post-word").textContent = postWord(s.entries || 0);
-  $("comment-count").textContent = s.comments || 0; $("comment-word").textContent = commentWord(s.comments || 0);
-  $("request-count-wrap").hidden = !s.request_limit; $("request-count").textContent = `${s.requests_used || 0} / ${s.request_limit || 50}`;
-  if (s.total) { $("job-progress").max = s.total; $("job-progress").value = s.completed || 0; } else $("job-progress").removeAttribute("value");
-  $("job-progress").hidden = terminal.has(s.phase); $("cancel").hidden = terminal.has(s.phase); $("cancel").disabled = !!s.cancelling;
-  $("open-result").hidden = !s.archive_url; if (s.archive_url) $("open-result").href = s.archive_url;
+function showStatus(s){lastState=s;if(!s.phase||s.phase==='idle'||s.job_id&&s.job_id===dismissedJob)return;$('job').hidden=false;$('job-title').textContent=s.username||'';
+  let phase=s.request_limit_reached?'Лимит запросов':labels[s.phase]||'Загрузка';
+  if(s.phase==='waiting'&&s.retry_at)phase=s.retry_at*1000>Date.now()?'Пауза до '+new Date(s.retry_at*1000).toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'}):'Повтор запроса';
+  $('job-stage').textContent=s.cancelling?'Остановка…':phase;
+  $('job-stage').classList.toggle('paused-message',['error','partial'].includes(s.phase));
+  $('posts-count').textContent=s.entries||0;$('comments-count').textContent=s.comments||0;
+  $('requests-count').textContent=`${s.requests_used||0}${s.request_limit?' / '+s.request_limit:''} запросов`;
+  $('progress').hidden=terminal.has(s.phase);if(s.total){$('progress').max=s.total;$('progress').value=s.completed||0;}else $('progress').removeAttribute('value');
+  $('open-result').hidden=!s.archive_url;if(s.archive_url)$('open-result').href=s.archive_url;
+  $('job-report').hidden=!s.archive_url;if(s.archive_url)$('job-report').href=s.archive_url.replace(/index\.html$/,'report.html');
+  $('job-message').textContent=s.message||'';$('job-message').hidden=!s.message||!['partial','error','cancelled'].includes(s.phase)||!!s.request_limit_reached;
+  $('job-action').disabled=!!s.cancelling;$('job-action').textContent=!terminal.has(s.phase)?'Остановить':['complete','demo'].includes(s.phase)?'Закрыть':s.phase==='error'?'Повторить':'Продолжить';
   setBusy(!terminal.has(s.phase));
-  // Ход выгрузки появляется под формой: на телефоне он иначе остаётся за краем экрана.
-  if (appeared && !terminal.has(s.phase)) $("job").scrollIntoView({block: "nearest"});
 }
-async function poll() {
-  if (polling) return; polling = true;
-  try { const s = await api("/api/status"); showStatus(s); if (terminal.has(s.phase)) await library(); }
-  catch (e) { error("Связь с локальным приложением прервалась. Проверьте, что оно запущено; сохранённый прогресс останется на диске."); }
-  finally { polling = false; setTimeout(poll, busy ? 1200 : 5000); }
+async function library(){const data=await api('/api/archives');const key=JSON.stringify(data);if(key===libraryKey){setBusy(busy);return;}libraryKey=key;archives=data.archives.filter(a=>a.slug!=='_demo');$('output-path').textContent=data.output;$('archives').replaceChildren();$('empty').hidden=!!archives.length;$('library').hidden=!archives.length;
+  for(const archive of archives){const row=el('tr'),name=el('td'),link=el(archive.url?'a':'strong','journal-name',archive.username);if(archive.url)link.href=archive.url;name.append(link);
+    const mode=archive.parameters?.mode;const description=archive.entry_limit?`Тест · ${archive.entry_limit} записей`:mode==='period'?[day(archive.parameters.date_from),day(archive.parameters.date_to)].filter(Boolean).join(' — '):'';
+    if(description)name.append(el('span','journal-scope',description));row.append(name,el('td','mono',String(archive.entries_saved||0)),el('td','mono',String(archive.comments_saved||0)),el('td','mono',day(archive.created_at)));
+    const state=el('td'),status=el(archive.report_url?'a':'span','status'+(archive.status==='complete'?'':' partial'),labels[archive.status]||'Не завершён');if(archive.report_url)status.href=archive.report_url;state.append(status);row.append(state);
+    const cell=el('td'),actions=el('div','row-actions');if(archive.url){const open=el('a','btn','Открыть');open.href=archive.url;actions.append(open);}
+    const more=el('details','more'),summary=el('summary','','⋯');summary.setAttribute('aria-label','Действия с архивом '+archive.username);const menu=el('div','menu');
+    if(archive.resumable){const resume=el('button','','Продолжить');resume.type='button';resume.dataset.resume='';resume.onclick=()=>openDialog('resume',archive);menu.append(resume);}
+    const update=el('button','','Обновить');update.type='button';update.dataset.update='';update.onclick=()=>openDialog('update',archive);menu.append(update);
+    if(archive.url){menu.append(el('hr'));for(const [text,url] of [['Скачать JSON',archive.json_url],['Скачать ZIP',archive.zip_url],['Состояние архива',archive.report_url]]){const a=el('a','',text);a.href=url;menu.append(a);}}
+    more.append(summary,menu);actions.append(more);cell.append(actions);row.append(cell);$('archives').append(row);
+  }setBusy(busy);
 }
-async function library() {
-  const data = await api("/api/archives"); $("output-path").textContent = data.output; $("library-count").textContent = data.archives.length; const list = $("archives"); list.replaceChildren();
-  if (!data.archives.length) { const p = document.createElement("p"); p.className = "library-empty"; p.textContent = "Здесь появятся ваши сохранённые журналы."; list.append(p); }
-  const selectedArchive=$("target-archive").value;
-  $("target-archive").replaceChildren(new Option("Основной архив пользователя", ""));
-  for (const archive of data.archives) {
-    const row = document.createElement("div"); row.className = "archive-row";
-    const info = document.createElement("div"), title = document.createElement("strong"), desc = document.createElement("p"), links = document.createElement("div");
-    title.textContent = archive.username + (archive.entry_limit ? ` · последние ${archive.entry_limit}` : "");
-    const saved = ruDay(archive.created_at);
-    desc.textContent = [`${archive.entries_saved} ${postWord(archive.entries_saved)}`, `${archive.comments_saved} ${commentWord(archive.comments_saved)}`, labels[archive.status] || "Частично",
-      archive.request_limit ? `запросов ${archive.requests_used} / ${archive.request_limit}` : "", saved ? `снимок от ${saved}` : ""].filter(Boolean).join(" · ");
-    info.append(title, desc); links.className = "archive-row-links";
-    for (const [text, href, cls] of [["Открыть", archive.url, "primary-button compact"], ["Отчёт", archive.report_url], ["Скачать JSON", archive.json_url], ["Скачать ZIP", archive.zip_url]]) { const a = document.createElement("a"); a.textContent = text; a.href = href; if (cls) a.className = cls; links.append(a); }
-    if(archive.slug !== "_demo") {
-      $("target-archive").append(new Option(archive.slug, archive.slug));
-      const update=document.createElement("button"); update.type="button";update.className="text-button";update.textContent="Обновить архив";update.disabled=busy;
-      update.onclick=()=>{$("username").value=archive.username;$("target-archive").value=archive.slug;$("entry-limit").value="period";scopeSettings();$("export").scrollIntoView({block:"start"});};links.append(update);
-    }
-    row.append(info, links); list.append(row);
-  }
-  $("target-archive").value=selectedArchive;
-}
-$("export-form").addEventListener("submit", async e => {
-  e.preventDefault(); if (busy) return; error("");
-  const selected=$("entry-limit").value;
-  const data = {username: $("username").value, password: $("password").value, images: $("images").checked, delay: Number($("delay").value), entry_limit: selected === "10" ? 10 : null, max_requests: Number($("max-requests").value)};
-  if(selected !== "10") Object.assign(data,{mode:selected === "all"?"full":selected, date_from:$("date-from").value||null,date_to:$("date-to").value||null,urls:$("entry-urls").value,archive:$("target-archive").value||null});
-  setBusy(true);
-  try { const result = await api("/api/export", data); $("password").value = ""; showStatus(result); } catch (e) { error(e.message); setBusy(false); } finally { data.password = ""; }
-});
-$("show-password").onclick = () => { const show = $("password").type === "password"; $("password").type = show ? "text" : "password"; $("show-password").textContent = show ? "Скрыть" : "Показать"; $("show-password").setAttribute("aria-label", show ? "Скрыть пароль" : "Показать пароль"); $("show-password").setAttribute("aria-pressed", String(show)); };
-$("cancel").onclick = async () => { try { $("cancel").disabled = true; showStatus(await api("/api/cancel", {})); } catch (e) { error(e.message); $("cancel").disabled = false; } };
-$("demo").onclick = async () => { if (busy) return; error(""); setBusy(true); try { showStatus(await api("/api/demo", {})); } catch (e) { error(e.message); setBusy(false); } };
-$("refresh-library").onclick = () => library().catch(e => error(e.message));
-function scopeSettings(){const scope=$("entry-limit").value;$("sync-settings").hidden=scope==="10";$("period-settings").hidden=scope!=="period";$("url-settings").hidden=scope!=="urls";}
-$("entry-limit").onchange=scopeSettings;
-$("quit").onclick=async()=>{try{await api("/api/quit",{});$("quit").disabled=true;error("Приложение завершает работу с сохранением прогресса. Эту вкладку можно закрыть.");}catch(e){error(e.message);}};
-library().catch(e => error(e.message)); poll();
+let previousKey='';async function poll(){if(closed)return;try{const state=await api('/api/status');showStatus(state);error('');const key=JSON.stringify([state.phase,state.slug,state.archive_url]);if(key!==previousKey||!busy){await library();previousKey=key;}}catch(e){error('Приложение недоступно. Запустите его снова.');}finally{if(!closed)pollTimer=setTimeout(poll,busy?1200:5000);}}
+document.querySelectorAll('[data-new]').forEach(b=>b.onclick=()=>openDialog('new'));
+document.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>$('export-dialog').close());
+document.querySelectorAll('[data-scope]').forEach(b=>b.onclick=()=>setScope(b.dataset.scope));
+$('export-dialog').addEventListener('close',()=>$('password').value='');
+$('request-limit').oninput=()=>limitEdited=true;
+$('show-password').onclick=()=>{const show=$('password').type==='password';$('password').type=show?'text':'password';$('show-password').setAttribute('aria-label',show?'Скрыть пароль':'Показать пароль');};
+$('export-form').onsubmit=async e=>{e.preventDefault();if(busy||submitting||closed)return;error('',true);let data;
+  if(mode==='resume')data={resume:selected.slug,password:$('password').value};
+  else data={username:$('username').value,password:$('password').value,entry_limit:scope==='latest'?10:null,mode:scope==='latest'?null:scope,images:$('images').checked,delay:Number($('delay').value),max_requests:$('request-limit').value?Number($('request-limit').value):null,date_from:scope==='period'?$('date-from').value||null:null,date_to:scope==='period'?$('date-to').value||null:null,urls:scope==='urls'?$('entry-urls').value:[],archive:selected?.slug||null};
+  submitting=true;$('submit-export').disabled=true;
+  try{const state=await api('/api/export',data);$('export-dialog').close();showStatus(state);await library();}
+  catch(e){error(e.message,true);$('password').value='';$('password').focus();}
+  finally{data.password='';submitting=false;$('submit-export').disabled=busy;}
+};
+$('job-action').onclick=async()=>{try{if(busy){$('job-action').disabled=true;showStatus(await api('/api/cancel',{}));}else if(['complete','demo'].includes(lastState.phase)){$('job').hidden=true;dismissedJob=lastState.job_id;}else{await library();const archive=archives.find(a=>a.slug===lastState.slug);if(archive)openDialog('resume',archive);else error('Сохранённая задача не найдена.');}}catch(e){error(e.message);$('job-action').disabled=false;}};
+$('quit').onclick=async()=>{try{await api('/api/quit',{});closed=true;clearTimeout(pollTimer);setBusy(false);$('quit').disabled=true;$('job').hidden=true;error('Приложение закрыто.');}catch(e){error(e.message);}};
+poll();

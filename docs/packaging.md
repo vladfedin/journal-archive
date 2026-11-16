@@ -1,14 +1,10 @@
-# Пакеты и выпуск версии 0.2
+# Сборка и выпуск
 
-## Два способа установки
-
-Исходный проект устанавливается через `python -m pip install .`; команда `lj-archive` запускает CLI и локальное приложение. Wheel подходит для Windows, macOS и Linux с Python 3.10+. Файлы `start.bat`, `start.command`, `start.sh` упрощают первый запуск исходников.
-
-Самостоятельный desktop-пакет содержит Python, зависимости, сертификаты TLS, шаблоны и статические файлы. Пользователь запускает EXE, macOS .app или Linux-бинарник, после чего открывается браузер. Данные лежат отдельно в пользовательской папке и не попадают в дистрибутив.
+Готовые пакеты: [GitHub Releases](https://github.com/vladfedin/journal-archive/releases/latest). Они включают Python, зависимости, сертификаты TLS, шаблоны и статические файлы. Архивы пользователей хранятся отдельно.
 
 ## Локальная сборка
 
-На каждой целевой ОС:
+На целевой ОС:
 
 ```bash
 python -m pip install -e ".[test,package]"
@@ -18,18 +14,25 @@ python packaging/build.py
 python packaging/smoke.py
 ```
 
-`dist/` содержит wheel, sdist и рабочую native-сборку. `release/` содержит исполняемый файл или ZIP приложения и SHA-256. `packaging/smoke.py` запускает скомпилированное приложение вне проекта, без `VIRTUAL_ENV`/`PYTHONPATH`, создаёт вымышленный архив и проверяет HTML, CSS, SQLite и JSON. Запросов к ЖЖ при этой проверке нет.
+`dist/` содержит wheel, sdist и рабочее приложение. `release/` — версионный пакет и SHA-256:
 
-PyInstaller не является кросс-компилятором: Windows-пакет собирается на Windows, macOS-пакет — на Mac. Для Intel и Apple Silicon нужны отдельные сборки. [Документация PyInstaller](https://pyinstaller.org/en/stable/operating-mode.html).
+- `JournalArchive-VERSION-windows-x64.exe`
+- `JournalArchive-VERSION-macos-arm64.zip`
+- `JournalArchive-VERSION-macos-x64.zip`
+- `JournalArchive-VERSION-linux-x64.tar.gz`
 
-## CI
+Нативная проверка запускает приложение вне проекта, без `VIRTUAL_ENV`/`PYTHONPATH`, в папке с кириллицей. Проверяет создание тестового архива, HTML, помощь, CSS/JS, JSON, HTTP и завершение процесса. Запросов к ЖЖ нет. PyInstaller требует сборки на целевой системе: [документация](https://pyinstaller.org/en/stable/operating-mode.html).
 
-`.github/workflows/build.yml` готовит матрицу Ubuntu 22.04 x86_64, Windows 2022 x64, macOS 15 Apple Silicon и macOS 15 Intel. Запускается вручную, при отправке в `main`, по тегу `v*` или для pull request. В каждой среде выполняются тесты, сборка и native smoke. Артефакты прикрепляются к запуску Actions; автоматической публикации Release нет. В workflow только `contents: read`.
+## GitHub Actions
 
-Репозиторий: [vladfedin/journal-archive](https://github.com/vladfedin/journal-archive), SSH remote: `git@github.com:vladfedin/journal-archive.git`. Для скачивания откройте [workflow](https://github.com/vladfedin/journal-archive/actions/workflows/build.yml), выберите успешный запуск и нужную платформу в разделе **Artifacts**. Внутри архива находятся исполняемый пакет, SHA-256, wheel и исходный sdist. Для скачивания артефактов Actions потребуется вход в GitHub. Статус конкретной сборки следует проверять в выбранном запуске. [Текущие runner-метки GitHub](https://docs.github.com/en/actions/how-tos/write-workflows/choose-where-workflows-run/choose-the-runner-for-a-job).
+Матрица: Ubuntu 22.04 x86_64, Windows Server 2022 x64, macOS 15 Apple Silicon и Intel. Workflow запускается на `main`, PR, теге `v*` и вручную. Все платформы проходят тесты, сборку и запуск готового пакета. Linux дополнительно проходит браузерные проверки Chromium.
 
-## Подпись и публикация
+Для выпуска обновите версии в `pyproject.toml` и `ljarchive/__init__.py`, добавьте `docs/releases/VERSION.md`. После успешных проверок `main` отправьте тег `vVERSION`. Задача публикации ждёт успеха всех четырёх сборок, проверяет имена и SHA-256, затем создаёт GitHub Release с восемью файлами (четыре пакета и четыре контрольные суммы). Если сборка или проверка не пройдёт, публикации не будет.
 
-Скрипт пока не использует сертификаты подписи Windows и Developer ID/notarization Apple. Для распространения среди широкой аудитории это отдельный этап выпуска; без него ОС может показывать предупреждение о неизвестном разработчике. Не следует отключать системную защиту ради установки. Сертификаты и лицензия распространения ещё не заданы владельцем проекта. Исходники доступны на GitHub, но публичный релиз не опубликован.
+Пакеты доступны из Releases без входа в GitHub. Право `contents: write` предоставлено только задаче публикации; сборки используют `contents: read`. Используются [GitHub CLI](https://cli.github.com/manual/gh_release_create) и [токен workflow](https://docs.github.com/en/actions/tutorials/authenticate-with-github_token).
 
-Архивы пользователей, SQLite, виртуальное окружение, сборочные файлы и локальные резервные копии исключены из Git. `MANIFEST.in` исключает данные из sdist; PyInstaller получает только пакет `ljarchive`. Перед публикацией следует запускать тесты и проверять содержимое артефактов.
+## Подпись
+
+Пакеты пока не имеют доверенной подписи Windows и Apple Developer ID/notarization. ОС может потребовать подтверждение запуска; это указано в описании выпуска. Сертификаты не входят в репозиторий. Подпись для широкого распространения можно подключить отдельным этапом перед вычислением SHA-256.
+
+Архивы, SQLite, виртуальное окружение, `.jobs` и локальные данные не включаются в сборку. `MANIFEST.in` исключает пользовательские данные из sdist; PyInstaller получает пакет `ljarchive` и его ресурсы.

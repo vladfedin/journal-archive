@@ -35,7 +35,7 @@ class Media:
         self.mapping, self.failed = {}, []
         self.budget = budget or RequestBudget()
         self.session = requests.Session()
-        self.session.headers["User-Agent"] = "LiveJournalLocalArchive/0.1"
+        self.session.headers["User-Agent"] = "LiveJournalLocalArchive/0.3"
         # Never attach credentials from .netrc or the owner's LJ cookie to embeds.
         self.session.trust_env = False
         self.blocked_hosts = set()
@@ -71,7 +71,7 @@ class Media:
                 public_url(current)
                 if urlsplit(current).hostname in self.blocked_hosts:
                     raise ValueError("host denied access")
-                if self.budget.used >= self.budget.limit:
+                if self.budget.limit is not None and self.budget.used >= self.budget.limit:
                     self.budget.consume("images")
                 if not self.wait(max(self.budget.delay, self.budget.not_before - time.time())):
                     return None

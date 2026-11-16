@@ -24,6 +24,8 @@ with tempfile.TemporaryDirectory(prefix="ljarchive-ЖЖ-") as directory:
     assert len(data["entries"]) == 6 and len(data["comments"]) == 12
     assert (folder / "assets/archive.css").is_file()
     assert (folder / "index.html").is_file()
+    assert (folder / "help.html").is_file()
+    assert (folder / "assets/common.js").is_file()
     with socket.socket() as sock:
         sock.bind(('127.0.0.1', 0))
         port = sock.getsockname()[1]
@@ -45,6 +47,8 @@ with tempfile.TemporaryDirectory(prefix="ljarchive-ЖЖ-") as directory:
                 raise RuntimeError("Native HTTP server did not start")
             assert response.status_code == 200 and 'date-from' in response.text
             assert session.get(base + '/static/archive.css', timeout=5).status_code == 200
+            assert session.get(base + '/static/common.js', timeout=5).status_code == 200
+            assert 'Паузы и лимиты' in session.get(base + '/help', timeout=5).text
             assert session.get(base + '/archive/demo/data/archive.json', timeout=5).json()['schema_version'] == 1
             assert session.post(base + '/api/quit', headers={'Origin':base}, json={}, timeout=5).status_code == 200
         assert process.wait(timeout=10) == 0

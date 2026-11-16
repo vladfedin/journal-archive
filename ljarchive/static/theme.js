@@ -1,27 +1,12 @@
-"use strict";
-// Подключается в <head> без defer: запомненная тема применяется до первой отрисовки, без мигания.
+'use strict';
 (() => {
-  const KEY = "ljarchive-theme", root = document.documentElement;
-  try { const saved = localStorage.getItem(KEY); if (saved === "dark" || saved === "light") root.dataset.theme = saved; } catch {}
-  document.addEventListener("DOMContentLoaded", () => {
-    const button = document.getElementById("theme-toggle");
-    if (!button) return;
-    const system = matchMedia("(prefers-color-scheme: dark)");
-    const current = () => root.dataset.theme || (system.matches ? "dark" : "light");
-    // Кнопка называет действие: в тёмной теме предлагает светлую, и наоборот.
-    const paint = () => {
-      const next = current() === "dark" ? "light" : "dark";
-      button.dataset.next = next;
-      button.querySelector("span").textContent = next === "dark" ? "Тёмная тема" : "Светлая тема";
-      button.setAttribute("aria-label", next === "dark" ? "Включить тёмную тему" : "Включить светлую тему");
-    };
-    button.addEventListener("click", () => {
-      root.dataset.theme = button.dataset.next;
-      try { localStorage.setItem(KEY, root.dataset.theme); } catch {}
-      paint();
-    });
-    system.addEventListener("change", paint);
-    button.hidden = false;
-    paint();
+  const key='ljarchive-theme',root=document.documentElement,system=matchMedia('(prefers-color-scheme: dark)');let saved;
+  try{saved=localStorage.getItem(key);}catch(_){}
+  root.dataset.theme=saved==='dark'||saved==='light'?saved:system.matches?'dark':'light';
+  document.addEventListener('DOMContentLoaded',()=>{
+    const button=document.getElementById('theme-toggle');if(!button)return;
+    const paint=()=>{const dark=root.dataset.theme==='dark';button.innerHTML=svg(dark?'sun':'moon');button.setAttribute('aria-label',dark?'Включить светлую тему':'Включить тёмную тему');button.title=dark?'Светлая тема':'Тёмная тема';button.hidden=false;};
+    button.onclick=()=>{root.dataset.theme=root.dataset.theme==='dark'?'light':'dark';saved=root.dataset.theme;try{localStorage.setItem(key,saved);}catch(_){}paint();};
+    system.addEventListener('change',()=>{if(!saved){root.dataset.theme=system.matches?'dark':'light';paint();}});paint();
   });
 })();

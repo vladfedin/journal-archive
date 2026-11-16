@@ -5,6 +5,7 @@ import platform
 import shutil
 import subprocess
 import sys
+import tarfile
 from pathlib import Path
 
 root = Path(__file__).resolve().parents[1]
@@ -23,14 +24,21 @@ command.append(str(root / "packaging" / "desktop_entry.py"))
 subprocess.run(command, cwd=root, check=True)
 release = root / "release"
 release.mkdir(exist_ok=True)
-label = f"{name}-{platform.system().lower()}-{platform.machine().lower()}"
+from ljarchive import __version__
+architecture = {"x86_64": "x64", "amd64": "x64", "aarch64": "arm64"}.get(platform.machine().lower(), platform.machine().lower())
+system = "macos" if sys.platform == "darwin" else platform.system().lower()
+label = f"JournalArchive-{__version__}-{system}-{architecture}"
 if sys.platform == "darwin":
     output = release / (label + ".zip")
     subprocess.run(["ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", str(root / "dist" / (name + ".app")), str(output)], check=True)
+elif sys.platform == "win32":
+    output = release / (label + ".exe")
+    shutil.copy2(root / "dist" / (name + ".exe"), output)
 else:
-    extension = ".exe" if sys.platform == "win32" else ""
-    output = release / (label + extension)
-    shutil.copy2(root / "dist" / (name + extension), output)
+    output = release / (label + ".tar.gz")
+    with tarfile.open(output, "w:gz") as archive:
+        archive.add(root / "dist" / name, arcname=name)
+        archive.add(root / "README.md", arcname="README.md")
 checksum = hashlib.sha256(output.read_bytes()).hexdigest()
-(release / (output.name + ".sha256")).write_text(f"{checksum}  {output.name}\n")
+(release / (output.name + ".sha256")).write_text(f"{checksum}  {output.name}\n", encoding="utf-8")
 print(json.dumps({"artifact": str(output), "sha256": checksum}))

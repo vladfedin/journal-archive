@@ -14,19 +14,6 @@ document.addEventListener("DOMContentLoaded", () => {
     return `${Number(m[3])} ${MONTHS[m[2] - 1]} ${m[1]}` + (m[4] ? `, ${m[4]}:${m[5]}` + (/(?:UTC|Z|[+-]00:00)$/.test(value) ? " UTC" : "") : "");
   };
 
-  // Список авторов реакции: открыт только один, закрывается по Esc и по нажатию мимо.
-  document.addEventListener("toggle", (e) => {
-    if (e.target.matches?.(".reaction-detail[open]"))
-      for (const other of document.querySelectorAll(".reaction-detail[open]")) if (other !== e.target) other.open = false;
-  }, true);
-  document.addEventListener("click", (e) => {
-    for (const open of document.querySelectorAll(".reaction-detail[open]")) if (!open.contains(e.target)) open.open = false;
-  });
-  document.addEventListener("keydown", (e) => {
-    if (e.key !== "Escape") return;
-    for (const open of document.querySelectorAll(".reaction-detail[open]")) { open.open = false; open.querySelector("summary").focus(); }
-  });
-
   // Подсветка найденных слов: текст вставляется узлами, без innerHTML.
   function highlighted(cls, text, terms) {
     const node = el("p", cls), lower = text.toLocaleLowerCase("ru");
@@ -46,13 +33,14 @@ document.addEventListener("DOMContentLoaded", () => {
   function reactionsBlock(data) {
     if (data && !data.count) return null;
     const reactions = el("div", "reactions"); reactions.setAttribute("aria-label", "Реакции");
-    if (!data) { reactions.append(el("span", "reactions-missing", "Реакции не загружены")); return reactions; }
+    if (!data) { reactions.append(el("span", "reactions-missing", "♡ —")); reactions.title = "Реакции не загружены"; return reactions; }
     reactions.title = `Сохранено ${ruDate(data.captured_at)}`;
     for (const badge of data.badges) {
-      const detail = el("details", "reaction-detail"), chip = el("summary", "reaction");
-      const icon = el("span", "", badge.icon), arrow = el("span", "reaction-arrow", "▾");
-      icon.setAttribute("aria-hidden", "true"); arrow.setAttribute("aria-hidden", "true");
-      chip.append(icon, " ", el("span", "", String(badge.count)), arrow);
+      const detail = el("details", "reaction reaction-detail"), chip = el("summary");
+      const icon = el("span", "", badge.icon);
+      icon.setAttribute("aria-hidden", "true");
+      if (badge.id < 2) { icon.textContent=""; icon.dataset.icon=badge.id===0?"heart":"pen"; }
+      chip.append(icon, " ", el("span", "", String(badge.count)));
       chip.title = `${badge.label} — показать авторов`; chip.setAttribute("aria-label", `${badge.label}: ${badge.count}`);
       const people = el("div", "reaction-people"); people.append(el("strong", "", badge.label));
       const users = badge.users || [];
@@ -66,7 +54,7 @@ document.addEventListener("DOMContentLoaded", () => {
         }
         people.append(list);
       }
-      if (!badge.authors_complete) people.append(el("p", "fine", users.length ? `Получено авторов: ${users.length} из ${badge.count}.` : "Имена не загружены."));
+      if (!badge.authors_complete) people.append(el("p", "fine", users.length ? `${users.length} из ${badge.count}` : "Имена не загружены."));
       detail.append(chip, people); reactions.append(detail);
     }
     return reactions;
@@ -87,14 +75,9 @@ document.addEventListener("DOMContentLoaded", () => {
     let page = 1, timer;
     const PAGE_SIZE = 30;
     const FILTERS = ["year", "tag", "security"];
-    const toggle = $("toggle-filters"), panel = $("filters");
-    const showFilters = (open) => { panel.classList.toggle("is-open", open); toggle.setAttribute("aria-expanded", String(open)); };
-    toggle.addEventListener("click", () => showFilters(!panel.classList.contains("is-open")));
-    if (FILTERS.some(key => $(key).value)) showFilters(true);
 
     function pickTag(tag) {
       $("tag").value = tag; page = 1; render();
-      if (FILTERS.some(key => $(key).value)) showFilters(true);
       search.scrollIntoView({block: "start"});
     }
     function tagLink(tag) {
@@ -102,7 +85,7 @@ document.addEventListener("DOMContentLoaded", () => {
       link.addEventListener("click", (e) => { e.preventDefault(); pickTag(tag); });
       return link;
     }
-    if (tags.length) {
+    if (tags.length && $("tag-cloud")) {
       const cloud = $("tag-cloud");
       for (const tag of [...tags].sort((a, b) => tagCounts.get(b) - tagCounts.get(a) || a.localeCompare(b, "ru")).slice(0, 40)) {
         const link = tagLink(tag); link.append(" ", el("small", "", String(tagCounts.get(tag)))); cloud.append(link);
@@ -121,24 +104,28 @@ document.addEventListener("DOMContentLoaded", () => {
       const active = FILTERS.filter(key => $(key).value).length;
       $("results-count").textContent = terms.length ? plural(rows.length, "совпадение", "совпадения", "совпадений") : plural(rows.length, "запись", "записи", "записей");
       $("reset-filters").hidden = !active && !terms.length;
-      toggle.textContent = active ? `Фильтры · ${active}` : "Фильтры";
+
       const list = $("entry-list"); list.replaceChildren();
-      if (!rows.length) { const empty = el("div", "empty-state"); empty.append(el("h3", "", "Ничего не нашлось"), el("p", "", "Попробуйте другое слово или сбросьте фильтры.")); list.append(empty); }
+      if (!rows.length) { const empty = el("div", "empty-state"); empty.append(el("p", "", "Ничего не найдено")); list.append(empty); }
+      let lastYear;
       for (const {e, d} of rows.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)) {
-        const card = el("article", "entry-card"), meta = el("div", "entry-meta"), title = el("h3"), link = el("a", "", e.title);
+        if(e.year && e.year!==lastYear){list.append(el("div","year-mark",e.year));lastYear=e.year;}
+        const card = el("article", "entry-row entry-card"), meta = el("div", "entry-meta"), title = el("h2"), link = el("a", "", e.title);
         const time = el("time", "", ruDate(e.date)); if (e.date) time.dateTime = e.date;
         link.href = d?.url || e.url; title.append(link); meta.append(time);
-        if (e.security !== "public") meta.append(el("span", "badge lock", e.security_label));
+        if (e.security !== "public") meta.append(el("span", "state", e.security_label));
         card.append(meta, title);
         if (d?.kind === "comment") card.append(el("div", "match-label", "Совпадение в комментарии"));
         let excerpt = e.excerpt;
         if (d && terms.length) { const position = d.text.toLocaleLowerCase("ru").indexOf(terms[0]); const start = Math.max(0, position - 70); excerpt = (start ? "…" : "") + d.text.slice(start, start + 300) + (start + 300 < d.text.length ? "…" : ""); }
         card.append(d ? highlighted("entry-excerpt result-snippet", excerpt, terms) : el("p", "entry-excerpt", excerpt));
-        const bottom = el("div", "entry-card-bottom");
+        const bottom = el("div", "entry-bottom");
         if (e.comments) {
-          const comments = el("a", "comments-link", plural(e.comments, "комментарий", "комментария", "комментариев") + (e.screened ? ` · ${plural(e.screened, "скрытый", "скрытых", "скрытых")}` : ""));
+          const comments = el("a", "count-link"), icon = el("span");
+          icon.dataset.icon = "comment"; comments.append(icon, String(e.comments));
+          comments.setAttribute("aria-label", plural(e.comments, "комментарий", "комментария", "комментариев"));
           comments.href = e.url + "#comments"; bottom.append(comments);
-        } else bottom.append(el("span", "", "Без комментариев"));
+        }
         if (e.tags.length) { const tagList = el("span", "entry-tags"); tagList.append(...e.tags.map(tagLink)); bottom.append(tagList); }
         card.append(bottom);
         const reactions = reactionsBlock(e.reactions); if (reactions) card.append(reactions);
@@ -146,10 +133,11 @@ document.addEventListener("DOMContentLoaded", () => {
       }
       const pagination = $("pagination"); pagination.replaceChildren();
       if (pages > 1) {
-        const prev = el("button", "", "← Назад"), next = el("button", "", "Далее →"); prev.type = next.type = "button"; prev.disabled = page === 1; next.disabled = page === pages;
+        const prev = el("button", "btn", "← Назад"), next = el("button", "btn", "Далее →"); prev.type = next.type = "button"; prev.disabled = page === 1; next.disabled = page === pages;
         prev.onclick = () => { page--; render(); search.scrollIntoView({block: "start"}); }; next.onclick = () => { page++; render(); search.scrollIntoView({block: "start"}); };
         pagination.append(prev, el("span", "", `${page} из ${pages}`), next);
       }
+      icons();
       const state = new URLSearchParams(); if (query) state.set("q", search.value);
       for (const key of FILTERS) if ($(key).value) state.set(key, $(key).value);
       if ($("sort").value === "old") state.set("sort", "old");
@@ -172,6 +160,7 @@ document.addEventListener("DOMContentLoaded", () => {
     replies.set(c.id, count);
   });
   function refreshThreads() {
+    if($("expand-comments"))$("expand-comments").textContent=collapsed.size?"Развернуть ветки":"Свернуть ветки";
     let hiddenBelow = null;
     for (const c of comments) {
       const depth = Number(c.dataset.depth);
@@ -180,14 +169,19 @@ document.addEventListener("DOMContentLoaded", () => {
       if (!c.hidden && collapsed.has(c.id)) hiddenBelow = depth;
       const b = c.querySelector(".thread-toggle");
       if (b) {
-        b.textContent = collapsed.has(c.id) ? `Развернуть ветку · ${plural(replies.get(c.id), "ответ", "ответа", "ответов")}` : "Свернуть ветку";
+        b.textContent = collapsed.has(c.id) ? `Развернуть · ${replies.get(c.id)}` : `Свернуть · ${replies.get(c.id)}`;
         b.setAttribute("aria-expanded", String(!collapsed.has(c.id)));
       }
     }
   }
   for (const c of comments) c.querySelector(".thread-toggle")?.addEventListener("click", () => { collapsed.has(c.id) ? collapsed.delete(c.id) : collapsed.add(c.id); refreshThreads(); });
-  $("expand-comments")?.addEventListener("click", () => { collapsed.clear(); refreshThreads(); });
+  $("expand-comments")?.addEventListener("click", () => {
+    const collapse=comments.some(c=>c.querySelector(".thread-toggle")&&!collapsed.has(c.id));
+    collapsed.clear(); if(collapse)for(const c of comments)if(c.querySelector(".thread-toggle"))collapsed.add(c.id);
+    refreshThreads();
+  });
   if (!comments.some(c => c.querySelector(".thread-toggle"))) $("expand-comments")?.setAttribute("hidden", "");
+  refreshThreads();
   function reveal() { if (!location.hash.startsWith("#comment-")) return; const target = document.getElementById(location.hash.slice(1)); if (target) { collapsed.clear(); refreshThreads(); target.scrollIntoView({block: "center"}); } }
   window.addEventListener("hashchange", reveal); reveal();
 });

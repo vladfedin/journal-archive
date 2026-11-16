@@ -402,7 +402,7 @@ class Exporter:
                 store.set("entry_limit", self.entry_limit)
                 if not store.get("started_at"):
                     store.set("started_at", now())
-                if store.get("bodies_done"):
+                if store.get("bodies_done") and self.report()["issues"]:
                     # A partial run may have missed screened bodies. Re-fetch on retry.
                     store.set("body_cursor", 1)
                     store.set("bodies_done", False)

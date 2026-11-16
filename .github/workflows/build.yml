@@ -5,6 +5,9 @@ on:
     branches: [main]
     tags: ['v*']
   pull_request:
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
 permissions:
   contents: read
 jobs:
@@ -35,6 +38,24 @@ jobs:
                   for issue in case:
                       if issue.tag in ('failure', 'error'):
                           print('::error::' + escape(case.get('name', '') + '\n' + (issue.text or issue.get('message', ''))))
+      - name: Install browser test tools
+        if: runner.os == 'Linux'
+        run: |
+          python -m pip install -e ".[browser]"
+          python -m playwright install --with-deps chromium
+      - name: Check browser interface
+        if: runner.os == 'Linux'
+        shell: python {0}
+        run: |
+          import subprocess
+          import sys
+          result = subprocess.run([sys.executable, 'tests/browser_smoke.py'],
+                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                  encoding='utf-8', errors='replace')
+          print(result.stdout)
+          if result.returncode:
+              print('::error::' + result.stdout.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A'))
+          sys.exit(result.returncode)
       - run: python -m build
       - run: python packaging/build.py
       - name: Check native application
@@ -53,8 +74,23 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: LiveJournalArchive-${{ matrix.os }}
-          path: |
-            release/*
-            dist/*.whl
-            dist/*.tar.gz
+          path: release/*
           if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: package
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: LiveJournalArchive-*
+          path: release
+          merge-multiple: true
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python packaging/publish.py

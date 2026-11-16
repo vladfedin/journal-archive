@@ -361,7 +361,7 @@ class SyncExporter(Exporter):
 
 
 def sync(user, password, output, *, mode="full", start=None, end=None, urls=None, images=False,
-         delay=3, max_requests=50, cancel=None, progress=None, archive=None):
+         delay=3, max_requests=None, cancel=None, progress=None, archive=None):
     user = username(user)
     scope = validate_scope(user, mode, start, end, urls)
     slug = target_slug(user, archive)

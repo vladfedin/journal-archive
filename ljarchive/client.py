@@ -38,7 +38,7 @@ class APIRateLimited(ExportError):
 class RequestBudget:
     """One hard limit for all outbound HTTP attempts in an export, including retries."""
     def __init__(self, limit=50, progress=None):
-        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 10000:
+        if limit is not None and (isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 10000):
             raise ExportError("Предел запросов должен быть целым числом от 1 до 10000.")
         self.limit, self.used = limit, 0
         self.categories = {}
@@ -51,7 +51,7 @@ class RequestBudget:
 
     def consume(self, category):
         with self.lock:
-            if self.used >= self.limit:
+            if self.limit is not None and self.used >= self.limit:
                 self.exhausted = True
                 raise RequestLimitReached(f"Достигнут предел {self.limit} HTTP-запросов. Новые запросы не отправлены; полученные данные сохранены.")
             self.used += 1
@@ -61,7 +61,7 @@ class RequestBudget:
 
     def snapshot(self):
         return {"requests_used": self.used, "request_limit": self.limit,
-                "requests_remaining": self.limit - self.used,
+                "requests_remaining": None if self.limit is None else self.limit - self.used,
                 "request_limit_reached": self.exhausted, "request_categories": dict(self.categories)}
 
 
@@ -134,7 +134,7 @@ class LiveJournalClient:
         self.budget = budget or RequestBudget()
         self.budget.delay = self.delay
         self.session = requests.Session()
-        self.session.headers["User-Agent"] = "LiveJournalLocalArchive/0.2 (personal backup)"
+        self.session.headers["User-Agent"] = "LiveJournalLocalArchive/0.3 (personal backup)"
         self._last_request = 0.0
         self._cookie = None
         self.journal_id = None
@@ -165,7 +165,7 @@ class LiveJournalClient:
             raise ExportError("Неподдерживаемый адрес сервиса ЖЖ.")
         for attempt in range(self.max_attempts):
             self.check()
-            if self.budget.used >= self.budget.limit:
+            if self.budget.limit is not None and self.budget.used >= self.budget.limit:
                 self.budget.consume(category)  # Raise before waiting for a request that cannot be sent.
             self._wait(self.not_before - time.time())
             self._wait(self.delay - (time.monotonic() - self._last_request))

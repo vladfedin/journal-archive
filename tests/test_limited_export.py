@@ -153,7 +153,7 @@ def test_challenge_counts_even_if_no_budget_left_for_authenticated_call(tmp_path
 
 def test_comment_pagination_counts_all_pages(tmp_path, monkeypatch):
     report, wire = export_fixture(tmp_path, monkeypatch, pages=2)
-    assert report["status"] == "complete", report
+    assert report["status"] == "partial", report  # Comment text is complete; reaction authors are pending.
     assert report["comments_saved"] == 40
     assert report["requests_used"] == len(wire.calls) == 50
     assert not report["reactions"]["authors_complete"] and report["request_limit_reached"]
@@ -163,7 +163,7 @@ def test_comment_pagination_counts_all_pages(tmp_path, monkeypatch):
 
 def test_unloaded_children_are_expanded_with_same_budget(tmp_path, monkeypatch):
     report, wire = export_fixture(tmp_path, monkeypatch, placeholder=True)
-    assert report["status"] == "complete", report
+    assert report["status"] == "partial", report  # Expansion consumed the budget before reactions.
     assert report["comments_saved"] == 20
     assert report["requests_used"] == 50
     assert len([p for name, p in wire.calls if name == "getcomments" and "dtalkid" in p]) == 10
@@ -171,7 +171,7 @@ def test_unloaded_children_are_expanded_with_same_budget(tmp_path, monkeypatch):
 
 def test_reactions_cannot_exceed_budget_after_complete_text_download(tmp_path, monkeypatch):
     report, wire = export_fixture(tmp_path, monkeypatch, limit=26)
-    assert report["status"] == "complete"  # Text coverage is separate from reaction coverage.
+    assert report["status"] == "partial"  # The overall task includes reactions; saved text remains available.
     assert report["requests_used"] == len(wire.calls) == 26
     assert report["request_limit_reached"]
     assert not report["reactions"]["complete"]
@@ -214,7 +214,7 @@ def test_media_redirects_share_budget_and_stop_before_next_hop(tmp_path, monkeyp
     media.close()
 
 
-@pytest.mark.parametrize("value", [0, -1, True, 1.5, "50", None, 10001])
+@pytest.mark.parametrize("value", [0, -1, True, 1.5, "50", 10001])
 def test_budget_requires_positive_integer(value):
     with pytest.raises(ExportError):
         RequestBudget(value)
@@ -225,3 +225,11 @@ def test_sample_and_full_archives_have_different_names():
     assert archive_slug("journal", None) == "journal"
     with pytest.raises(ExportError):
         validate_entry_limit(51)
+
+
+def test_resume_reaction_only_trial_does_not_repeat_saved_comments(tmp_path, monkeypatch):
+    first, _ = export_fixture(tmp_path, monkeypatch, limit=26)
+    assert first["status"] == "partial" and first["comments_saved"] == 20
+    resumed, wire = export_fixture(tmp_path, monkeypatch)
+    assert resumed["status"] == "complete"
+    assert not any(name in ("getevents", "getcomments") for name, _ in wire.calls)

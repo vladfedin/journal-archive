@@ -31,13 +31,19 @@ DATE = re.compile(r"(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2}))?")
 CURRENT = (("current_music", "Музыка"), ("current_mood", "Настроение"), ("current_location", "Местоположение"))
 
 
-def ru_date(value, clock=True):
+def ru_date(value, clock=True, weekday=False):
     """«11 ноября 2026, 21:49» from the ISO-like dates LJ returns; unknown formats pass through."""
     text = str(value or "").strip()
     match = DATE.match(text)
     if not match or not 1 <= int(match[2]) <= 12:
         return text or "Дата неизвестна"
     result = f"{int(match[3])}\u00a0{MONTHS[int(match[2]) - 1]} {match[1]}"
+    if weekday:
+        from datetime import date
+        try:
+            result = ("Понедельник Вторник Среда Четверг Пятница Суббота Воскресенье".split()[date.fromisoformat(text[:10]).weekday()] + ", " + result)
+        except ValueError:
+            pass
     if clock and match[4]:
         result += f", {match[4]}:{match[5]}"
         if re.search(r"(?:UTC|Z|[+-]00:00)$", text):
@@ -70,6 +76,13 @@ def excerpt(text, limit=220):
 
 ENV.filters["ru_date"] = ru_date
 ENV.filters["plural"] = plural
+ENV.filters["profile_url"] = lambda value: (f"https://{value.replace('_', '-')}.livejournal.com/" if isinstance(value, str) and re.fullmatch(r"[a-zA-Z0-9_-]{1,15}", value) else "")
+def task_label(report):
+    if report.get("entry_limit"):
+        return f"Тест · {report['entry_limit']} записей"
+    scope = report.get("sync", {}).get("scope", {})
+    return {"full": "Весь журнал", "period": "За период", "urls": "По ссылкам"}.get(scope.get("mode"), "Весь журнал")
+ENV.globals["task_label"] = task_label
 
 
 def needs_autoformat(value, props=None):
@@ -243,7 +256,12 @@ def build_archive(store: Store, report: dict, *, images=False, client_cancel=Non
     cancel = client_cancel or threading.Event()
     media = Media(folder, images, cancel, budget=budget)
     entries, comments = store.entries(), store.comments()
+    report["format_version"] = "0.3.0"
+    report.setdefault("issues", [])
     report["reactions"] = reaction_report(store)
+    if report.get("status") == "complete" and not (report["reactions"]["complete"] and report["reactions"]["authors_complete"]):
+        report["status"] = "partial"
+        report["issues"].append("Не все реакции или имена авторов получены.")
     by_entry = defaultdict(list)
     for item in comments:
         by_entry[int(item.get("jitemid", 0))].append(item)
@@ -261,11 +279,11 @@ def build_archive(store: Store, report: dict, *, images=False, client_cancel=Non
             links[(url.hostname, url.path)] = str(entry["itemid"]) + ".html"
     comment_ids = {int(c["id"]) for c in comments}
     (folder / "assets").mkdir(exist_ok=True)
-    for asset in ("archive.css", "archive.js", "theme.js"):
+    for asset in ("archive.css", "archive.js", "theme.js", "common.js"):
         shutil.copyfile(ROOT / "static" / asset, folder / "assets" / asset)
     search, summaries = [], []
     labels = {"public": "Открытая", "private": "Личная", "usemask": "Для друзей / группы"}
-    states = {"A": "", "S": "Скрытый", "D": "Удалён", "X": "Удалён", "F": "Заморожен"}
+    states = {"A": "", "S": "Скрыт", "D": "Удалён", "X": "Удалён", "F": "Заморожен"}
     try:
         for index, entry in enumerate(entries):
             if progress:
@@ -321,6 +339,9 @@ def build_archive(store: Store, report: dict, *, images=False, client_cancel=Non
         report["issues"].append("Скачивание изображений остановлено. Полученные тексты сохранены.")
     # Content completeness and media availability are reported separately.
     report["media_complete"] = not report["images_unavailable"]
+    if images and not report["media_complete"] and report["status"] == "complete":
+        report["status"] = "partial"
+        report["issues"].append("Не все изображения получены.")
     if budget:
         report.update(budget.snapshot())
         if budget.exhausted and images and report["images_unavailable"]:
@@ -333,6 +354,7 @@ def build_archive(store: Store, report: dict, *, images=False, client_cancel=Non
     atomic_write(folder / "assets" / "search-data.js", "window.ARCHIVE=" + dumps({"entries": summaries, "documents": search}).replace("<", "\\u003c") + ";")
     atomic_write(folder / "index.html", ENV.get_template("index.html").render(user=user, entries=summaries, report=report))
     atomic_write(folder / "report.html", ENV.get_template("report.html").render(user=user, report=report))
+    atomic_write(folder / "help.html", ENV.get_template("help.html").render(user=user, report=report))
     from .integrity import write_manifest
     write_manifest(folder)
     return report

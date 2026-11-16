@@ -23,13 +23,78 @@ TERMINAL = {"complete", "partial", "cancelled", "error", "demo", "idle"}
 
 
 class Jobs:
+    PARAMS = ("username", "archive", "mode", "date_from", "date_to", "urls", "entry_limit", "images", "delay", "max_requests")
+
     def __init__(self, output: Path):
         self.output = output.resolve()
         self.output.mkdir(parents=True, exist_ok=True)
-        self.lock = threading.Lock()
+        self.tasks = self.output / ".jobs"
+        self.tasks.mkdir(exist_ok=True, mode=0o700)
+        self.lock = threading.RLock()
         self.state = {"phase": "idle"}
         self.cancel = threading.Event()
         self.thread = None
+        self.current = None
+        records = []
+        for file in self.tasks.glob("*.json"):
+            try:
+                record = json.loads(file.read_text(encoding="utf-8"))
+                self.task_path(record["parameters"]["archive"])
+                records.append(record)
+            except (OSError, ValueError, KeyError, TypeError, ExportError):
+                continue
+        if records:
+            latest = max(records, key=lambda item: item.get("updated_at", ""))
+            self.state = latest.get("state", {"phase": "idle"})
+            if self.state.get("phase") not in TERMINAL:
+                self.state.update(phase="cancelled", message="Загрузка прервана. Можно продолжить.", cancelling=False)
+            self.current = latest["parameters"]
+            self.persist()
+
+    def task_path(self, slug):
+        import re
+        if not isinstance(slug, str) or not re.fullmatch(r"[a-z0-9_]{1,15}(?:-latest-[1-9][0-9]?)?", slug):
+            raise ExportError("Некорректный архив.")
+        return self.tasks / (slug + ".json")
+
+    def persist(self):
+        if self.current:
+            from .storage import atomic_write, dumps
+            from .exporter import now
+            atomic_write(self.task_path(self.current["archive"]), dumps({
+                "parameters": self.current, "state": self.state, "updated_at": now()}))
+
+    def legacy_parameters(self, slug):
+        self.task_path(slug)
+        report = json.loads((self.output / slug / "export-report.json").read_text(encoding="utf-8"))
+        scope = report.get("sync", {}).get("scope", {})
+        return {"username": report["username"], "archive": slug,
+                "mode": "latest" if report.get("entry_limit") else scope.get("mode", "full"),
+                "entry_limit": report.get("entry_limit"), "date_from": scope.get("start"),
+                "date_to": scope.get("end"), "urls": scope.get("urls", []),
+                "images": bool(report.get("images_requested")), "delay": 3,
+                "max_requests": report.get("request_limit", 50 if report.get("entry_limit") else None)}
+
+    def refresh_format(self, slug):
+        """Rebuild derived pages on first opening an older archive, without network access."""
+        self.task_path(slug)
+        folder = self.output / slug
+        with self.lock:
+            if self.thread and self.thread.is_alive():
+                return
+            path = folder / "export-report.json"
+            if not path.is_file() or not (folder / "archive.sqlite3").is_file():
+                return
+            report = json.loads(path.read_text(encoding="utf-8"))
+            if report.get("format_version") == "0.3.0":
+                return
+            from .storage import Store
+            from .render import build_archive
+            store = Store(folder)
+            try:
+                build_archive(store, report, images=False)
+            finally:
+                store.close()
 
     def snapshot(self):
         with self.lock:
@@ -37,44 +102,79 @@ class Jobs:
 
     def progress(self, **values):
         with self.lock:
-            if "phase" in values and values["phase"] != self.state.get("phase"):
-                self.state.pop("completed", None)
-                self.state.pop("total", None)
+            previous = self.state.get("phase")
+            if "phase" in values and values["phase"] != previous:
+                for key in ("completed", "total", "retry_at"):
+                    self.state.pop(key, None)
+            # Reports may be large; the archive retains the complete report separately.
+            report = values.pop("report", None)
             self.state.update(values)
+            if report:
+                self.state.update(request_limit_reached=bool(report.get("request_limit_reached")))
+            if self.state.get("phase") != previous or self.state.get("phase") in TERMINAL:
+                self.persist()
 
     def start(self, data, demo=False):
-        if not demo:
-            if not isinstance(data.get("username"), str):
-                raise ExportError("Введите имя пользователя.")
-            data["username"] = username(data["username"])
-            if not isinstance(data.get("password"), str) or not 0 < len(data["password"]) <= 1024:
-                raise ExportError("Введите пароль Живого Журнала.")
-            delay = data.get("delay", 2)
-            if isinstance(delay, bool) or not isinstance(delay, (int, float)) or not math.isfinite(delay) or not 1 <= delay <= 60:
-                raise ExportError("Пауза должна быть от 1 до 60 секунд.")
-            if not isinstance(data.get("images", True), bool):
-                raise ExportError("Некорректная настройка изображений.")
-            data["entry_limit"] = validate_entry_limit(data.get("entry_limit", 10))
-            data["max_requests"] = RequestBudget(data.get("max_requests", 50)).limit
-            if data["entry_limit"] is None and not data.get("mode"):
-                data["mode"] = "full"
-            if data.get("mode"):
-                scope = validate_scope(data["username"], data["mode"], data.get("date_from"), data.get("date_to"), data.get("urls"))
-                data["sync_scope"] = scope.data()
-                data["archive"] = target_slug(data["username"], data.get("archive"))
         with self.lock:
             if self.thread and self.thread.is_alive():
-                raise ExportError("Уже идёт выгрузка. Дождитесь её завершения или остановите её.")
+                raise ExportError("Другая загрузка ещё выполняется.")
+            if not demo:
+                if data.get("resume"):
+                    try:
+                        task = self.task_path(data["resume"])
+                        if task.exists():
+                            record = json.loads(task.read_text(encoding="utf-8"))
+                        else:
+                            record = {"parameters": self.legacy_parameters(data["resume"]), "state": {"phase": "partial"}}
+                    except (OSError, ValueError):
+                        raise ExportError("Сохранённая задача не найдена.") from None
+                    if record["state"].get("phase") == "complete":
+                        raise ExportError("Загрузка завершена. Выберите «Обновить».")
+                    data = {**record["parameters"], "password": data.get("password")}
+                else:
+                    data = dict(data)
+                if not isinstance(data.get("username"), str):
+                    raise ExportError("Введите имя пользователя.")
+                data["username"] = username(data["username"])
+                if not isinstance(data.get("password"), str) or not 0 < len(data["password"]) <= 1024:
+                    raise ExportError("Введите пароль ЖЖ.")
+                delay = data.get("delay", 3)
+                if isinstance(delay, bool) or not isinstance(delay, (int, float)) or not math.isfinite(delay) or not 1 <= delay <= 60:
+                    raise ExportError("Пауза должна быть от 1 до 60 секунд.")
+                if not isinstance(data.get("images", False), bool):
+                    raise ExportError("Некорректная настройка изображений.")
+                data["entry_limit"] = validate_entry_limit(data.get("entry_limit"))
+                default_limit = 50 if data["entry_limit"] is not None else None
+                data["max_requests"] = RequestBudget(data.get("max_requests", default_limit)).limit
+                if data["entry_limit"] is not None and data["max_requests"] is None:
+                    raise ExportError("Для теста задайте лимит запросов.")
+                if data["entry_limit"] is None:
+                    data["mode"] = data.get("mode") or "full"
+                    scope = validate_scope(data["username"], data["mode"], data.get("date_from"), data.get("date_to"), data.get("urls"))
+                    data.update(mode=scope.mode, date_from=scope.start, date_to=scope.end, urls=list(scope.urls))
+                    data["archive"] = target_slug(data["username"], data.get("archive"))
+                    data["sync_scope"] = scope.data()
+                else:
+                    data["mode"] = "latest"
+                    data["archive"] = archive_slug(data["username"], data["entry_limit"])
+                data.setdefault("images", False)
+                data.setdefault("delay", 3)
             self.cancel = threading.Event()
-            self.state = {"phase": "render" if demo else "login", "message": "Подготавливаем пример…" if demo else "Подключаемся к ЖЖ…", "entries": 0, "comments": 0}
+            slug = "_demo" if demo else data["archive"]
+            self.state = {"phase": "render" if demo else "login", "message": "", "entries": 0, "comments": 0,
+                          "username": "example_journal" if demo else data["username"], "slug": slug, "cancelling": False, "job_id": secrets.token_hex(8)}
+            self.current = None if demo else {key: data.get(key) for key in self.PARAMS}
             if not demo:
                 self.state.update(requests_used=0, request_limit=data["max_requests"], entry_limit=data["entry_limit"])
+                if (self.output / slug / "index.html").is_file():
+                    self.state["archive_url"] = f"/archive/{slug}/index.html"
+                self.persist()
             self.thread = threading.Thread(target=self.run, args=(data, demo), daemon=True)
             self.thread.start()
             return dict(self.state)
 
     def run(self, data, demo):
-        slug = "_demo" if demo else data.get("archive") or archive_slug(data["username"], data["entry_limit"])
+        slug = "_demo" if demo else data["archive"]
         try:
             if demo:
                 report = create_demo(self.output / slug, progress=self.progress)
@@ -82,44 +182,61 @@ class Jobs:
                 password = data.pop("password")
                 if data.get("sync_scope"):
                     scope = data["sync_scope"]
-                    report = sync(data["username"], password, self.output, images=data.get("images", False),
-                                  delay=data.get("delay", 3), cancel=self.cancel, progress=self.progress,
+                    report = sync(data["username"], password, self.output, images=data["images"],
+                                  delay=data["delay"], cancel=self.cancel, progress=self.progress,
                                   max_requests=data["max_requests"], mode=scope["mode"], start=scope["start"],
-                                  end=scope["end"], urls=scope["urls"], archive=data["archive"])
+                                  end=scope["end"], urls=scope["urls"], archive=slug)
                 else:
-                    report = export(data["username"], password, self.output, images=data.get("images", False),
-                                    delay=data.get("delay", 2), cancel=self.cancel, progress=self.progress,
+                    report = export(data["username"], password, self.output, images=data["images"],
+                                    delay=data["delay"], cancel=self.cancel, progress=self.progress,
                                     entry_limit=data["entry_limit"], max_requests=data["max_requests"])
                 password = ""
+            message = "Лимит запросов" if report.get("request_limit_reached") else ""
+            if report["status"] not in ("complete", "demo") and not message:
+                message = next(iter(report.get("issues", [])), "Загрузка не завершена.")
             self.progress(phase=report["status"], entries=report["entries_saved"], comments=report["comments_saved"],
-                          message=("Демонстрационный архив готов." if demo else
-                                   f"Сохранено: {plural(report['entries_saved'], 'запись', 'записи', 'записей')}, {plural(report['comments_saved'], 'комментарий', 'комментария', 'комментариев')}. HTTP-запросов: {report.get('requests_used', 0)} / {report.get('request_limit', 50)}."
-                                   + (" Достигнут предел запросов." if report.get("request_limit_reached") else "")),
-                          archive_url=f"/archive/{slug}/index.html")
-        except Cancelled as exc:
-            self.progress(phase="cancelled", message=str(exc))
+                          requests_used=report.get("requests_used", 0), request_limit=report.get("request_limit"),
+                          request_limit_reached=bool(report.get("request_limit_reached")), cancelling=False,
+                          message=message, archive_url=f"/archive/{slug}/index.html")
+        except Cancelled:
+            self.progress(phase="cancelled", message="Загрузка остановлена.", cancelling=False)
         except ExportError as exc:
-            self.progress(phase="error", message=str(exc))
+            self.progress(phase="error", message=str(exc), cancelling=False)
         except Exception as exc:
-            # Do not serialize exceptions/tracebacks with user passwords or remote responses.
-            self.progress(phase="error", message=f"Не удалось завершить выгрузку ({type(exc).__name__}). Проверьте свободное место и права на папку. Полученные данные остались на диске.")
+            self.progress(phase="error", message=f"Не удалось завершить загрузку ({type(exc).__name__}). Проверьте папку и свободное место.", cancelling=False)
         finally:
             data.clear()
+            with self.lock:
+                self.persist()
 
     def archives(self):
-        found = []
+        found = {}
         for path in sorted(self.output.glob("*/export-report.json")):
             try:
                 report = json.loads(path.read_text(encoding="utf-8"))
                 slug = path.parent.name
                 if not (path.parent / "index.html").is_file():
                     continue
-                found.append({key: report.get(key) for key in ("username", "status", "entries_saved", "comments_saved", "created_at", "entry_limit", "requests_used", "request_limit")} |
-                             {"slug": slug, "url": f"/archive/{slug}/index.html", "report_url": f"/archive/{slug}/report.html",
-                              "zip_url": f"/download/{slug}.zip", "json_url": f"/download/{slug}.json"})
-            except (OSError, ValueError):
+                found[slug] = {key: report.get(key) for key in ("username", "status", "entries_saved", "comments_saved", "created_at", "entry_limit", "requests_used", "request_limit")}
+                found[slug].update(slug=slug, url=f"/archive/{slug}/index.html", report_url=f"/archive/{slug}/report.html",
+                                  zip_url=f"/download/{slug}.zip", json_url=f"/download/{slug}.json", resumable=False)
+                if slug != "_demo":
+                    found[slug].update(parameters=self.legacy_parameters(slug), resumable=report.get("status") not in ("complete", "demo"))
+            except (OSError, ValueError, KeyError, TypeError, ExportError):
                 continue
-        return {"output": str(self.output), "archives": found}
+        for file in self.tasks.glob("*.json"):
+            try:
+                record = json.loads(file.read_text(encoding="utf-8"))
+                params, state = record["parameters"], record["state"]
+                slug = params["archive"]
+                self.task_path(slug)
+                row = found.setdefault(slug, {"slug": slug, "username": params["username"], "entries_saved": 0,
+                                               "comments_saved": 0, "entry_limit": params["entry_limit"]})
+                row.update(parameters=params, status=state["phase"], created_at=record["updated_at"],
+                           resumable=state["phase"] != "complete", message=state.get("message", ""))
+            except (OSError, ValueError, KeyError, TypeError, ExportError):
+                continue
+        return {"output": str(self.output), "archives": sorted(found.values(), key=lambda row: row.get("created_at") or "", reverse=True)}
 
 
 def make_server(output: Path, port=8787):
@@ -127,7 +244,7 @@ def make_server(output: Path, port=8787):
     token = secrets.token_urlsafe(32)
 
     class Handler(BaseHTTPRequestHandler):
-        server_version = "LJLocalArchive/0.2"
+        server_version = "LJLocalArchive/0.3"
 
         def log_message(self, *_):
             pass
@@ -181,6 +298,12 @@ def make_server(output: Path, port=8787):
             path = unquote(urlsplit(self.path).path)
             if path == "/":
                 return self.file(ROOT / "templates" / "app.html", cookie=True)
+            if path == "/help":
+                from .render import ENV
+                body = ENV.get_template("help.html").render(app=True, user="", report={}).encode("utf-8")
+                self.response_headers(200, "text/html; charset=utf-8", len(body), cookie=True)
+                self.wfile.write(body)
+                return
             if not self.authorized():
                 return self.json({"error": "Сначала откройте главную страницу приложения."}, 403)
             if path == "/api/status":
@@ -195,8 +318,13 @@ def make_server(output: Path, port=8787):
             if path.startswith("/archive/"):
                 relative = Path(path.removeprefix("/archive/"))
                 target = (jobs.output / relative).resolve()
-                if not target.is_relative_to(jobs.output) or target.suffix not in {".html", ".css", ".js", ".json", ".jpg", ".png", ".gif", ".webp", ".avif"}:
+                if any(part.startswith(".") for part in relative.parts) or not target.is_relative_to(jobs.output) or target.suffix not in {".html", ".css", ".js", ".json", ".jpg", ".png", ".gif", ".webp", ".avif"}:
                     return self.json({"error": "Нет доступа."}, 403)
+                if relative.parts and target.name == "index.html":
+                    try:
+                        jobs.refresh_format(relative.parts[0])
+                    except (ExportError, OSError, ValueError):
+                        return self.json({"error": "Не удалось обновить оформление архива. Проверьте папку и свободное место."}, 409)
                 return self.file(target)
             if path.startswith("/download/") and path.endswith((".zip", ".json")):
                 extension = Path(path).suffix
@@ -228,6 +356,10 @@ def make_server(output: Path, port=8787):
                 with jobs.lock:
                     if jobs.thread and jobs.thread.is_alive():
                         return self.json({"error": "Дождитесь окончания выгрузки перед скачиванием ZIP."}, 409)
+                    try:
+                        jobs.refresh_format(slug)
+                    except (ExportError, OSError, ValueError):
+                        return self.json({"error": "Не удалось обновить оформление архива."}, 409)
                     with TemporaryFile() as buffer:
                         with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
                             for member in folder.rglob("*"):
