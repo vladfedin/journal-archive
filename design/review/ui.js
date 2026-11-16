@@ -19,7 +19,7 @@ const paths = {
 const svg = name => `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[name] || paths.archive}</svg>`;
 function icons() { document.querySelectorAll('[data-icon]').forEach(el => { el.innerHTML=svg(el.dataset.icon); }); }
 const isReader = ['archive','entry','status'].includes(page);
-$('review').innerHTML = `<div class="review-bar"><div class="review-inner"><span>Макет · Без подключения к ЖЖ</span><a href="review.html">Сценарии</a><a href="index.html">Архивы</a><a href="index.html?new=1">Создание</a><a href="index.html?job=limit">Пауза</a><a href="entry.html">Запись</a><a href="help.html">Помощь</a></div></div>`;
+$('review').innerHTML = `<div class="review-bar"><div class="review-inner"><span>Макет · Без подключения к ЖЖ</span><a href="review.html">Сценарии</a><a href="index.html">Архивы</a><a href="index.html?new=1">Создание</a><a href="index.html?job=waiting">Пауза</a><a href="entry.html">Запись</a><a href="help.html">Помощь</a></div></div>`;
 $('header').innerHTML = `<div class="header-inner"><a class="brand" href="${isReader?'archive.html':'index.html'}"><span class="mark">${svg('archive')}</span>${isReader?'fieldnotes':'Архив ЖЖ'}</a><nav class="nav" aria-label="Разделы">${isReader?'<a href="archive.html">Записи</a>':'<a href="index.html" '+(page==='library'?'aria-current="page"':'')+'>Архивы</a>'}<a href="help.html" ${page==='help'?'aria-current="page"':''}>Помощь</a><button class="icon" id="theme" aria-label="Тёмная тема" title="Тёмная тема">${svg('moon')}</button>${isReader?'<details class="more"><summary aria-label="Действия с архивом">⋯</summary><div class="menu"><button data-json>Скачать JSON</button><a href="status.html?complete=1">Состояние архива</a></div></details>':''}</nav></div>`;
 $('footer').innerHTML = isReader?'<span>fieldnotes</span><a href="status.html?complete=1">Состояние архива</a>':'<span>Архив ЖЖ · 0.3</span><a href="#" id="quit">Завершить приложение</a>';
 function setTheme(dark) { document.documentElement.dataset.theme=dark?'dark':'light'; $('theme').innerHTML=svg(dark?'sun':'moon'); $('theme').setAttribute('aria-label',dark?'Светлая тема':'Тёмная тема'); $('theme').title=dark?'Светлая тема':'Тёмная тема'; }
@@ -35,9 +35,17 @@ document.querySelectorAll('[data-person],[data-original]').forEach(a=>a.onclick=
 if($('quit'))$('quit').onclick=e=>{e.preventDefault();toast('Это макет. В приложении команда сохранит прогресс и завершит работу.');};
 document.addEventListener('click',event=>{document.querySelectorAll('.more[open]').forEach(menu=>{if(!menu.contains(event.target))menu.open=false;});});
 if(page==='library'){
-  const dialog=$('export-dialog');let mode='new',scope='latest',jobState='running',stepTimer;
-  function setScope(value){scope=value;document.querySelectorAll('[data-scope]').forEach(b=>b.setAttribute('aria-selected',String(b.dataset.scope===value)));$('period-fields').hidden=value!=='period';$('url-fields').hidden=value!=='urls';}
-  function openDialog(kind){mode=kind;document.querySelectorAll('.more[open]').forEach(el=>el.open=false);const resume=kind==='resume',isNew=kind==='new';$('dialog-title').textContent=resume?'Продолжить загрузку':kind==='verify'?'Проверить и обновить':isNew?'Новый архив':'Обновить архив';$('submit-export').textContent=resume?'Продолжить':kind==='verify'?'Проверить':isNew?'Создать':'Обновить';$('username').value=isNew?'':'fieldnotes';$('username').readOnly=!isNew;$('password').value='';$('password').type='password';$('username-field').hidden=resume;$('credentials').style.gridTemplateColumns=resume?'1fr':'';$('scope-fields').hidden=resume;$('resume-note').hidden=!resume;document.querySelector('[data-scope=latest]').hidden=!isNew;document.querySelector('[data-scope=urls]').hidden=isNew;setScope(isNew?'latest':kind==='verify'?'full':'period');dialog.showModal();}
+  const dialog=$('export-dialog');let mode='new',scope='full',jobState='running',stepTimer;
+  let limitEdited=false,taskLimit=null,taskScope='full';
+  const scopeNames={full:'весь журнал',period:'за период',latest:'тест (последние 10 записей)',urls:'по ссылкам'};
+  function setScope(value){
+    scope=value;
+    document.querySelectorAll('[data-scope]').forEach(b=>b.setAttribute('aria-selected',String(b.dataset.scope===value)));
+    $('period-fields').hidden=value!=='period';$('url-fields').hidden=value!=='urls';
+    if(!limitEdited)$('request-limit').value=value==='latest'?'50':'';
+    $('request-limit').required=value==='latest';
+  }
+  function openDialog(kind){mode=kind;document.querySelectorAll('.more[open]').forEach(el=>el.open=false);const resume=kind==='resume',isNew=kind==='new';$('dialog-title').textContent=resume?'Продолжить загрузку':kind==='verify'?'Проверить и обновить':isNew?'Новый архив':'Обновить архив';$('submit-export').textContent=resume?'Продолжить':kind==='verify'?'Проверить':isNew?'Создать':'Обновить';$('username').value=isNew?'':'fieldnotes';$('username').readOnly=!isNew;$('password').value='';$('password').type='password';$('username-field').hidden=resume;$('credentials').style.gridTemplateColumns=resume?'1fr':'';$('scope-fields').hidden=resume;$('resume-note').hidden=!resume;document.querySelector('[data-scope=latest]').hidden=!isNew;document.querySelector('[data-scope=urls]').hidden=isNew;if(!resume){limitEdited=false;setScope(isNew||kind==='verify'?'full':'period');}else{$('resume-note').textContent='fieldnotes · '+scopeNames[taskScope];$('request-limit').required=false;}dialog.showModal();}
   document.querySelectorAll('[data-new]').forEach(b=>b.onclick=()=>openDialog('new'));
   document.querySelectorAll('[data-update]').forEach(b=>b.onclick=()=>openDialog('update'));
   document.querySelectorAll('[data-verify]').forEach(b=>b.onclick=()=>openDialog('verify'));
@@ -45,16 +53,27 @@ if(page==='library'){
   document.querySelectorAll('[data-scope]').forEach(b=>b.onclick=()=>setScope(b.dataset.scope));
   dialog.addEventListener('click',e=>{if(e.target===dialog){const r=dialog.getBoundingClientRect();if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom)dialog.close();}});
   $('show-password').onclick=()=>{const show=$('password').type==='password';$('password').type=show?'text':'password';$('show-password').setAttribute('aria-label',show?'Скрыть пароль':'Показать пароль');};
-  $('request-limit').oninput=()=>$('limit-caption').textContent=`Лимит: ${$('request-limit').value || 50} запросов`;
-  function job(state){jobState=state;$('job').hidden=false;$('progress').hidden=!['running','waiting'].includes(state);$('job-stage').classList.toggle('paused-message',['limit','error'].includes(state));$('job-stage').textContent={running:'Комментарии',limit:'Лимит запросов · 50 / 50',waiting:'Пауза до 14:35',stopped:'Остановлено',error:'Вход не выполнен',done:'Готово'}[state];$('job-action').textContent={running:'Остановить',limit:'Продолжить',waiting:'Остановить',stopped:'Продолжить',error:'Повторить',done:'Закрыть'}[state];$('requests-count').textContent=state==='limit'?'50 / 50 запросов':state==='done'?'43 / 50 запросов':'32 / 50 запросов';if(state==='done')$('comments-count').textContent='141';$('row-status').classList.toggle('partial',state!=='done');$('row-status').textContent=state==='done'?'Готов':state==='running'?'Загрузка':state==='waiting'?'Пауза':'Не завершён';$('row-status').href=state==='done'?'status.html?complete=1':'status.html';}
+  $('request-limit').oninput=()=>limitEdited=true;
+  function job(state){
+    jobState=state;$('job').hidden=false;$('progress').hidden=!['running','waiting'].includes(state);
+    $('job-stage').classList.toggle('paused-message',['limit','error'].includes(state));
+    $('job-stage').textContent={running:'Комментарии',limit:`Лимит запросов · ${taskLimit} / ${taskLimit}`,waiting:'Пауза до 14:35',stopped:'Остановлено',error:'Вход не выполнен',done:'Готово'}[state];
+    $('job-action').textContent={running:'Остановить',limit:'Продолжить',waiting:'Остановить',stopped:'Продолжить',error:'Повторить',done:'Закрыть'}[state];
+    const used=state==='limit'?taskLimit:state==='done'?(taskScope==='full'?128:43):32;
+    $('requests-count').textContent=taskLimit?`${Math.min(used,taskLimit)} / ${taskLimit} запросов`:`${used} запросов`;
+    if(state==='done'){$('posts-count').textContent=taskScope==='full'?'268':'10';$('comments-count').textContent=taskScope==='full'?'1 342':'141';}
+    $('row-status').classList.toggle('partial',state!=='done');$('row-status').textContent=state==='done'?'Готов':state==='running'?'Загрузка':state==='waiting'?'Пауза':'Не завершён';
+    const report=state==='done'?'status.html?complete=1':state==='limit'?`status.html?limit=${taskLimit}`:'status.html';
+    $('row-status').href=report;document.querySelector('.job-top>a').href=report;
+  }
   $('job-action').onclick=()=>{clearTimeout(stepTimer);if(['running','waiting'].includes(jobState))job('stopped');else if(jobState==='done')$('job').hidden=true;else openDialog('resume');};
-  $('export-form').onsubmit=e=>{e.preventDefault();$('password').value='';dialog.close();$('empty').hidden=true;$('library').hidden=false;job('running');$('comments-count').textContent=mode==='resume'?'127':'86';stepTimer=setTimeout(()=>job(mode==='resume'?'done':'limit'),2200);};
+  $('export-form').onsubmit=e=>{e.preventDefault();if(mode!=='resume'){taskScope=scope;taskLimit=$('request-limit').value?Number($('request-limit').value):null;}$('password').value='';dialog.close();$('empty').hidden=true;$('library').hidden=false;job('running');$('comments-count').textContent=mode==='resume'?'127':'86';stepTimer=setTimeout(()=>job(mode==='resume'||!taskLimit?'done':'limit'),2200);};
   if(params.has('empty')){$('library').hidden=true;$('empty').hidden=false;}
-  if(params.has('job'))job(params.get('job'));
+  if(params.has('job')){if(params.get('job')==='limit'){taskLimit=50;taskScope='latest';}job(params.get('job'));}
   if(params.has('new'))openDialog('new');
   if(params.has('update'))openDialog('update');
   if(params.has('verify'))openDialog('verify');
-  if(params.has('resume')){job('limit');openDialog('resume');}
+  if(params.has('resume')){job('stopped');openDialog('resume');}
 }
 if(page==='archive'){
  const entries=[...document.querySelectorAll('.entry-row')];
@@ -73,4 +92,5 @@ if(page==='entry'){
  $('all-threads').onclick=()=>{const hide=[...document.querySelectorAll('.thread')].some(t=>!t.hidden);document.querySelectorAll('[data-collapse]').forEach(btn=>{const block=$(btn.dataset.collapse);block.hidden=hide;btn.setAttribute('aria-expanded',String(!hide));btn.textContent=(hide?'Развернуть':'Свернуть')+' · '+block.querySelectorAll('.comment').length;});$('all-threads').textContent=hide?'Развернуть ветки':'Свернуть ветки';};
 }
 if(page==='status'&&params.has('complete')){$('report-note').hidden=true;$('reaction-coverage').textContent=$('author-coverage').textContent='151 / 151';$('status-continue').hidden=true;document.querySelector('.form-advanced').hidden=true;}
+if(page==='status'&&params.has('limit')){const limit=Number(params.get('limit'));if(Number.isInteger(limit)&&limit>0&&limit<=10000){$('report-reason').textContent='Достигнут лимит запросов';$('report-requests').textContent=`${limit} / ${limit}`;$('status-continue').href='index.html?job=limit&resume=1';}}
 icons();

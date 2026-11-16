@@ -14,3 +14,5 @@
 @media(prefers-reduced-motion:no-preference){html{scroll-behavior:smooth}}
 @media print{.review-bar,.header,.footer,.help-nav,.icon{display:none}.main{margin:0;padding:0;max-width:none}.help-layout{display:block}.help-content section{break-inside:avoid}body{font-size:11px}.help-content h1{font-size:22px}.help-content h2{font-size:15px}.help-content section{margin-bottom:15px}}
 @media(max-width:400px){.header .nav>a:first-child{display:none}.header .nav{gap:13px}.field{min-width:0}.input,select,textarea{min-width:0}.form-grid{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.dialog-actions{align-items:flex-start;flex-direction:column;gap:13px}.dialog-buttons{align-self:flex-end}.segmented{gap:13px}.library th,.library td{padding-right:6px;padding-left:6px}.library th:first-child,.library td:first-child{padding-left:0}}
+.segmented{flex-wrap:wrap;gap:0 21px}
+@media(max-width:550px){.segmented{gap:0 15px}.segmented [data-scope=latest]{flex-basis:100%;text-align:left}}
