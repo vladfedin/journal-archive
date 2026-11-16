@@ -17,7 +17,7 @@ def file_hash(path):
 def write_manifest(folder):
     files = {}
     for path in sorted(folder.rglob("*")):
-        if path.is_file() and not path.is_symlink() and path.suffix in (".html", ".css", ".js", ".json", ".jpg", ".png", ".gif", ".webp", ".avif"):
+        if path.is_file() and not path.is_symlink() and path.suffix in (".html", ".css", ".js", ".json", ".jpg", ".png", ".gif", ".webp", ".avif", ".svg", ".ico"):
             relative = path.relative_to(folder)
             if relative.parts[0] not in ("raw", "quarantine") and str(relative) != "integrity.json":
                 files[relative.as_posix()] = file_hash(path)

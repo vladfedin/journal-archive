@@ -268,7 +268,7 @@ def build_archive(store: Store, report: dict, *, images=False, userpics=False, c
     cancel = client_cancel or threading.Event()
     media = Media(folder, images, cancel, budget=budget)
     entries, comments = store.entries(), store.comments()
-    report["format_version"] = "0.4.0"
+    report["format_version"] = "0.4.1"
     report.setdefault("issues", [])
     report["reactions"] = reaction_report(store)
     if report.get("status") == "complete" and not (report["reactions"]["complete"] and report["reactions"]["authors_complete"]):
@@ -316,7 +316,7 @@ def build_archive(store: Store, report: dict, *, images=False, userpics=False, c
             links[(url.hostname, url.path)] = str(entry["itemid"]) + ".html"
     comment_ids = {int(c["id"]) for c in comments}
     (folder / "assets").mkdir(exist_ok=True)
-    for asset in ("archive.css", "archive.js", "theme.js", "common.js"):
+    for asset in ("archive.css", "archive.js", "theme.js", "common.js", "favicon.svg", "favicon.ico"):
         shutil.copyfile(ROOT / "static" / asset, folder / "assets" / asset)
     search, summaries = [], []
     labels = {"public": "Открытая", "private": "Личная", "usemask": "Для друзей / группы"}

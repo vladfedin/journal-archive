@@ -3,7 +3,7 @@ recursive-include docs *.md
 recursive-include packaging *.py
 recursive-include .github/workflows *.yml
 recursive-include ljarchive/templates *.html
-recursive-include ljarchive/static *.js *.css
+recursive-include ljarchive/static *.js *.css *.svg *.ico
 prune archives
 prune .venv
 prune .git

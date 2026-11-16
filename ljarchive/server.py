@@ -86,7 +86,7 @@ class Jobs:
             if not path.is_file() or not (folder / "archive.sqlite3").is_file():
                 return
             report = json.loads(path.read_text(encoding="utf-8"))
-            if report.get("format_version") == "0.4.0":
+            if report.get("format_version") == "0.4.1":
                 return
             from .storage import Store
             from .render import build_archive
@@ -298,6 +298,8 @@ def make_server(output: Path, port=8787):
             path = unquote(urlsplit(self.path).path)
             if path == "/":
                 return self.file(ROOT / "templates" / "app.html", cookie=True)
+            if path == "/favicon.ico":
+                return self.file(ROOT / "static" / "favicon.ico")
             if path == "/help":
                 from .render import ENV
                 body = ENV.get_template("help.html").render(app=True, user="", report={}).encode("utf-8")
@@ -318,7 +320,8 @@ def make_server(output: Path, port=8787):
             if path.startswith("/archive/"):
                 relative = Path(path.removeprefix("/archive/"))
                 target = (jobs.output / relative).resolve()
-                if any(part.startswith(".") for part in relative.parts) or not target.is_relative_to(jobs.output) or target.suffix not in {".html", ".css", ".js", ".json", ".jpg", ".png", ".gif", ".webp", ".avif"}:
+                icon = relative.parts[1:] in {("assets", "favicon.svg"), ("assets", "favicon.ico")}
+                if any(part.startswith(".") for part in relative.parts) or not target.is_relative_to(jobs.output) or (not icon and target.suffix not in {".html", ".css", ".js", ".json", ".jpg", ".png", ".gif", ".webp", ".avif"}):
                     return self.json({"error": "Нет доступа."}, 403)
                 if relative.parts and target.name == "index.html":
                     try:

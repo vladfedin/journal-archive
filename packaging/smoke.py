@@ -29,6 +29,8 @@ with tempfile.TemporaryDirectory(prefix="ljarchive-ЖЖ-") as directory:
     assert all(pic["path"] for pic in data["userpics"]["post"].values())
     assert 'class="lj-cut"' in (folder / "entries/6.html").read_text(encoding="utf-8")
     assert (folder / "assets/common.js").is_file()
+    assert (folder / "assets/favicon.svg").is_file()
+    assert (folder / "assets/favicon.ico").is_file()
     with socket.socket() as sock:
         sock.bind(('127.0.0.1', 0))
         port = sock.getsockname()[1]
@@ -51,6 +53,8 @@ with tempfile.TemporaryDirectory(prefix="ljarchive-ЖЖ-") as directory:
             assert response.status_code == 200 and 'date-from' in response.text
             assert session.get(base + '/static/archive.css', timeout=5).status_code == 200
             assert session.get(base + '/static/common.js', timeout=5).status_code == 200
+            assert session.get(base + '/favicon.ico', timeout=5).content == (folder / 'assets/favicon.ico').read_bytes()
+            assert session.get(base + '/archive/demo/assets/favicon.svg', timeout=5).content == (folder / 'assets/favicon.svg').read_bytes()
             assert 'Паузы и лимиты' in session.get(base + '/help', timeout=5).text
             assert session.get(base + '/archive/demo/data/archive.json', timeout=5).json()['schema_version'] == 1
             assert session.post(base + '/api/quit', headers={'Origin':base}, json={}, timeout=5).status_code == 200
