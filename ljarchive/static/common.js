@@ -1,5 +1,6 @@
 "use strict";
 const paths = {
+  back:'<path d="M19 12H5m7-7-7 7 7 7"/>',
   archive:'<path d="M4 7h16v13H4zM3 3h18v4H3zM9 11h6"/>',
   plus:'<path d="M12 5v14M5 12h14"/>',
   x:'<path d="m6 6 12 12M6 18 18 6"/>',
@@ -17,6 +18,15 @@ const svg = name => `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[name] |
 function icons() { document.querySelectorAll('[data-icon]').forEach(el => { el.innerHTML=svg(el.dataset.icon); }); }
 
 document.addEventListener('DOMContentLoaded', () => {
+  const brand = document.querySelector('.brand');
+  if (document.body.dataset.libraryUrl === '/' && brand) {
+    const mark = document.createElement('span');
+    mark.className = 'mark';
+    mark.dataset.icon = 'back';
+    brand.href = '/';
+    brand.setAttribute('aria-label', 'Все архивы');
+    brand.replaceChildren(mark, document.createTextNode('Архивы'));
+  }
   icons();
   const popups='.more[open],.reaction-detail[open]';
   document.addEventListener('click',event=>document.querySelectorAll(popups).forEach(menu=>{if(!menu.contains(event.target))menu.open=false;}));

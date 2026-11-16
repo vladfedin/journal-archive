@@ -86,7 +86,7 @@ class Jobs:
             if not path.is_file() or not (folder / "archive.sqlite3").is_file():
                 return
             report = json.loads(path.read_text(encoding="utf-8"))
-            if report.get("format_version") == "0.5.0":
+            if report.get("format_version") == "0.5.1":
                 return
             from .storage import Store
             from .render import build_archive
@@ -281,7 +281,7 @@ def make_server(output: Path, port=8787):
             self.response_headers(code, "application/json; charset=utf-8", len(body))
             self.wfile.write(body)
 
-        def file(self, path, cookie=False, download=None):
+        def file(self, path, cookie=False, download=None, archive=False):
             if not path.is_file():
                 return self.json({"error": "Файл не найден."}, 404)
             mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
@@ -289,6 +289,12 @@ def make_server(output: Path, port=8787):
                 mime = "application/activity+json"
             if path.suffix in (".html", ".css", ".js", ".json"):
                 mime += "; charset=utf-8"
+            if archive and path.suffix == ".html":
+                # App navigation belongs to the served page, not the portable archive.
+                body = path.read_bytes().replace(b"<body>", b'<body data-library-url="/">', 1)
+                self.response_headers(200, mime, len(body), cookie=cookie, download=download)
+                self.wfile.write(body)
+                return
             with path.open("rb") as stream:
                 import os
                 self.response_headers(200, mime, os.fstat(stream.fileno()).st_size, cookie=cookie, download=download)
@@ -331,7 +337,7 @@ def make_server(output: Path, port=8787):
                         jobs.refresh_format(relative.parts[0])
                     except (ExportError, OSError, ValueError):
                         return self.json({"error": "Не удалось обновить оформление архива. Проверьте папку и свободное место."}, 409)
-                return self.file(target)
+                return self.file(target, archive=True)
             if path.startswith("/download/") and path.endswith((".zip", ".json")):
                 extension = ".activitystreams.json" if path.endswith(".activitystreams.json") else Path(path).suffix
                 slug = path.removeprefix("/download/")[:-len(extension)]
