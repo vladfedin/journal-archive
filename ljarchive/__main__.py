@@ -15,6 +15,10 @@ def main():
     web.add_argument("--port", type=int, default=8787)
     web.add_argument("--no-browser", action="store_true")
     web.add_argument("--output", type=Path, default=Path("archives"))
+    desktop = sub.add_parser("desktop", help="Запустить приложение с обновлением работающей версии")
+    desktop.add_argument("--port", type=int, default=8787)
+    desktop.add_argument("--no-browser", action="store_true")
+    desktop.add_argument("--output", type=Path, default=None)
     cli = sub.add_parser("export", help="Выгрузить свой журнал через терминал")
     cli.add_argument("username")
     cli.add_argument("--output", type=Path, default=Path("archives"))
@@ -59,6 +63,10 @@ def main():
         if args.command in (None, "serve"):
             from .server import serve
             serve(getattr(args, "output", Path("archives")), getattr(args, "port", 8787), not getattr(args, "no_browser", False))
+        elif args.command == "desktop":
+            from .desktop import launch
+            from .paths import desktop_output
+            launch(args.output or desktop_output(), args.port, not args.no_browser)
         elif args.command == "demo":
             from .demo import create_demo
             create_demo(args.output)

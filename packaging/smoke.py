@@ -79,4 +79,11 @@ with tempfile.TemporaryDirectory(prefix="ljarchive-ЖЖ-") as directory:
             else:
                 process.terminate()
             process.wait(timeout=10)
+    from upgrade_smoke import check_upgrade
+    try:
+        check_upgrade(binary, directory, env)
+    except Exception:
+        if diagnostic_log.exists():
+            print(diagnostic_log.read_text(encoding='utf-8'), flush=True)
+        raise
     print("Native bundle: HTML/CSS, SQLite, JSON, HTTP startup and graceful shutdown passed.")

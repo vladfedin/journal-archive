@@ -13,6 +13,7 @@ from pathlib import Path
 from tempfile import TemporaryFile
 from urllib.parse import unquote, urlsplit
 
+from . import __version__
 from .client import Cancelled, ExportError, RequestBudget, username
 from .demo import create_demo
 from .exporter import archive_slug, export, validate_entry_limit
@@ -34,6 +35,7 @@ class Jobs:
         self.state = {"phase": "idle"}
         self.cancel = threading.Event()
         self.thread = None
+        self.stopping = False
         self.current = None
         records = []
         for file in self.tasks.glob("*.json"):
@@ -86,7 +88,7 @@ class Jobs:
             if not path.is_file() or not (folder / "archive.sqlite3").is_file():
                 return
             report = json.loads(path.read_text(encoding="utf-8"))
-            if report.get("format_version") == "0.6.1":
+            if report.get("format_version") == "0.6.2":
                 return
             from .storage import Store
             from .render import build_archive
@@ -116,6 +118,8 @@ class Jobs:
 
     def start(self, data, demo=False):
         with self.lock:
+            if self.stopping:
+                raise ExportError("Приложение завершается. Откройте новую версию.")
             if self.thread and self.thread.is_alive():
                 raise ExportError("Другая загрузка ещё выполняется.")
             if not demo:
@@ -247,9 +251,11 @@ class Jobs:
 def make_server(output: Path, port=8787):
     jobs = Jobs(output)
     token = secrets.token_urlsafe(32)
+    instance_id = secrets.token_hex(16)
+    app_version = __version__
 
     class Handler(BaseHTTPRequestHandler):
-        server_version = "LJLocalArchive/0.4"
+        server_version = "LJLocalArchive/" + app_version
 
         def log_message(self, *_):
             pass
@@ -270,6 +276,7 @@ def make_server(output: Path, port=8787):
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(length))
             self.send_header("Cache-Control", "no-store")
+            self.send_header("X-LJArchive-Version", app_version)
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("Referrer-Policy", "no-referrer")
             self.send_header("X-Frame-Options", "DENY")
@@ -321,6 +328,10 @@ def make_server(output: Path, port=8787):
                 return
             if not self.authorized():
                 return self.json({"error": "Сначала откройте главную страницу приложения."}, 403)
+            if path == "/api/app":
+                return self.json({"application": "journal-archive", "version": app_version,
+                                  "instance_id": instance_id, "output": str(jobs.output),
+                                  "stopping": jobs.stopping})
             if path == "/api/status":
                 return self.json(jobs.snapshot())
             if path == "/api/archives":
@@ -474,7 +485,13 @@ def make_server(output: Path, port=8787):
                     jobs.progress(cancelling=True)
                     return self.json(jobs.snapshot())
                 if self.path == "/api/quit":
-                    jobs.cancel.set()
+                    with jobs.lock:
+                        if data.get("expected_instance") not in (None, instance_id):
+                            return self.json({"error": "Экземпляр приложения уже изменился."}, 409)
+                        if jobs.stopping:
+                            return self.json({"message": "Приложение завершается."})
+                        jobs.stopping = True
+                        jobs.cancel.set()
                     def shutdown():
                         if jobs.thread and jobs.thread.is_alive():
                             jobs.thread.join()
@@ -490,11 +507,16 @@ def make_server(output: Path, port=8787):
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     server.daemon_threads = True
     server.jobs = jobs
+    server.instance_id = instance_id
     return server
 
 
 def serve(output, port=8787, open_browser=True):
     server = make_server(Path(output), port)
+    run_server(server, open_browser)
+
+
+def run_server(server, open_browser=True):
     url = f"http://127.0.0.1:{server.server_port}"
     print(f"Журнал / архив — {url}\nПапка архивов: {server.jobs.output}\nДля остановки: Ctrl+C", flush=True)
     if open_browser:

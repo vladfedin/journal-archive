@@ -25,17 +25,36 @@ def main():
         from .__main__ import main as cli
         return cli()
     from .paths import desktop_output
-    from .server import serve
-    import requests
     try:
-        response = requests.get("http://127.0.0.1:8787/", timeout=1)
-        if response.headers.get("Server", "").startswith("LJLocalArchive/"):
-            webbrowser.open("http://127.0.0.1:8787/")
-            return
-    except requests.RequestException:
-        pass
-    try:
-        serve(desktop_output(), 8787, True)
-    except OSError:
-        # Another local service may own the default port; choose a free loopback port.
-        serve(desktop_output(), 0, True)
+        launch(desktop_output())
+    except Exception as exc:
+        show_startup_error(str(exc))
+        raise SystemExit(1) from exc
+
+
+def launch(output, port=8787, open_browser=True):
+    from .launcher import prepare_server
+    from .server import run_server
+    server, url = prepare_server(output, port)
+    if server is None:
+        if open_browser:
+            webbrowser.open(url)
+        return
+    run_server(server, open_browser)
+
+
+def show_startup_error(message):
+    """Windowed executables need a visible error, not an invisible stderr traceback."""
+    if sys.platform == 'win32':
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(None, message, 'Архив ЖЖ', 0x10)
+        return
+    # A local static page also works in frozen macOS/Linux builds without Tk.
+    import html
+    import tempfile
+    from pathlib import Path
+    path = Path(tempfile.mkdtemp(prefix='journal-archive-')) / 'startup.html'
+    path.write_text('<!doctype html><html lang="ru"><meta charset="utf-8">'
+                    '<title>Архив ЖЖ</title><h1>Не удалось запустить приложение</h1><p>'
+                    + html.escape(message) + '</p>', encoding='utf-8')
+    webbrowser.open(path.as_uri())
