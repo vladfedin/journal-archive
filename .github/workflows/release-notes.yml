@@ -1,0 +1,32 @@
+name: Update release descriptions
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/releases/*.md'
+      - '.github/workflows/release-notes.yml'
+      - 'packaging/update_release_notes.py'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Published version tag, for example v0.7.8'
+        required: true
+        type: string
+permissions:
+  contents: write
+concurrency:
+  group: release-descriptions
+  cancel-in-progress: false
+jobs:
+  update:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Update descriptions
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BEFORE_COMMIT: ${{ github.event.before }}
+          NOTES_TAG: ${{ inputs.tag }}
+        run: python3 packaging/update_release_notes.py

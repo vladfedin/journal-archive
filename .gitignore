@@ -23,3 +23,15 @@ Thumbs.db
 htmlcov/
 release/
 
+# Local workspace files; not part of the public project.
+AGENTS.md
+CLAUDE.md
+.internal/
+.private/
+.codex/
+.claude/
+docs/plans/
+docs/feedback/
+docs/mockups/
+design/
+scripts/build_timeline_preview.py
