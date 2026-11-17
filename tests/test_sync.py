@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from ljarchive.client import ExportError, RequestBudget
+from ljarchive.client import Cancelled, ExportError, RequestBudget
 from ljarchive.sync import Scope, SyncExporter, validate_scope
 from ljarchive.storage import Store
 from ljarchive.integrity import verify_archive
@@ -74,6 +74,44 @@ class Journal:
 
 def run(folder, client, scope=Scope()):
     return SyncExporter(folder, client, scope).run()
+
+
+def test_resume_reports_local_verification_before_login_and_can_cancel(tmp_path):
+    run(tmp_path, Journal())
+    events = []
+    client = Journal()
+    def progress(**state):
+        events.append(state)
+        if state.get('phase') == 'verify' and state.get('total'):
+            raise Cancelled('Stopped during local verification')
+    report = SyncExporter(tmp_path, client, Scope(), progress=progress).run()
+    assert report['status'] == 'cancelled'
+    assert not client.calls and client.budget.used == 0
+    assert events[0]['phase'] == 'verify'
+    assert any(e.get('phase') == 'verify' and e.get('total', 0) > 0 for e in events)
+    assert not any(e.get('phase') == 'login' for e in events)
+    assert report['entries_saved'] == 2 and report['comments_saved'] == 4
+
+
+def test_integrity_progress_finishes_and_large_files_allow_cancellation(tmp_path):
+    from ljarchive.integrity import file_hash, write_manifest
+    store = Store(tmp_path)
+    path = tmp_path / 'large.mp4'
+    path.write_bytes(b'fixture-' * (1024 * 1024))
+    write_manifest(tmp_path)
+    events = []
+    report = verify_archive(store, progress=lambda **state: events.append(state))
+    assert report['ok'] and report['files_checked'] == 1
+    assert events[-1]['completed'] == events[-1]['total'] == 1
+    chunks = []
+    def check():
+        chunks.append(1)
+        if len(chunks) == 2:
+            raise Cancelled('Stop')
+    with pytest.raises(Cancelled):
+        file_hash(path, check=check)
+    assert len(chunks) == 2
+    store.close()
 
 
 def test_twenty_one_years_and_period_merge_without_losing_old_records(tmp_path):

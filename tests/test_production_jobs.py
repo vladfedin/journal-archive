@@ -36,6 +36,9 @@ def test_full_http_default_has_no_request_cap(local_server,monkeypatch):
         assert calls[0]['mode']=='full' and calls[0]['max_requests'] is None
         state=session.get(base+'/api/status').json()
         assert state['phase']=='complete' and state['request_limit'] is None
+        assert state['parameters']['images'] is False
+        assert state['parameters']['delay'] == 3
+        assert 'password' not in state['parameters']
         assert 'secret-value' not in json.dumps(state)
     assert 'secret-value' not in (server.jobs.tasks/'fixture.json').read_text(encoding='utf-8')
 
@@ -57,6 +60,8 @@ def test_resume_restores_period_and_budget_after_restart_without_storing_passwor
     atomic_write(path,dumps(record))
     restarted=Jobs(tmp_path)
     assert restarted.snapshot()['phase']=='cancelled'
+    assert restarted.snapshot()['parameters']['images'] is True
+    assert restarted.snapshot()['parameters']['delay'] == 7
     assert restarted.archives()['archives'][0]['resumable']
     restarted.start({'resume':'fixture','password':'new-secret','mode':'full','max_requests':1})
     restarted.thread.join(5)
@@ -95,7 +100,7 @@ def test_old_archive_format_migration_preserves_source_and_never_requests_networ
     finally: store.close()
     assert 'old layout' not in (folder/'index.html').read_text(encoding='utf-8')
     assert (folder/'help.html').is_file() and (folder/'assets/common.js').is_file()
-    assert json.loads((folder/'export-report.json').read_text(encoding='utf-8'))['format_version']=='0.7.6'
+    assert json.loads((folder/'export-report.json').read_text(encoding='utf-8'))['format_version']=='0.7.7'
 
 
 def test_help_works_from_local_application_and_offline_archive(local_server):
@@ -116,3 +121,13 @@ def test_legacy_partial_archive_parameters_are_available_for_resume(tmp_path):
     assert row['resumable'] and row['parameters']['mode']=='latest'
     assert row['parameters']['entry_limit']==10 and row['parameters']['max_requests']==50
     assert row['parameters']['images']
+    assert 'images' in row['parameters_known']
+    assert 'delay' not in row['parameters_known']
+    assert 'videos' not in row['parameters_known']
+
+
+def test_status_parameters_are_allowlisted(tmp_path):
+    jobs = Jobs(tmp_path)
+    assert jobs.snapshot() == {'phase': 'idle'}
+    jobs.current = {'username': 'fixture', 'images': True, 'password': 'secret', 'cookies': 'private'}
+    assert jobs.snapshot()['parameters'] == {'username': 'fixture', 'images': True}

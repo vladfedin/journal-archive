@@ -27,6 +27,7 @@ REASONS = {
     "redirects": "Слишком много перенаправлений", "storage": "Ошибка сохранения файла",
     "request_limit": "Достигнут лимит запросов", "cancelled": "Загрузка остановлена",
     "paused": "Не запрошено: загрузка изображений приостановлена после повторных ошибок",
+    "host_paused": "Не запрошено: этот сервер изображений приостановлен после повторных ошибок",
     "unknown": "Причина не сохранена; требуется повторная загрузка",
 }
 
@@ -62,6 +63,7 @@ class Media:
         self.session.trust_env = False
         self.stopped = False
         self.stop_reason = "paused"
+        self.paused_origins = set()
         self.attempted = set()
         self.verified_files = set()
         self.used_urls = {"images": set(), "userpics": set()}
@@ -127,6 +129,11 @@ class Media:
             current = url
             for attempt in range(6):
                 reason = "invalid_url"
+                parts = urlsplit(current)
+                origin = (parts.scheme.lower(), parts.hostname, parts.port or (443 if parts.scheme == "https" else 80))
+                if origin in self.paused_origins:
+                    self.record_error(url, "host_paused", status="pending", requests_made=requests_made, checked_at=checked_at)
+                    return None
                 public_url(current)
                 if self.budget.limit is not None and self.budget.used >= self.budget.limit:
                     self.budget.consume(category)
@@ -142,7 +149,7 @@ class Media:
                 except (requests.Timeout, requests.ConnectionError) as exc:
                     self.defer(backoff(attempt))
                     if attempt == 5:
-                        self.stopped = True
+                        self.paused_origins.add(origin)
                         raise exc
                     continue
                 with response:
@@ -150,7 +157,7 @@ class Media:
                     if response.status_code in (429, 500, 502, 503, 504):
                         self.defer(backoff(attempt, response.headers.get("Retry-After"), limited=response.status_code == 429))
                         if attempt == 5:
-                            self.stopped = True
+                            self.paused_origins.add(origin)
                             response.raise_for_status()
                         continue
                     if 300 <= response.status_code < 400:
@@ -176,7 +183,7 @@ class Media:
                     except (requests.Timeout, requests.ConnectionError, requests.exceptions.ChunkedEncodingError):
                         self.defer(backoff(attempt))
                         if attempt == 5:
-                            self.stopped = True
+                            self.paused_origins.add(origin)
                             raise
                         continue
                     if not size:

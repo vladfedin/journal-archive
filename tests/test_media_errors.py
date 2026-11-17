@@ -64,7 +64,7 @@ def test_diagnostics_keep_actual_failure_not_redirect_error(tmp_path, monkeypatc
     if reason != 'unsupported_type':
         pending = 'https://images.example/b.png'
         assert media.get(pending) is None
-        assert media.errors[pending]['reason'] == 'paused'
+        assert media.errors[pending]['reason'] == 'host_paused'
         assert media.errors[pending]['checked_at'] is None
     media.close()
 
@@ -81,6 +81,61 @@ def test_budget_and_cancel_are_not_http_failures(tmp_path, monkeypatch):
     media.cancel.set()
     assert media.get('https://images.example/cancel.png') is None
     assert media.errors['https://images.example/cancel.png']['reason'] == 'cancelled'
+    media.close()
+
+
+@pytest.mark.parametrize('failure', ['timeout', 'http', 'transfer'])
+def test_failed_origin_does_not_stop_healthy_images_and_is_retried_next_run(tmp_path, monkeypatch, failure):
+    media = downloader(tmp_path, monkeypatch)
+    bad, pending, good = 'https://old.example/a.png', 'https://old.example:443/b.png', 'https://pics.example/c.png'
+    calls, waits = [], []
+    class BrokenImage(ImageResponse):
+        def iter_content(self, size):
+            raise requests.exceptions.ChunkedEncodingError()
+    def get(url, **kwargs):
+        calls.append(url)
+        if url == bad:
+            if failure == 'timeout':
+                raise requests.Timeout()
+            if failure == 'http':
+                return ImageResponse(status=429, headers={'Retry-After': '3600'})
+            return BrokenImage(headers={'Content-Type': 'image/png'})
+        return ImageResponse(content=b'image', headers={'Content-Type': 'image/png'})
+    monkeypatch.setattr(media.session, 'get', get)
+    monkeypatch.setattr(media, 'wait', lambda seconds: waits.append(seconds) or True)
+    assert media.get(bad) is None
+    assert media.get(pending) is None
+    assert media.errors[pending]['reason'] == 'host_paused'
+    assert media.errors[pending]['requests'] == 0
+    assert media.get(good).startswith('media/')
+    assert calls == [bad] * 6 + [good]
+    assert media.budget.used == 7 and not media.stopped
+    if failure == 'http':
+        assert waits[-1] > 3590  # The shared Retry-After deadline is still respected.
+    store = Store(tmp_path)
+    with store.db:
+        media.save_state(store)
+    media.close()
+    resumed = downloader(tmp_path, monkeypatch)
+    resumed.load_state(store)
+    monkeypatch.setattr(resumed.session, 'get', lambda *a, **kw: ImageResponse(content=b'image', headers={'Content-Type': 'image/png'}))
+    assert resumed.get(pending).startswith('media/')
+    assert pending not in resumed.errors
+    resumed.close()
+    store.close()
+
+
+def test_redirect_to_paused_origin_is_not_requested_again(tmp_path, monkeypatch):
+    media = downloader(tmp_path, monkeypatch)
+    media.paused_origins.add(('https', 'old.example', 443))
+    calls = []
+    def get(url, **kwargs):
+        calls.append(url)
+        return ImageResponse(status=302, headers={'Location': 'https://old.example/image.png'})
+    monkeypatch.setattr(media.session, 'get', get)
+    assert media.get('https://redirect.example/image.png') is None
+    assert calls == ['https://redirect.example/image.png']
+    assert media.errors[calls[0]]['reason'] == 'host_paused'
     media.close()
 
 

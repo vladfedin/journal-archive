@@ -1,11 +1,29 @@
 'use strict';
 const $ = id => document.getElementById(id);
 const terminal = new Set(['idle','complete','partial','cancelled','error','demo']);
-const labels = {login:'Вход',posts:'Записи',comments:'Комментарии',reactions:'Реакции',videos:'Видео',materials:'Материалы',personal:'Личные данные',userpics:'Юзерпики',render:'Страницы',waiting:'Пауза',complete:'Готов',partial:'Не завершён',cancelled:'Остановлено',error:'Ошибка',demo:'Пример'};
+const labels = {preparing:'Подготовка',verify:'Проверка',login:'Вход',posts:'Записи',comments:'Комментарии',reactions:'Реакции',videos:'Видео',materials:'Материалы',personal:'Личные данные',userpics:'Юзерпики',render:'Страницы',waiting:'Пауза',complete:'Готов',partial:'Не завершён',cancelled:'Остановлено',error:'Ошибка',demo:'Пример'};
+const localProgress = phase => ['preparing','verify','render'].includes(phase);
 const scopes = {full:'весь журнал',period:'за период',urls:'по ссылкам',latest:'тест (последние 10 записей)'};
 const el = (tag, cls, text) => {const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n;};
 const day = value => {const m=/^(\d{4})-(\d{2})-(\d{2})/.exec(value||'');return m?`${Number(m[3])} ${'января февраля марта апреля мая июня июля августа сентября октября ноября декабря'.split(' ')[Number(m[2])-1]} ${m[1]}`:'';};
 const dateValue = date => `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;
+function parameterTable(params={},known=Object.keys(params)){
+  const table=el('table','report-table'),body=el('tbody');table.append(body);
+  const value=(key,format=v=>String(v))=>known.includes(key)?format(params[key]):'Не сохранено';
+  const yes=v=>v?'Да':'Нет';
+  const rows=[['Объём',value('mode',v=>scopes[v]||v||'Не сохранено')]];
+  if(params.mode==='period')rows.push(['С',value('date_from',v=>day(v)||'С начала журнала')],['По',value('date_to',v=>day(v)||'По последнюю запись')]);
+  if(params.mode==='urls')rows.push(['Ссылки',value('urls',v=>Array.isArray(v)?v.join('\n'):v||'—')]);
+  rows.push(['Изображения',value('images',yes)],['Видео',value('videos',yes)],['Профиль, друзья, настройки',value('account',yes)],['Переписка',value('messages',yes)],['Пауза',value('delay',v=>v+' сек.')],['Лимит запросов',value('max_requests',v=>v??'Без лимита')]);
+  for(const [label,text] of rows){const row=el('tr');row.append(el('td','',label),el('td','',text));body.append(row);}
+  return table;
+}
+function showParameters(archive){
+  document.querySelectorAll('.more[open]').forEach(menu=>menu.open=false);
+  $('settings-title').textContent='Параметры · '+(archive.username||'');
+  $('settings-content').replaceChildren(parameterTable(archive.parameters,archive.parameters_known));
+  $('settings-dialog').showModal();
+}
 let moving=false,libraryKey='',dismissedJob=null,busy=false,closed=false,submitting=false,pollTimer,mode='new',scope='full',selected=null,limitEdited=false,lastState={},archives=[];
 async function api(path,data){const r=await fetch(path,{method:data===undefined?'GET':'POST',headers:data===undefined?{}:{'Content-Type':'application/json'},body:data===undefined?undefined:JSON.stringify(data),cache:'no-store'});const value=await r.json();if(!r.ok)throw new Error(value.error||'Не удалось выполнить запрос.');return value;}
 function error(message,form=false){const target=$(form?'form-error':'app-error');target.textContent=message;target.hidden=!message;}
@@ -20,6 +38,8 @@ function openDialog(kind,archive=null){
   $('username').value=isNew?'':archive.username;$('username').readOnly=!isNew;$('username-field').hidden=resume;
   $('credentials').classList.toggle('is-resume',resume);$('password').type='password';$('show-password').setAttribute('aria-label','Показать пароль');
   $('scope-fields').hidden=resume;$('resume-note').hidden=!resume;
+  $('resume-settings').hidden=!resume;$('resume-settings').open=false;
+  $('resume-parameters').replaceChildren(...(resume?[parameterTable(archive.parameters,archive.parameters_known)]:[]));
   document.querySelector('[data-scope=latest]').hidden=!isNew;document.querySelector('[data-scope=urls]').hidden=isNew;
   const to=new Date(),from=new Date(to);from.setDate(from.getDate()-29);$('date-from').value=dateValue(from);$('date-to').value=dateValue(to);
   if(!resume){setScope(isNew?'full':'period');if(archive?.parameters){$('images').checked=!!archive.parameters.images;$('videos').checked=!!archive.parameters.videos;}}
@@ -33,25 +53,33 @@ function showStatus(s){lastState=s;if(!s.phase||s.phase==='idle'||s.job_id&&s.jo
   $('job-stage').classList.toggle('paused-message',['error','partial'].includes(s.phase));
   $('posts-count').textContent=mapSlug===s.slug&&mapView?.data?.expected?`${mapView.data.known} / ${mapView.data.expected}`:s.entries||0;$('comments-count').textContent=s.comments||0;
   $('requests-count').textContent=`${s.requests_used||0}${s.request_limit?' / '+s.request_limit:''} запросов`;
-  $('progress').hidden=terminal.has(s.phase)||!$('job-timeline').hidden;if(s.total){$('progress').max=s.total;$('progress').value=s.completed||0;}else $('progress').removeAttribute('value');
+  $('progress').hidden=terminal.has(s.phase)||(!$('job-timeline').hidden&&!localProgress(s.phase));if(s.total){$('progress').max=s.total;$('progress').value=s.completed||0;}else $('progress').removeAttribute('value');
   $('open-result').hidden=!s.archive_url;if(s.archive_url)$('open-result').href=s.archive_url;
   $('job-statistics').hidden=!s.archive_url;if(s.archive_url)$('job-statistics').href=s.archive_url.replace(/index\.html$/,'statistics.html');
   $('job-report').hidden=!s.archive_url;if(s.archive_url)$('job-report').href=s.archive_url.replace(/index\.html$/,'report.html');
-  $('job-message').textContent=s.message||'';$('job-message').hidden=!s.message||!['partial','error','cancelled'].includes(s.phase)||!!s.request_limit_reached;
+  $('job-settings').hidden=!s.parameters;
+  $('job-message').textContent=s.message||'';$('job-message').hidden=!s.message||['complete','demo'].includes(s.phase)||!!s.request_limit_reached;
   $('job-action').disabled=!!s.cancelling;$('job-action').textContent=!terminal.has(s.phase)?'Остановить':['complete','demo'].includes(s.phase)?'Закрыть':s.phase==='error'?'Повторить':'Продолжить';
   setBusy(!terminal.has(s.phase));
 }
-async function library(){const data=await api('/api/archives');storageStatus(data.relocation);const key=JSON.stringify(data);if(key===libraryKey){setBusy(busy);return;}libraryKey=key;archives=data.archives.filter(a=>a.slug!=='_demo');$('output-path').textContent=data.output;$('archives').replaceChildren();$('empty').hidden=!!archives.length;$('library').hidden=!archives.length;
-  for(const archive of archives){const row=el('tr'),name=el('td'),link=el(archive.url?'a':'strong','journal-name',archive.username);if(archive.url)link.href=archive.url;name.append(link);
+async function library(){const data=await api('/api/archives');storageStatus(data.relocation);const key=JSON.stringify(data);if(key===libraryKey){setBusy(busy);return;}libraryKey=key;
+  const open=new Set(Array.from(document.querySelectorAll('#archives details[open]'),menu=>menu.closest('tr').dataset.archive));
+  const focused=document.activeElement,focusSlug=focused.closest('#archives tr')?.dataset.archive,focusAction=focused.dataset.action;
+  archives=data.archives.filter(a=>a.slug!=='_demo');$('output-path').textContent=data.output;$('archives').replaceChildren();$('empty').hidden=!!archives.length;$('library').hidden=!archives.length;
+  for(const archive of archives){const row=el('tr'),name=el('td'),link=el(archive.url?'a':'strong','journal-name',archive.username);row.dataset.archive=archive.slug;if(archive.url)link.href=archive.url;name.append(link);
     const mode=archive.parameters?.mode;const description=archive.entry_limit?`Тест · ${archive.entry_limit} записей`:mode==='period'?[day(archive.parameters.date_from),day(archive.parameters.date_to)].filter(Boolean).join(' — '):'';
     if(description)name.append(el('span','journal-scope',description));row.append(name,el('td','mono',String(archive.entries_saved||0)),el('td','mono',String(archive.comments_saved||0)),el('td','mono',day(archive.created_at)));
     const state=el('td'),status=el(archive.report_url?'a':'span','status'+(archive.status==='complete'?'':' partial'),labels[archive.status]||'Не завершён');if(archive.report_url)status.href=archive.report_url;state.append(status);row.append(state);
     const cell=el('td'),actions=el('div','row-actions');if(archive.url){const open=el('a','btn','Открыть');open.href=archive.url;actions.append(open);}
     const more=el('details','more'),summary=el('summary','','⋯');summary.setAttribute('aria-label','Действия с архивом '+archive.username);const menu=el('div','menu');
+    const settings=el('button','','Параметры');settings.type='button';settings.onclick=()=>showParameters(archive);menu.append(settings);
     if(archive.resumable){const resume=el('button','','Продолжить');resume.type='button';resume.dataset.resume='';resume.onclick=()=>openDialog('resume',archive);menu.append(resume);}
     const update=el('button','','Обновить');update.type='button';update.dataset.update='';update.onclick=()=>openDialog('update',archive);menu.append(update);
     if(archive.url){menu.append(el('hr'));for(const [text,url] of [['Скачать JSON',archive.activitystreams_url],['Исходный JSON',archive.json_url],['Скачать ZIP',archive.zip_url],['Статистика',archive.url.replace('index.html','statistics.html')],['Календарь',archive.url.replace('index.html','calendar.html')],['Хронология',archive.url.replace('index.html','timeline.html')],['Профиль',archive.url.replace('index.html','account.html')],['Переписка',archive.url.replace('index.html','messages.html')],['Состояние архива',archive.report_url]]){const a=el('a','',text);a.href=url;menu.append(a);}}
-    more.append(summary,menu);actions.append(more);cell.append(actions);row.append(cell);$('archives').append(row);
+    more.open=open.has(archive.slug);more.append(summary,menu);actions.append(more);cell.append(actions);row.append(cell);
+    row.querySelectorAll('a,button,summary').forEach(action=>action.dataset.action=action.textContent);
+    $('archives').append(row);
+    if(archive.slug===focusSlug)Array.from(row.querySelectorAll('[data-action]')).find(action=>action.dataset.action===focusAction)?.focus({preventScroll:true});
   }setBusy(busy);
 }
 let mapView=null,mapSlug='',mapTime=0,mapPhase='';
@@ -62,7 +90,7 @@ async function refreshMap(state){
   mapTime=Date.now();mapPhase=state.phase;
   const data=await api('/api/timeline/'+encodeURIComponent(state.slug));
   $('job-timeline').hidden=!data.expected;mapView.set(data,data.active);
-  if(data.expected){$('progress').hidden=true;$('posts-count').textContent=`${data.known} / ${data.expected}`;}
+  if(data.expected){$('progress').hidden=terminal.has(state.phase)||!localProgress(state.phase);$('posts-count').textContent=`${data.known} / ${data.expected}`;}
 }
 let previousKey='';async function poll(){if(closed)return;try{const state=await api('/api/status');showStatus(state);await refreshMap(state);error('');const key=JSON.stringify([state.phase,state.slug,state.archive_url]);if(key!==previousKey||!busy){await library();previousKey=key;}}catch(e){error('Приложение недоступно. Запустите его снова.');}finally{if(!closed)pollTimer=setTimeout(poll,busy?1200:5000);}}
 document.querySelectorAll('[data-new]').forEach(b=>b.onclick=()=>openDialog('new'));
@@ -80,6 +108,8 @@ $('export-form').onsubmit=async e=>{e.preventDefault();if(busy||submitting||clos
   finally{data.password='';submitting=false;$('submit-export').disabled=busy;}
 };
 $('job-action').onclick=async()=>{try{if(busy){$('job-action').disabled=true;showStatus(await api('/api/cancel',{}));}else if(['complete','demo'].includes(lastState.phase)){$('job').hidden=true;dismissedJob=lastState.job_id;}else{await library();const archive=archives.find(a=>a.slug===lastState.slug);if(archive)openDialog('resume',archive);else error('Сохранённая задача не найдена.');}}catch(e){error(e.message);$('job-action').disabled=false;}};
+$('job-settings').onclick=()=>showParameters(lastState);
+$('settings-close').onclick=()=>$('settings-dialog').close();
 $('quit').onclick=async()=>{try{await api('/api/quit',{});closed=true;clearTimeout(pollTimer);setBusy(false);$('quit').disabled=true;$('job').hidden=true;error('Приложение закрыто.');}catch(e){error(e.message);}};
 poll();
 

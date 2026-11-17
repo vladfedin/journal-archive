@@ -342,18 +342,18 @@ class SyncExporter(Exporter):
             self.client.save_cooldown = save_cooldown
             self.client.budget.save_cooldown = save_cooldown
             self.client.budget.not_before = self.client.not_before
-            if self.scope.mode == "full":
-                audit = verify_archive(store)
-                with store.db:
-                    store.set("integrity_before", audit)
-                for issue in audit["issues"]:
-                    if issue.get("kind") == "file" and Path(issue.get("path", "")).parts[:1] == ("media",):
-                        path = store.folder / issue["path"]
-                        if path.is_file():
-                            quarantine = store.folder / "quarantine" / path.name
-                            quarantine.parent.mkdir(exist_ok=True)
-                            path.replace(quarantine)
             try:
+                if self.scope.mode == "full":
+                    audit = verify_archive(store, progress=self.progress, check=self.client.check)
+                    with store.db:
+                        store.set("integrity_before", audit)
+                    for issue in audit["issues"]:
+                        if issue.get("kind") == "file" and Path(issue.get("path", "")).parts[:1] == ("media",):
+                            path = store.folder / issue["path"]
+                            if path.is_file():
+                                quarantine = store.folder / "quarantine" / path.name
+                                quarantine.parent.mkdir(exist_ok=True)
+                                path.replace(quarantine)
                 self.update("login", "Входим в журнал владельца…")
                 self.client.login()
                 with store.db:

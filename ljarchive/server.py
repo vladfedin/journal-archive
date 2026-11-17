@@ -171,7 +171,10 @@ class Jobs:
 
     def snapshot(self):
         with self.lock:
-            return dict(self.state)
+            state = dict(self.state)
+            if self.current:
+                state["parameters"] = {key: self.current[key] for key in self.PARAMS if key in self.current}
+            return state
 
     def progress(self, **values):
         with self.lock:
@@ -247,7 +250,7 @@ class Jobs:
                 data.setdefault("delay", 3)
             self.cancel = threading.Event()
             slug = "_demo" if demo else data["archive"]
-            self.state = {"phase": "render" if demo else "login", "message": "", "entries": 0, "comments": 0,
+            self.state = {"phase": "render" if demo else "preparing", "message": "Подготовка архива…", "entries": 0, "comments": 0,
                           "username": "example_journal" if demo else data["username"], "slug": slug, "cancelling": False, "job_id": secrets.token_hex(8)}
             self.current = None if demo else {key: data.get(key) for key in self.PARAMS}
             if not demo:
@@ -257,7 +260,7 @@ class Jobs:
                 self.persist()
             self.thread = threading.Thread(target=self.run, args=(data, demo), daemon=True)
             self.thread.start()
-            return dict(self.state)
+            return self.snapshot()
 
     def run(self, data, demo):
         slug = "_demo" if demo else data["archive"]
@@ -309,17 +312,26 @@ class Jobs:
                                   activitystreams_url=f"/download/{slug}.activitystreams.json", resumable=False)
                 if slug != "_demo":
                     found[slug].update(parameters=self.legacy_parameters(slug), resumable=report.get("status") not in ("complete", "demo"))
+                    # Resume defaults are usable for a future run, but aren't evidence of
+                    # the settings used by an old archive whose task file is missing.
+                    known = [key for key, field in (("images", "images_requested"), ("videos", "videos_requested"),
+                             ("max_requests", "request_limit")) if field in report]
+                    scope = report.get("sync", {}).get("scope", {})
+                    if report.get("entry_limit") or scope.get("mode"):
+                        known.append("mode")
+                    known.extend(key for key, field in (("date_from", "start"), ("date_to", "end"), ("urls", "urls")) if field in scope)
+                    found[slug]["parameters_known"] = known
             except (OSError, ValueError, KeyError, TypeError, ExportError):
                 continue
         for file in self.tasks.glob("*.json"):
             try:
                 record = json.loads(file.read_text(encoding="utf-8"))
-                params, state = record["parameters"], record["state"]
+                params, state = {key: value for key, value in record["parameters"].items() if key in self.PARAMS}, record["state"]
                 slug = params["archive"]
                 self.task_path(slug)
                 row = found.setdefault(slug, {"slug": slug, "username": params["username"], "entries_saved": 0,
                                                "comments_saved": 0, "entry_limit": params["entry_limit"]})
-                row.update(parameters=params, status=state["phase"], created_at=record["updated_at"],
+                row.update(parameters=params, parameters_known=list(params), status=state["phase"], created_at=record["updated_at"],
                            resumable=state["phase"] != "complete", message=state.get("message", ""))
             except (OSError, ValueError, KeyError, TypeError, ExportError):
                 continue
