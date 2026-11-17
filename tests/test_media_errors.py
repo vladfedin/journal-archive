@@ -60,7 +60,9 @@ def test_diagnostics_keep_actual_failure_not_redirect_error(tmp_path, monkeypatc
     assert media.get(url) is None
     assert media.errors[url]['reason'] == reason
     assert media.errors[url]['http_status'] == code
-    assert media.errors[url]['requests'] == (1 if reason == 'unsupported_type' else 6)
+    assert media.errors[url]['requests'] == 1
+    media.retry_failed()
+    assert media.errors[url]['attempts'] == 3 and media.errors[url]['closed']
     if reason != 'unsupported_type':
         pending = 'https://images.example/b.png'
         assert media.get(pending) is None
@@ -104,12 +106,13 @@ def test_failed_origin_does_not_stop_healthy_images_and_is_retried_next_run(tmp_
     monkeypatch.setattr(media.session, 'get', get)
     monkeypatch.setattr(media, 'wait', lambda seconds: waits.append(seconds) or True)
     assert media.get(bad) is None
+    media.retry_failed()
     assert media.get(pending) is None
     assert media.errors[pending]['reason'] == 'host_paused'
     assert media.errors[pending]['requests'] == 0
     assert media.get(good).startswith('media/')
-    assert calls == [bad] * 6 + [good]
-    assert media.budget.used == 7 and not media.stopped
+    assert calls == [bad] * 3 + [good]
+    assert media.budget.used == 4 and not media.stopped
     if failure == 'http':
         assert waits[-1] > 3590  # The shared Retry-After deadline is still respected.
     store = Store(tmp_path)

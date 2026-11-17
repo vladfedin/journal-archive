@@ -15,6 +15,7 @@ import requests
 from .storage import atomic_write
 from .client import RequestBudget, RequestLimitReached
 from .retry import backoff
+from .gaps import ATTEMPTS, carry, closed, fail, reopen
 
 TYPES = {"image/jpeg": ".jpg", "image/png": ".png", "image/gif": ".gif", "image/webp": ".webp", "image/avif": ".avif"}
 IMAGE_HOSTS = frozenset(('ic.pics.livejournal.com', 'pics.livejournal.com', 'l-userpic.livejournal.com', 'userpic.livejournal.com'))
@@ -44,11 +45,32 @@ REASONS = {
     "unsupported_type": "Ответ не является поддерживаемым изображением",
     "too_large": "Изображение больше 20 МБ", "empty": "Пустой ответ",
     "redirects": "Слишком много перенаправлений", "storage": "Ошибка сохранения файла",
+    "tls": "Не удалось проверить сертификат сервера",
     "request_limit": "Достигнут лимит запросов", "cancelled": "Загрузка остановлена",
     "paused": "Не запрошено: загрузка изображений приостановлена после повторных ошибок",
     "host_paused": "Не запрошено: этот сервер изображений приостановлен после повторных ошибок",
     "unknown": "Причина не сохранена; требуется повторная загрузка",
 }
+
+
+def plain_reason(error):
+    """Short reason for people: what happened to the file, without protocol codes."""
+    reason, code = error.get("reason"), error.get("http_status")
+    if reason == "http":
+        if code == 404:
+            return "файл не найден"
+        if code == 410:
+            return "файл больше недоступен"
+        if code in (401, 403):
+            return "нужен вход в ЖЖ" if error.get("authentication") == "missing" else "доступ к файлу закрыт"
+        return "ошибка сервера"
+    return {"timeout": "сервер не отвечал", "connection": "сервер недоступен", "dns": "сервер недоступен",
+            "transfer": "загрузка обрывалась", "unsupported_type": "по ссылке не картинка",
+            "too_large": "больше 20 МБ", "empty": "пустой файл", "redirects": "ссылка никуда не ведёт",
+            "invalid_url": "недопустимый адрес", "storage": "не удалось записать на диск",
+            'tls': 'не удалось проверить сертификат', 'request_limit': 'достигнут лимит запросов',
+            'cancelled': 'загрузка остановлена', 'host_paused': 'сервер временно недоступен',
+            'paused': 'загрузка приостановлена'}.get(reason, "причина не сохранена")
 
 
 def error_message(error):
@@ -88,6 +110,8 @@ class Media:
         self.paused_origins = set()
         self.attempted = set()
         self.authentication = {}
+        self.categories = {}
+        self.referers = {}
         self.verified_files = set()
         self.used_urls = {"images": set(), "userpics": set()}
         self.videos, self.video_embeds, self.external_embeds = {}, {}, {}
@@ -115,6 +139,9 @@ class Media:
         self.mapping = {**store.get("media", {}), **self.mapping}
         self.errors = {**store.get("media_errors", {}), **self.errors}
         self.errors = {url: error for url, error in self.errors.items() if not self.mapping.get(url)}
+        for error in self.errors.values():
+            if error.get('reason') in ('storage', 'tls') or (error.get('http_status') in (401, 403) and error.get('authentication') == 'missing'):
+                reopen(error)
 
     def save_state(self, store):
         mapping = {**store.get("media", {}), **self.mapping}
@@ -123,10 +150,33 @@ class Media:
         store.set("media_errors", {url: error for url, error in errors.items() if not mapping.get(url)})
 
     def record_error(self, url, reason, *, status="failed", http_status=None, requests_made=0, checked_at=None):
-        self.errors[url] = {"status": status, "reason": reason, "http_status": http_status,
-                            "requests": requests_made, "checked_at": checked_at,
-                            "authentication": self.authentication.get(url, 'not_requested'),
-                            "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+        previous = self.errors.get(url) or {}
+        record = {"status": status, "reason": reason, "http_status": http_status,
+                  "requests": requests_made, "checked_at": checked_at,
+                  "authentication": self.authentication.get(url, 'not_requested'),
+                  "category": self.categories.get(url, previous.get("category", "images")),
+                  "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+        # A stop, missing login or local failure does not count as remote absence.
+        if reason in ('storage', 'tls') or (http_status in (401, 403) and record['authentication'] == 'missing'):
+            record['status'] = 'pending'
+        self.errors[url] = fail(record, previous) if record['status'] == "failed" else carry(record, previous)
+
+    def retry_failed(self, urls=None, checkpoint=None):
+        """At the end of a run, repeat failed downloads until they are saved or closed."""
+        for _ in range(ATTEMPTS):
+            pending = [url for url, error in self.errors.items() if error.get("status") == "failed"
+                       and not closed(error) and (urls is None or url in urls)]
+            for index, url in enumerate(pending):
+                if self.stopped or self.cancel.is_set():
+                    return
+                category = self.errors[url].get("category", "images")
+                self.budget.progress(phase="materials", message="Повторяем недополученные изображения",
+                                     completed=index, total=len(pending))
+                self.attempted.discard(url)
+                self.mapping.pop(url, None)
+                self.get(url, required=category == "userpics", category=category)
+                if checkpoint:
+                    checkpoint()
 
     def wait(self, seconds):
         # Short interruptible waits keep cancellation responsive even for long Retry-After.
@@ -145,6 +195,10 @@ class Media:
 
     def get(self, url: str, *, required=False, category="images", referer=None) -> str | None:
         self.used_urls[category].add(url)
+        self.categories.setdefault(url, category)
+        if referer:
+            self.referers[url] = referer
+        referer = self.referers.get(url)
         if self.mapping.get(url) and url not in self.verified_files:
             if not (self.folder / self.mapping[url]).is_file():
                 self.mapping[url] = None
@@ -160,6 +214,9 @@ class Media:
         self.mapping[url] = None
         if not (self.enabled and category == "images") and not required:
             return None
+        if closed(self.errors.get(url)):
+            # Asked for and not given several times: the archive keeps the original link.
+            return None
         if self.stopped or self.cancel.is_set():
             if url not in self.errors:
                 self.record_error(url, "cancelled" if self.cancel.is_set() else self.stop_reason, status="pending")
@@ -167,9 +224,13 @@ class Media:
         self.attempted.add(url)
         requests_made, http_status, checked_at = 0, None, None
         reason = "invalid_url"
+        current = url
         try:
             current = image_url(url)
-            for attempt in range(6):
+            attempt = int(self.errors.get(url, {}).get('attempts', 0))
+            # Redirects belong to this attempt. Failed downloads are retried by the
+            # final pass, not by a nested six-attempt loop.
+            for redirect in range(6):
                 reason = "invalid_url"
                 parts = urlsplit(current)
                 origin = (parts.scheme.lower(), parts.hostname, parts.port or (443 if parts.scheme == "https" else 80))
@@ -184,10 +245,10 @@ class Media:
                     self.record_error(url, "cancelled", status="pending", requests_made=requests_made, checked_at=checked_at)
                     return None
                 self.budget.consume(category)
-                self.budget.event("request", category, current, attempt=attempt + 1, max_attempts=6)
+                self.budget.event("request", category, current, attempt=attempt + 1, max_attempts=ATTEMPTS)
                 requests_made += 1
                 if attempt:
-                    self.budget.progress(phase="materials", message=f"Загрузка изображения · попытка {attempt + 1} из 6")
+                    self.budget.progress(phase="materials", message=f"Загрузка изображения · попытка {attempt + 1} из {ATTEMPTS}")
                 checked_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
                 http_status = None
                 try:
@@ -196,23 +257,15 @@ class Media:
                     headers = self.headers(current, referer)
                     self.authentication[url] = ('sent' if headers.get('Cookie') else 'missing') if authenticated_image_host(current) else 'not_applicable'
                     response = self.session.get(current, headers=headers, stream=True, timeout=(10, 20), allow_redirects=False)
-                except (requests.Timeout, requests.ConnectionError) as exc:
-                    self.defer(backoff(attempt), reason="timeout" if isinstance(exc, requests.Timeout) else "connection",
-                               category=category, url=current, attempt=attempt + 1, max_attempts=6)
-                    if attempt == 5:
-                        self.paused_origins.add(origin)
-                        raise exc
-                    continue
+                except (requests.Timeout, requests.ConnectionError):
+                    raise
                 with response:
                     http_status = response.status_code
                     if response.status_code in (429, 500, 502, 503, 504):
                         self.defer(backoff(attempt, response.headers.get("Retry-After"), limited=response.status_code == 429),
                                    reason="http", category=category, url=current, http_status=response.status_code,
-                                   attempt=attempt + 1, max_attempts=6, server_delay=bool(response.headers.get("Retry-After")))
-                        if attempt == 5:
-                            self.paused_origins.add(origin)
-                            response.raise_for_status()
-                        continue
+                                   attempt=attempt + 1, max_attempts=ATTEMPTS, server_delay=bool(response.headers.get("Retry-After")))
+                        response.raise_for_status()
                     if 300 <= response.status_code < 400:
                         current = image_url(urljoin(current, response.headers.get("Location", "")))
                         continue
@@ -234,12 +287,7 @@ class Media:
                                 raise ValueError("image over 20 MB")
                             chunks.append(chunk)
                     except (requests.Timeout, requests.ConnectionError, requests.exceptions.ChunkedEncodingError):
-                        self.defer(backoff(attempt), reason="transfer", category=category, url=current,
-                                   attempt=attempt + 1, max_attempts=6)
-                        if attempt == 5:
-                            self.paused_origins.add(origin)
-                            raise
-                        continue
+                        raise
                     if not size:
                         reason = "empty"
                         raise ValueError("empty image")
@@ -261,6 +309,8 @@ class Media:
         except (requests.RequestException, ValueError, OSError) as exc:
             if isinstance(exc, requests.HTTPError):
                 reason = "http"
+            elif isinstance(exc, requests.exceptions.SSLError):
+                reason = 'tls'
             elif isinstance(exc, requests.Timeout):
                 reason = "timeout"
             elif isinstance(exc, requests.ConnectionError):
@@ -270,6 +320,12 @@ class Media:
             elif isinstance(exc, socket.gaierror):
                 reason = "dns"
             self.record_error(url, reason, http_status=http_status, requests_made=requests_made, checked_at=checked_at)
+            self.budget.event('failure', category, '' if reason == 'invalid_url' else current,
+                              reason=reason, http_status=http_status)
+            if reason == 'storage':
+                self.stopped, self.stop_reason = True, 'storage'
+            if closed(self.errors[url]) and (reason in ('timeout', 'connection', 'transfer', 'dns') or http_status in (429, 500, 502, 503, 504)):
+                self.paused_origins.add(origin)
             return None
 
     def close(self):

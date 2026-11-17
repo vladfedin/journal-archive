@@ -9,6 +9,8 @@ from urllib.parse import urljoin
 
 from .client import Cancelled, ExportError, LiveJournalClient, RequestBudget, RequestLimitReached
 from .media import Media, authenticated_image_host, image_url, error_message
+from .gaps import reopen
+from .retry import restored_deadline
 from .render import build_archive, original_url, text_value
 from .storage import Store
 from .video import VideoArchive, VideoRefs, VideoStop, canonical_video, embed_key
@@ -66,7 +68,7 @@ def download_one(store, data, cancel, update, sessions=None):
     client.session.trust_env = False
     if sessions:
         sessions.restore(client)
-    budget.not_before = client.not_before = store.get('request_not_before', 0)
+    budget.not_before = client.not_before = restored_deadline(store)
     budget.wait_info = store.get('request_wait', {})
     def cooldown(deadline):
         with store.db:
@@ -81,6 +83,8 @@ def download_one(store, data, cancel, update, sessions=None):
             if trusted and data.get('password'):
                 client.login()
             media = Media(store.folder, True, cancel, budget, client=client); media.load_state(store)
+            if value in media.errors:
+                reopen(media.errors[value])
             path = media.get(value, referer=original_url(client.user, entry))
             with store.db: media.save_state(store)
             if cancel.is_set(): raise Cancelled('Загрузка остановлена.')
@@ -97,6 +101,8 @@ def download_one(store, data, cancel, update, sessions=None):
             manager = VideoArchive(store, client, update)
             if kind == 'embed':
                 key = embed_key(original_url(client.user, entry), value)
+                if key in manager.records:
+                    reopen(manager.records[key])
                 if key not in manager.embeds and key not in manager.external:
                     if data.get('password'):
                         client.login()
@@ -122,6 +128,8 @@ def download_one(store, data, cancel, update, sessions=None):
             else:
                 asset = None
             if asset is None:
+                if value in manager.records:
+                    reopen(manager.records[value])
                 manager.download(value, eid)
                 if cancel.is_set(): raise Cancelled('Загрузка остановлена.')
                 record = manager.records[value]

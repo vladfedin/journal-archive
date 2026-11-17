@@ -44,9 +44,9 @@ def test_image_timeout_is_not_reported_as_server_rate_limit(tmp_path, monkeypatc
     monkeypatch.setattr(media.session, 'get', get)
     assert media.get('https://example.org/private.png?secret=x') is None
     waits = [v for v in updates if v.get('phase') == 'waiting']
-    assert waits and all(v['wait']['reason'] == 'timeout' for v in waits)
-    assert waits[-1]['wait']['attempt'] == 6
-    assert all('просит' not in v['message'] for v in waits)
+    assert not waits  # Retry happens in the final pass, with no invented server deadline.
+    failures = [v['activity'] for v in updates if v.get('activity', {}).get('kind') == 'failure']
+    assert len(failures) == 1 and failures[0]['reason'] == 'timeout'
     assert 'secret' not in json.dumps(updates)
     media.close()
 

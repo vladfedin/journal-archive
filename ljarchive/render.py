@@ -19,6 +19,7 @@ from .data import export_json
 from .reactions import reaction_report
 from .presentation import reaction_view
 from .userpics import describe, coverage
+from .gaps import closed
 from .storage import Store, atomic_write, dumps
 
 ROOT = Path(__file__).parent
@@ -368,7 +369,7 @@ def build_archive(store: Store, report: dict, *, images=False, userpics=False, c
         for pic in group.values():
             if pic["url"]:
                 pic["path"] = media.mapping.get(pic["url"])
-    report["userpics"] = coverage(task_pictures)
+    report["userpics"] = coverage(task_pictures, media.errors)
     if userpics and not report["userpics"]["complete"] and report.get("status") == "complete":
         report["status"] = "partial"
         report["issues"].append("Не все юзерпики получены. Можно продолжить загрузку.")
@@ -418,7 +419,7 @@ def build_archive(store: Store, report: dict, *, images=False, userpics=False, c
                 item["userpic_view"] = pictures["comment"].get(str(item["id"]))
                 item["by_owner"] = item["user"] == (summary.get('author') or user)
                 item["parent_user"] = authors.get(int(item.get("parentid") or 0))
-                item.update(comment_view(item))
+                item.update(comment_view(item, settled=closed(comment_statuses.get(str(eid)))))
                 item["html"] = safe_content(item["display_body"], url, links, media, comment_ids)
                 item["subject_text"] = plain(item.get("subject"))
                 item["autoformat"] = needs_autoformat(item.get("body"), item.get("props"))
@@ -435,7 +436,7 @@ def build_archive(store: Store, report: dict, *, images=False, userpics=False, c
                         post_autoformat=needs_autoformat(entry.get("event"), entry.get("props")),
                         current=current, newer=neighbours[0], older=neighbours[1],
                         coverage_notice=coverage_notice(comment_statuses.get(str(eid), {}),
-                            material_progress(material_records.get(str(eid), {}), {**saved_media, **media.mapping}), repost=is_repost(entry), videos=missing_videos.get(eid, 0)),
+                            material_progress(material_records.get(str(eid), {}), {**saved_media, **media.mapping}, media.errors), repost=is_repost(entry), videos=missing_videos.get(eid, 0)),
                         report=report)
             atomic_write(folder / "entries" / f"{eid}.html", rendered)
             feed = render_feed(entry, user, links, media, comment_ids)
@@ -451,17 +452,20 @@ def build_archive(store: Store, report: dict, *, images=False, userpics=False, c
                               for url in sorted(media.mapping) if not media.mapping[url]}
     report["images_failed"] = [url for url, error in report["media_errors"].items() if error["status"] == "failed"]
     report["images_unavailable"] = sum(path is None for path in image_map.values())
+    # Asked for several times and not given: final, shown as original links, not a reason to resume.
+    report["images_closed"] = sum(path is None and closed(media.errors.get(url)) for url, path in image_map.items())
+    open_failed = [url for url in report["images_failed"] if not closed(media.errors.get(url))]
     report["issues"] = [issue for issue in report["issues"] if not re.fullmatch(
         r"Не удалось сохранить \d+ изображений\. Их ссылки оставлены на страницах\.", issue)]
-    if report["images_failed"]:
-        report["issues"].append(f"Не удалось сохранить {len(report['images_failed'])} изображений. Их ссылки оставлены на страницах.")
+    if open_failed:
+        report["issues"].append(f"Не удалось сохранить {len(open_failed)} изображений. Их ссылки оставлены на страницах.")
     if (images or userpics) and cancel.is_set():
         report["status"] = "cancelled"
         report["issues"].append("Скачивание изображений остановлено. Полученные тексты сохранены.")
     # Content completeness and media availability are reported separately.
     from .video import video_report
     report['videos'] = video_report(store, selected)
-    report["media_complete"] = not report["images_unavailable"] and not (report.get('videos_requested') and report['videos']['missing'])
+    report["media_complete"] = report["images_unavailable"] == report["images_closed"] and not (report.get('videos_requested') and report['videos']['missing'])
     if report.get('videos_requested') and report['videos']['missing']:
         if report['status'] == 'complete': report['status'] = 'partial'
         issue = 'Не все видео получены. Можно продолжить загрузку.'

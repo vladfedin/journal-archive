@@ -43,7 +43,12 @@ def test_selected_comment_pictures_are_preserved_per_reply_and_unknown_is_not_de
     assert resolve(records[1], 'comment')['url'].endswith('/two.png')
     catalog = {'defaultpicurl': 'https://example.org/default.png', 'pickws': ['улыбка'], 'pickwurls': ['https://example.org/smile.png']}
     assert resolve({'props': {'picture_keyword': 'улыбка'}}, 'post', catalog)['url'].endswith('/smile.png')
-    assert resolve({'props': {'picture_keyword': 'удалённая'}}, 'post', catalog)['selection'] == 'unknown'
+    # The owner's choice is unknown: the owner's default is shown and marked as assumed.
+    assumed = resolve({'props': {'picture_keyword': 'удалённая'}}, 'post', catalog)
+    assert assumed['selection'] == 'assumed_default' and assumed['url'].endswith('/default.png')
+    assert resolve({'posterid': 7}, 'comment', catalog, owner_id=7)['selection'] == 'assumed_default'
+    # Another author's default is unknown without new requests; nothing is substituted.
+    assert resolve({'posterid': 5}, 'comment', catalog, owner_id=7)['url'] is None
     assert resolve({'posterid': 5}, 'comment', catalog)['url'] is None
     assert resolve({'userpic': '', 'posterid': 5}, 'comment', catalog)['selection'] == 'none'
     assert resolve({'userpic': 'file:///etc/passwd'}, 'comment')['url'] is None

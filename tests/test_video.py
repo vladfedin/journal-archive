@@ -166,6 +166,7 @@ def test_redirect_and_429_attempts_count_and_keep_cooldown(tmp_path, monkeypatch
     import io
     from requests import Response
     from yt_dlp.networking import Request
+    from yt_dlp.networking.exceptions import HTTPError
     video = manager(tmp_path, monkeypatch)
     calls, waits = [], []
     monkeypatch.setattr(video, 'wait', waits.append)
@@ -181,6 +182,9 @@ def test_redirect_and_429_attempts_count_and_keep_cooldown(tmp_path, monkeypatch
         return r
     monkeypatch.setattr(video.session, 'request', request)
     try:
+        with pytest.raises(HTTPError) as failure:
+            video.open(Request('https://example.org/clip.mp4'))
+        failure.value.response.close()
         with video.open(Request('https://example.org/clip.mp4')) as response:
             assert response.read() == b'ok'
         assert len(calls) == video.client.budget.used == 3

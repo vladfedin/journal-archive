@@ -17,4 +17,14 @@ def retry_after(value, *, now=None):
 
 
 def backoff(attempt, header="", *, limited=False):
-    return max(retry_after(header), min(3600, (60 if limited else 15) * 2 ** attempt))
+    return max(retry_after(header), min(8, (2 if limited else 1) * 2 ** attempt))
+
+
+def restored_deadline(store):
+    """Keep server deadlines; discard obsolete long local backoffs on upgrade."""
+    import time
+    deadline = store.get('request_not_before', 0)
+    info = store.get('request_wait', {})
+    if info.get('server_delay') or info.get('reason') == 'restored' or not info:
+        return deadline
+    return min(deadline, time.time() + 8) if info.get('reason') != 'incomplete' else 0

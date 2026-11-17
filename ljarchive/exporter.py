@@ -10,6 +10,8 @@ from .storage import Store, atomic_write, dumps
 from .comment_state import DELETED, merge_comment
 from .entries import is_repost
 from .sources import bind_source
+from .retry import restored_deadline
+from .gaps import ATTEMPTS, RETRIES, closed, fail
 
 
 def now():
@@ -78,53 +80,49 @@ class Exporter:
         self.progress(phase=phase, message=message, **self.store.counts(), **extra)
 
     def retry_missing(self, operation, label):
-        # HTTP failures already have their own retry policy. Only partial successful
-        # responses get additional passes; access refusals and caps propagate immediately.
-        import time
-        for attempt in range(3):
+        # HTTP failures already have their own retry policy. A partial successful response
+        # gets RETRIES more passes over what is still missing, with no local pause: only a
+        # delay requested by the server (client.not_before) applies. Each gap counts its own
+        # attempts across runs and is closed after the last one, so the passes are finite.
+        for attempt in range(ATTEMPTS):
             self.client.check()
             if attempt:
-                self.update("retrying", f"Докачка: {label} · проход {attempt + 1} из 3")
+                self.update("retrying", f"Повторяем недополученное: {label} · повтор {attempt} из {RETRIES}")
             try:
                 return operation()
             except IncompleteData:
-                if attempt == 2:
+                if attempt == ATTEMPTS - 1:
                     raise
-                deadline = max(time.time() + 30 * 2 ** attempt, getattr(self.client, "not_before", 0))
-                wait_info = {"reason": "incomplete", "category": "livejournal", "retry_at": deadline,
-                             "attempt": attempt + 1, "max_attempts": 3}
-                with self.store.db:
-                    self.store.set("request_not_before", deadline)
-                    self.store.set("request_wait", wait_info)
-                    self.store.set("repair", {"stage": label, "pass": attempt + 2, "retry_at": deadline})
-                self.update("waiting", f"Докачка: {label} · следующий проход {attempt + 2} из 3", retry_at=deadline, wait=wait_info)
-                if hasattr(self.client, "_wait"):
-                    self.client._wait(deadline - time.time())
-                elif self.client.cancel.wait(max(0, deadline - time.time())):
-                    self.client.check()
 
-    def userpic_metadata(self):
-        # Upgrade old archives without repeating already enriched discussions.
-        from .userpics import describe
-        pictures = describe(self.store)
-        requested = set(self.store.get("userpic_comments_requested", []))
+    def access_issues(self):
+        # Missing rights are not a gap in LJ's answer: the user can update under another account.
+        capabilities = (getattr(self.client, "source", None) or {}).get("capabilities", {})
+        if capabilities.get("comments") == "denied":
+            return ["У аккаунта нет доступа к комментариям этого журнала. Записи сохранены; обновите архив под аккаунтом с доступом."]
+        return []
+
+    def media(self):
+        from .media import Media
+        if getattr(self, "_media", None) is None:
+            self._media = Media(self.store.folder, self.images, self.client.cancel,
+                                getattr(self.client, "budget", None), client=self.client)
+            self._media.load_state(self.store)
+        return self._media
+
+    def retry_materials(self):
+        """After every stage, repeat this task's failed downloads until saved or closed."""
         selected = getattr(self, "selected_ids", None)
-        pending = {int(c["jitemid"]) for c in self.store.comments()
-                   if pictures["comment"][str(c["id"])]["selection"] == "unknown"
-                   and int(c["jitemid"]) not in requested
-                   and (selected is None or int(c["jitemid"]) in selected)}
-        if not pending:
+        records = self.store.get("entry_materials", {})
+        urls = {url for eid, record in records.items() if selected is None or int(eid) in selected
+                for url in record.get("urls", [])}
+        if not urls:
             return
-        statuses = self.store.get("entry_comments", {})
-        for eid in pending:
-            statuses[str(eid)] = {"next_page": 1, "done": False}
-        with self.store.db:
-            self.store.set("entry_comments", statuses)
-        if hasattr(self, "checkpoint"):
-            self.checkpoint(phase="comments")
-            self.retry_missing(self.comments, "юзерпики комментариев")
-        else:
-            self.retry_missing(self.recent_comments, "юзерпики комментариев")
+        media = self.media()
+        def checkpoint():
+            with self.store.db:
+                media.save_state(self.store)
+        media.retry_failed(urls, checkpoint=checkpoint)
+        checkpoint()
 
     def reactions(self, *, entry_ids=None, checkpoint="trial_reaction_counts"):
         from .reactions import capture_reactions
@@ -241,6 +239,9 @@ class Exporter:
             status = statuses.setdefault(str(eid), {"next_page": 1, "done": False})
             if status.get("done") and (not is_repost(entry) or status.get("skipped") == "repost"):
                 continue
+            if closed(status):
+                # Requested several times; what LJ gave is kept, the rest is treated as absent.
+                continue
             try:
                 self.discussion(entry, status, statuses)
                 status.pop("error", None)
@@ -248,7 +249,13 @@ class Exporter:
                 if isinstance(exc, APIError) and exc.code not in (203, 300):
                     raise
                 status.update(done=False, error=str(exc), next_page=min(status.get("next_page", 1), max(1, status.get("pages", 1))))
-                incomplete.append(eid)
+                if isinstance(exc, APIError):
+                    # A refusal concerns the account's rights, not LJ's answer: never closed by counting.
+                    incomplete.append(eid)
+                else:
+                    fail(status)
+                    if not closed(status):
+                        incomplete.append(eid)
             finally:
                 with store.db:
                     store.set("entry_comments", statuses)
@@ -367,6 +374,9 @@ class Exporter:
             if selected is None or int(entry['itemid']) in selected:
                 self.client.check()
                 capture_videos(self, entry)
+        manager = getattr(self, '_videos', None)
+        if manager:
+            manager.retry_failed(selected)
 
     def save_thread(self, items, users, *, evidence="getcomments"):
         store = self.store
@@ -512,9 +522,13 @@ class Exporter:
     def report(self, error=None, cancelled=False):
         store = self.store
         entry_limit = store.get("entry_limit")
-        missing = [dict(row) for row in store.db.execute("""SELECT m.id,m.state FROM comment_meta m
+        rows = store.db.execute("""SELECT m.id,m.state,c.entry_id FROM comment_meta m
             LEFT JOIN comments c ON c.id=m.id WHERE (c.id IS NULL OR json_type(c.payload,'$.body') IS NULL)
-            AND m.state NOT IN ('D','X') ORDER BY m.id""")]
+            AND m.state NOT IN ('D','X') ORDER BY m.id""").fetchall()
+        statuses = store.get("entry_comments", {})
+        missing = [{"id": row[0], "state": row[1]} for row in rows]
+        # Texts inside a discussion closed after its last attempt are reported, not chased.
+        open_missing = [item for item, row in zip(missing, rows) if not closed(statuses.get(str(row[2])))]
         pending = [dict(row) for row in store.db.execute("SELECT day,expected FROM days WHERE done=0 ORDER BY day")]
         counts = store.counts()
         expected_entries = store.db.execute("SELECT COALESCE(SUM(expected),0) FROM days").fetchone()[0]
@@ -527,23 +541,26 @@ class Exporter:
         issues = []
         if error:
             issues.append(error)
+        issues += self.access_issues()
         if pending:
             issues.append(f"Не подтверждена полнота записей за {len(pending)} дн.")
         if counts["entries"] != expected_entries:
             source = "выбранным объёмом" if entry_limit is not None else "календарём ЖЖ"
             issues.append(f"Число сохранённых записей ({counts['entries']}) не совпадает с {source} ({expected_entries}).")
-        if missing:
-            issues.append(f"ЖЖ не отдал текст {len(missing)} неудалённых комментариев, в том числе скрытых: {sum(c['state'] == 'S' for c in missing)}.")
+        if open_missing:
+            issues.append(f"ЖЖ не отдал текст {len(open_missing)} неудалённых комментариев, в том числе скрытых: {sum(c['state'] == 'S' for c in open_missing)}.")
         if orphaned:
             issues.append(f"Комментарии относятся к {len(orphaned)} записям, текст которых не получен. Для них созданы отдельные страницы.")
         if unknown_encoding:
             issues.append(f"Не определена кодировка {len(unknown_encoding)} записей. Исходные байты сохранены в JSON (base64).")
-        pending_comments = []
+        pending_comments, unavailable_comments = [], []
         if entry_limit is not None:
-            statuses = store.get("entry_comments", {})
             for entry in store.entries():
                 eid = int(entry["itemid"])
                 if is_repost(entry):
+                    continue
+                if closed(statuses.get(str(eid))):
+                    unavailable_comments.append(eid)
                     continue
                 if not statuses.get(str(eid), {}).get("done"):
                     pending_comments.append(eid)
@@ -567,6 +584,7 @@ class Exporter:
                 "deleted_comments": deleted, "missing_comments": missing, "pending_days": pending,
                 "orphan_entry_ids": orphaned, "unknown_encoding_entry_ids": unknown_encoding,
                 "entry_limit": entry_limit, "pending_comment_entry_ids": pending_comments,
+                "unavailable_comment_entry_ids": unavailable_comments,
                 **(budget.snapshot() if budget else store.get("last_request_stats", {})),
                 "issues": issues, "images_requested": self.images, "videos_requested": self.videos,
                 "scope": (f"Пробный архив: последние {entry_limit} записей по дате публикации на момент выбора и их комментарии. Проверяются страницы getcomments и наличие текстов, включая скрытые."
@@ -578,7 +596,7 @@ class Exporter:
         store = self.store
         try:
             if hasattr(self.client, "not_before"):
-                self.client.not_before = store.get("request_not_before", 0)
+                self.client.not_before = restored_deadline(store)
                 def save_cooldown(deadline):
                     with store.db:
                         store.set("request_not_before", deadline)
@@ -629,8 +647,6 @@ class Exporter:
                 stage(self.posts, "записи")
                 if self.entry_limit is not None:
                     stage(self.recent_comments, "комментарии")
-                    if store.get("bodies_done"):
-                        stage(self.userpic_metadata, "юзерпики")
                 else:
                     self.comment_metadata()
                     self.comment_bodies()
@@ -640,6 +656,7 @@ class Exporter:
                     failures.append(str(exc))
                 self.personal()
                 self.video_stage()
+                self.retry_materials()
                 error = " ".join(failures) or None
             except Cancelled as exc:
                 error, cancelled = str(exc), True

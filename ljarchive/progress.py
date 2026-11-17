@@ -6,6 +6,7 @@ from urllib.parse import urljoin
 
 from .storage import atomic_write, dumps
 from .entries import is_repost, repost_url
+from .gaps import closed
 
 
 class Images(HTMLParser):
@@ -23,7 +24,7 @@ class Images(HTMLParser):
 def capture_materials(exporter, entry):
     from .media import Media
     from .render import original_url, text_value
-    from .userpics import resolve
+    from .userpics import resolve, owner_id
     store, eid = exporter.store, int(entry['itemid'])
     media = getattr(exporter, '_media', None)
     if media is None:
@@ -36,7 +37,8 @@ def capture_materials(exporter, entry):
     for kind, items in (('post', [entry]), ('comment', comments)):
         for item in items:
             parser.feed(text_value(item.get('event' if kind == 'post' else 'body')))
-            pic = resolve(item, kind, store.get('userpic_catalog'), owner=exporter.client.user)
+            catalog = store.get('userpic_catalog')
+            pic = resolve(item, kind, catalog, owner=exporter.client.user, owner_id=owner_id(store, catalog))
             if pic['url']:
                 pictures.add(pic['url'])
     parser.close()
@@ -58,10 +60,12 @@ def capture_materials(exporter, entry):
         checkpoint()
 
 
-def material_progress(record, mapping):
+def material_progress(record, mapping, errors=None):
     result = {key: value for key, value in record.items() if key != 'urls'}
     if 'urls' in record:
         result['saved'] = sum(bool(mapping.get(url)) for url in record['urls'])
+        # Asked for several times and not given: shown as links to the original, not chased.
+        result['unavailable'] = sum(not mapping.get(url) and closed((errors or {}).get(url)) for url in record['urls'])
     result['missing'] = max(0, result.get('requested', 0) - result.get('saved', 0))
     return result
 
@@ -69,9 +73,12 @@ def material_progress(record, mapping):
 def coverage_notice(status, materials, *, repost=False, videos=0):
     parts = []
     if status.get('error') and not repost:
-        parts.append('Комментарии получены не полностью')
-    if materials.get('missing'):
-        parts.append(f"Не загружены изображения: {materials['missing']}")
+        parts.append('ЖЖ отдал не все комментарии' if closed(status) else 'Комментарии получены не полностью')
+    lost = materials.get('unavailable', 0)
+    if materials.get('missing', 0) - lost > 0:
+        parts.append(f"Не загружены изображения: {materials['missing'] - lost}")
+    if lost:
+        parts.append(f"Недоступны в ЖЖ изображения: {lost} — оставлены ссылками на оригинал")
     if videos:
         parts.append(f"Не загружены видео: {videos}")
     return ' · '.join(parts)
@@ -86,7 +93,7 @@ def timeline(store, *, task=False):
     selected = sync_state.get('selected')
     selected = set(selected) if selected is not None else None
     bodies_done = store.get('bodies_done', False)
-    mapping = store.get('media', {})
+    mapping, errors = store.get('media', {}), store.get('media_errors', {})
     counts, authors, screened = defaultdict(int), defaultdict(Counter), defaultdict(int)
     # Aggregate in SQLite; neither HTML bodies nor full threads enter the progress API.
     for row in store.db.execute('''SELECT c.entry_id, u.name, COUNT(*), SUM(CASE WHEN COALESCE(m.state,json_extract(c.payload,'$.state'))='S' THEN 1 ELSE 0 END) FROM comments c
@@ -114,7 +121,7 @@ def timeline(store, *, task=False):
         date = date or ''
         by_day[date[:10]] += 1
         status = statuses.get(str(eid), {})
-        mat = material_progress(materials.get(str(eid), {}), mapping)
+        mat = material_progress(materials.get(str(eid), {}), mapping, errors)
         done = repost or status.get('done', bodies_done)
         state = 'pending' if not done else 'ready'
         if (status.get('error') and not repost) or (done and mat.get('saved', 0) < mat.get('requested', 0)) or missing_videos.get(eid):
@@ -123,6 +130,7 @@ def timeline(store, *, task=False):
             state = 'loading'
         items.append({'id': eid, 'date': date, 'title': plain(title) or 'Без заголовка',
                       'url': f'entries/{eid}.html', 'state': state, 'repost': repost, 'error': None if repost else status.get('error'),
+                      'settled': closed(status), 'videos': missing_videos.get(eid, 0),
                       'comments_complete': bool(done), 'screened': 0 if repost else screened[eid],
                       'notice': coverage_notice(status, mat, repost=repost, videos=missing_videos.get(eid, 0)),
                       'comments': 0 if repost else counts[eid], 'expected_comments': expected, 'pages': status.get('pages'),
@@ -167,8 +175,9 @@ def preview_entry(store, eid):
     url = original_url(user, entry)
     try:
         names = {c['id']: c.get('user') or 'Аноним' for c in comments}
+        settled = closed(store.get('entry_comments', {}).get(str(eid)))
         for c in comments:
-            c.update(comment_view(c))
+            c.update(comment_view(c, settled=settled))
             c.update(user=names[c['id']], parent_user=names.get(c.get('parentid')), by_owner=names[c['id']] == user,
                      userpic_view=pictures['comment'].get(str(c['id'])),
                      subject_text=plain(c.get('subject')), autoformat=needs_autoformat(c.get('body'), c.get('props')),
@@ -182,7 +191,7 @@ def preview_entry(store, eid):
                      content=safe_content(entry.get('event'), url, {}, media, set(), expand_cuts=True), original=url,
                      post_autoformat=needs_autoformat(entry.get('event'), entry.get('props')), current=[], newer=None, older=None,
                      coverage_notice=coverage_notice(store.get('entry_comments', {}).get(str(eid), {}),
-                         material_progress(store.get('entry_materials', {}).get(str(eid), {}), media.mapping), repost=is_repost(entry),
+                         material_progress(store.get('entry_materials', {}).get(str(eid), {}), media.mapping, store.get('media_errors', {})), repost=is_repost(entry),
                          videos=missing_by_entry(store).get(eid, 0)),
                      preview=True, report={'created_at': store.get('started_at', '')})
     finally:

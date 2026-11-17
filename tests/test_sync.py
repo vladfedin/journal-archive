@@ -167,7 +167,8 @@ def test_removed_entry_keeps_saved_text_and_marks_availability(tmp_path):
     scope = Scope('urls', urls=('https://fixture.livejournal.com/263.html',))
     run(tmp_path, Journal(), scope)
     report = run(tmp_path, Journal(removed=True), scope)
-    assert report['status'] == 'partial'
+    # Not returned after the last repeat: kept with its earlier text, reported, not chased.
+    assert report['status'] == 'complete' and report['unavailable_entry_ids'] == [1]
     data = json.loads((tmp_path/'data/archive.json').read_text(encoding="utf-8"))
     assert data['entries'][0]['event'] == 'Entry 1 revision 0'
     assert data['entries'][0]['source_status'] == 'not_returned'
@@ -177,7 +178,7 @@ def test_old_body_is_not_proof_of_successful_refresh(tmp_path):
     scope = Scope('urls', urls=('https://fixture.livejournal.com/263.html',))
     run(tmp_path, Journal(), scope)
     report = run(tmp_path, Journal(no_body=True), scope)
-    assert report['status'] == 'partial'
+    assert report['unavailable_comment_entry_ids'] == [1]
     data = json.loads((tmp_path/'data/archive.json').read_text(encoding="utf-8"))
     assert data['comments'][0]['body'] and data['comments'][0]['source_status'] == 'body_not_returned'
 

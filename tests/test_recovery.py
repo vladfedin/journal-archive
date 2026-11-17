@@ -16,14 +16,19 @@ from test_render_server import local_server
 
 
 def test_resume_reports_closed_discussions_by_identity(tmp_path):
-    assert SyncExporter(tmp_path, BadPagination(), SCOPE).run()['status'] == 'partial'
+    assert SyncExporter(tmp_path, BadPagination(), SCOPE).run()['status'] == 'complete'
     before = read_inventory(tmp_path)
-    assert before['units']['discussions'] == {'1'}
+    # Asked for three times: settled as unavailable, with its reason in its own row.
+    assert before['units']['discussions'] == set() and before['closed']['discussions'] == {'1'}
+    row = next(r for r in summary(before)['rows'] if r['key'] == 'discussions')
+    assert (row['remaining'], row['unavailable']) == (0, 1)
+    assert row['reasons'] == [{'message': 'ЖЖ отдал не все комментарии', 'final': True, 'count': 1}]
+    # An explicit refresh of the entry asks again and resolves it.
     assert SyncExporter(tmp_path, Journal(), SCOPE).run()['status'] == 'complete'
     after = read_inventory(tmp_path)
     row = next(r for r in summary(after, before)['rows'] if r['key'] == 'discussions')
-    assert (row['before'], row['resolved'], row['remaining'], row['new']) == (1, 1, 0, 0)
-    assert not any(after['units'].values())
+    assert (row['before'], row['resolved'], row['remaining'], row['unavailable'], row['new']) == (1, 1, 0, 0, 0)
+    assert not any(after['units'].values()) and not any(after['closed'].values())
 
 
 def test_same_total_can_mean_old_gap_closed_and_new_gap_found(tmp_path):
@@ -41,12 +46,19 @@ def test_same_total_can_mean_old_gap_closed_and_new_gap_found(tmp_path):
         result = summary(inventory(store), before)
         row = next(r for r in result['rows'] if r['key'] == 'images')
         assert (row['before'], row['resolved'], row['remaining'], row['new']) == (1, 1, 1, 1)
-        assert 'HTTP 404' in result['reasons'][0]['message']
+        assert row['reasons'] == [{'message': 'файл не найден', 'final': False, 'count': 1}]
+        with store.db:
+            store.set('media_errors', {'https://example.org/new': {'status': 'failed', 'reason': 'http', 'http_status': 404,
+                                                                   'attempts': 3, 'closed': True, 'detail': 'PRIVATE'}})
+        result = summary(inventory(store), before)
+        row = next(r for r in result['rows'] if r['key'] == 'images')
+        assert (row['remaining'], row['unavailable']) == (0, 1)
+        assert row['reasons'] == [{'message': 'файл не найден', 'final': True, 'count': 1}]
         assert 'PRIVATE' not in json.dumps(result) and 'https://' not in json.dumps(result)
         # A mapping alone is not proof of a saved file.
         with store.db:
             store.set('media', {'https://example.org/new': 'media/absent.png'})
-        assert inventory(store)['units']['images'] == {fingerprint('https://example.org/new')}
+        assert inventory(store)['closed']['images'] == {fingerprint('https://example.org/new')}
     finally:
         store.close()
 
@@ -140,7 +152,16 @@ def test_job_resume_saves_attempt_result_across_restart(tmp_path, monkeypatch):
     jobs = Jobs(tmp_path)
     jobs.start({'username': 'fixture', 'password': 'PRIVATE', 'mode': 'urls', 'urls': list(SCOPE.urls)})
     jobs.thread.join(10)
-    assert jobs.state['phase'] == 'partial'
+    store = Store(tmp_path / 'fixture')
+    try:
+        # Leave the discussion open after one attempt, as an interrupted run would.
+        with store.db:
+            statuses = store.get('entry_comments'); statuses['1'].update(attempts=1, closed=False); store.set('entry_comments', statuses)
+            state = store.get('sync_job'); state.update(phase='comments', done=False); store.set('sync_job', state)
+    finally:
+        store.close()
+    jobs.state['phase'] = 'partial'
+    jobs.persist()
     plan = jobs.recovery_plan('fixture')
     assert next(r for r in plan['rows'] if r['key'] == 'discussions')['remaining'] == 1
     restarted = Jobs(tmp_path)

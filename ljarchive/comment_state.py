@@ -27,8 +27,11 @@ def merge_comment(previous, incoming, *, evidence='getcomments', observed_at=Non
     return current
 
 
-def comment_view(item):
-    """One presentation policy for offline pages and the live preview."""
+def comment_view(item, settled=False):
+    """One presentation policy for offline pages and the live preview.
+
+    settled: the discussion was requested several times; a missing text is final, not pending.
+    """
     deleted = item.get('state') in DELETED
     later = deleted and item.get('deletion', {}).get('after_archive', False)
     label = ('Удалён впоследствии' if later else 'Удалён') if deleted else {
@@ -36,4 +39,5 @@ def comment_view(item):
     retained = isinstance(item.get('body'), str)
     return {'state_label': label, 'deleted': deleted,
             'retained_text': retained and (deleted or bool(item.get('source_status'))),
-            'display_body': item.get('body', 'Комментарий удалён.' if deleted else 'Текст пока не получен.')}
+            'display_body': item.get('body', 'Комментарий удалён.' if deleted else
+                                     'ЖЖ не отдал текст этого комментария.' if settled else 'Текст пока не получен.')}

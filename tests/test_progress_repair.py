@@ -25,8 +25,9 @@ class BadPagination(Journal):
 def test_unconfirmed_pagination_preserves_text_continues_and_retries_only_gap(tmp_path):
     client = BadPagination()
     report = SyncExporter(tmp_path, client, SCOPE).run()
-    assert report['status'] == 'partial'
-    assert report['pending_comment_entry_ids'] == [1]
+    # One collection and two repeats; then the discussion is settled, not left pending forever.
+    assert report['status'] == 'complete', report
+    assert report['pending_comment_entry_ids'] == [] and report['unavailable_comment_entry_ids'] == [1]
     calls = Counter((p['itemid'], p['page']) for m, p in client.calls if m == 'getcomments')
     assert calls == {(1, 1): 3, (2, 1): 1, (2, 2): 1}
     assert any(m == 'reactions' for m, _ in client.calls)
@@ -38,11 +39,21 @@ def test_unconfirmed_pagination_preserves_text_continues_and_retries_only_gap(tm
         assert with_reader.comments(1)[0]['body']
     finally:
         with_reader.close()
+    # A continuation does not ask again; an explicit refresh of the entry does.
+    resumed = Journal()
+    store = Store(tmp_path)
+    try:
+        with store.db:
+            state = store.get('sync_job'); state.update(phase='render', done=False); store.set('sync_job', state)
+    finally:
+        store.close()
+    SyncExporter(tmp_path, resumed, SCOPE).run()
+    assert not any(m == 'getcomments' for m, _ in resumed.calls)
     recovery = Journal()
-    report = SyncExporter(tmp_path, recovery, SCOPE).run()
+    report = SyncExporter(tmp_path, recovery, Scope('urls', urls=SCOPE.urls[:1])).run()
     assert report['status'] == 'complete', report
+    assert report['unavailable_comment_entry_ids'] == []
     assert {p['itemid'] for m, p in recovery.calls if m == 'getcomments'} == {1}
-    assert not any(m == 'getevents' for m, _ in recovery.calls)
 
 
 def test_bad_second_page_can_be_retried_without_mistaking_saved_ids_for_loop(tmp_path):
@@ -73,7 +84,7 @@ def test_empty_discussion_requires_explicit_zero_and_no_screened_flag(tmp_path):
         def entry(self, eid):
             return {**super().entry(eid), 'props': {'hasscreened': 1}}
     report = SyncExporter(tmp_path, Screened(), Scope('urls', urls=SCOPE.urls[:1])).run()
-    assert report['status'] == 'partial' and report['pending_comment_entry_ids'] == [1]
+    assert report['status'] == 'complete' and report['unavailable_comment_entry_ids'] == [1]
 
 
 @pytest.mark.parametrize('code', [203, 300])
@@ -84,7 +95,9 @@ def test_object_access_error_does_not_stop_other_posts(tmp_path, code):
                 raise APIError(method, code)
             return super().call(method, **params)
     report = SyncExporter(tmp_path, Denied(), SCOPE).run()
+    # A refusal is not closed by counting attempts: another account may have access.
     assert report['comments_saved'] == 2 and report['pending_comment_entry_ids'] == [1]
+    assert report['unavailable_comment_entry_ids'] == []
 
 
 def test_calendar_is_followed_by_post_discussion_before_next_day(tmp_path):
@@ -124,7 +137,8 @@ def test_repeated_page_is_bounded_and_never_marked_complete(tmp_path):
             return result
     client = Repeated()
     report = SyncExporter(tmp_path, client, Scope('urls', urls=SCOPE.urls[:1])).run()
-    assert report['status'] == 'partial'
+    # Never marked complete as a discussion: settled as unavailable after the last repeat.
+    assert report['status'] == 'complete' and report['unavailable_comment_entry_ids'] == [1]
     assert len([m for m, _ in client.calls if m == 'getcomments']) == 4
 
 

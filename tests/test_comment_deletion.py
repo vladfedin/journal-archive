@@ -71,9 +71,12 @@ def test_later_deletion_retains_text_and_versions_and_does_not_change_observatio
 def test_hidden_missing_denied_and_deleted_are_not_conflated(tmp_path):
     client = Journal(no_body=True)
     report = SyncExporter(tmp_path, client, SCOPE).run()
-    assert report['status'] == 'partial' and report['deleted_comments'] == 0
+    # Asked for three times and not given: settled as unavailable, never as deleted.
+    assert report['status'] == 'complete' and report['deleted_comments'] == 0
+    assert report['unavailable_comment_entry_ids'] == [1] and report['missing_comments']
     page = (tmp_path / 'entries/1.html').read_text(encoding='utf-8')
-    assert 'Текст пока не получен.' in page and 'Ранее сохранённая версия' not in page
+    assert 'ЖЖ не отдал текст этого комментария.' in page and 'Ранее сохранённая версия' not in page
+    assert 'удалён' not in page.split('ЖЖ не отдал текст')[0][-200:].lower()
     assert comment_view({'state': 'S'})['state_label'] == 'Скрыт'
     assert not comment_view({'state': 'A', 'source_status': 'not_returned'})['deleted']
 
@@ -100,7 +103,7 @@ def test_metadata_absence_is_not_deletion(tmp_path):
         def comments(self, kind, start):
             return CommentPage([], {}, 12, 13), b'<fixture/>'
     report = SyncExporter(tmp_path, Absent(no_body=True), SCOPE).run()
-    assert report['status'] == 'partial' and report['deleted_comments'] == 0
+    assert report['deleted_comments'] == 0 and report['unavailable_comment_entry_ids'] == [1]
 
 
 def test_deleted_loaded_flag_does_not_invent_empty_body():

@@ -27,28 +27,46 @@ function showParameters(archive){
 }
 let moving=false,libraryKey='',dismissedJob=null,busy=false,closed=false,submitting=false,preparingResume=false,planToken=0,pollTimer,mode='new',scope='full',selected=null,limitEdited=false,lastState={},archives=[];
 const resumeLabel=archive=>archive.status==='cancelled'?'Продолжить':'Докачать пропуски';
-function recoveryView(data,attempt=false){
-  const box=el('div','recovery-view');
-  if(!data?.available){box.append(el('p','fine',data?.message||'Список пропусков пока недоступен.'));return box;}
-  const rows=data.rows||[];
-  if(rows.length){
-    const table=el('table','recovery-table'),head=el('thead'),hr=el('tr');
-    for(const title of attempt?['','Было','Закрыто','Осталось']:['Что не получено','Осталось'])hr.append(el('th','',title));
-    head.append(hr);table.append(head);const body=el('tbody');
-    for(const row of rows){const tr=el('tr');tr.dataset.recoveryKind=row.key;tr.append(el('th','',row.label));for(const value of attempt?[row.before??'—',row.resolved??'—',row.remaining]:[row.remaining])tr.append(el('td','mono',String(value)));body.append(tr);if(attempt&&row.new){const note=el('tr'),td=el('td','fine',`Обнаружено дополнительно: ${row.new}`);td.colSpan=4;note.append(td);body.append(note);}}
-    table.append(body);box.append(table);
-  }else box.append(el('p','fine','Известных пропусков не осталось.'));
-  if(!data.discovery_complete)box.append(el('p','fine','Обход записей ещё не завершён. Список может пополниться.'));
-  if(data.reasons?.length){const details=el('details','recovery-reasons'),list=el('ul');details.append(el('summary','','Причины оставшихся пропусков'));for(const reason of data.reasons)list.append(el('li','',`${reason.message} · ${reason.count}`));details.append(list);box.append(details);}
+const num=n=>Number(n||0).toLocaleString('ru-RU'),count=(n,forms)=>window.ArchiveTimeline.count(n,forms||['','','']);
+const NOUNS={days:['день','дня','дней'],posts:['запись','записи','записей'],discussions:['обсуждение','обсуждения','обсуждений'],images:['изображение','изображения','изображений'],videos:['видео','видео','видео'],reactions:['счётчик реакций','счётчика реакций','счётчиков реакций'],authors:['список отреагировавших','списка отреагировавших','списков отреагировавших'],personal:['раздел профиля','раздела профиля','разделов профиля']};
+const resolvedText=rows=>rows.filter(r=>r.resolved).map(r=>NOUNS[r.key]?count(r.resolved,NOUNS[r.key]):`${r.label.toLowerCase()}: ${num(r.resolved)}`).join(', ');
+// One reason reads as a sentence; several are listed with their counts.
+const reasonsText=(reasons,total)=>reasons.map(x=>reasons.length>1||x.count!==total?`${x.message} — ${num(x.count)}`:x.message).join(' · ');
+function gapItem(row,value,why,progress){
+  const li=el('li','gap'),head=el('div','gap-head');li.dataset.recoveryKind=row.key;
+  head.append(el('span','gap-name',row.label),el('span','gap-count',num(value)));li.append(head);
+  if(progress!=null){const bar=el('span','gap-bar'),fill=el('i');fill.style.width=Math.round(100*progress)+'%';bar.append(fill);li.append(bar);}
+  if(why)li.append(el('p','gap-why',why));return li;
+}
+function gapsView(data,{attempt=false,running=false,plan=false}={}){
+  const box=el('div','gaps-view');
+  if(!data?.available){box.append(el('p','gaps-note',data?.message||'Список пропусков пока недоступен.'));return box;}
+  const rows=data.rows||[],open=rows.filter(r=>r.remaining),shut=rows.filter(r=>r.unavailable),got=attempt?resolvedText(rows):'';
+  const group=(title,cls,items)=>{const section=el('section','gaps-group '+cls),list=el('ul','gap-list');section.append(el('h3','',title));list.append(...items);section.append(list);return section;};
+  if(got)box.append(el('p','gaps-done',(running?'Уже докачано: ':'Докачано: ')+got+'.'));
+  if(open.length)box.append(group(running?'Докачиваем':plan?'Будем докачивать':'Осталось докачать','is-open',open.map(r=>{
+    const notes=[];if(attempt&&r.new)notes.push('найдено новых: '+num(r.new));
+    const why=(r.reasons||[]).filter(x=>!x.final);if(why.length)notes.push(reasonsText(why,r.remaining));
+    return gapItem(r,r.remaining,notes.join(' · '),attempt&&r.before?(r.before-Math.min(r.before,r.remaining))/r.before:null);})));
+  if(shut.length){
+    const section=group('Недоступно в ЖЖ','is-closed',shut.map(r=>gapItem(r,r.unavailable,reasonsText((r.reasons||[]).filter(x=>x.final),r.unavailable))));
+    const tries=data.max_attempts||3;
+    section.append(el('p','gaps-note',`После ${tries} попыток автоматические повторы завершены. Полученное сохранено, изображения остались ссылками на оригинал. Кнопка «Загрузить» или обновление записи по ссылке запустит новую проверку.`));
+    box.append(section);
+  }
+  if(!open.length&&!shut.length)box.append(el('p','gaps-done',running?'Пропусков пока нет.':'Пропусков нет: всё, что ЖЖ отдаёт, сохранено.'));
+  if(!data.discovery_complete&&(running||plan))box.append(el('p','gaps-note','Записи получены ещё не все — список может пополниться.'));
+  const pics=data.pictures||{};
+  if(!running&&(pics.assumed||pics.unknown)){const parts=[];if(pics.assumed)parts.push(`у ваших записей и комментариев (${num(pics.assumed)}) показан основной`);if(pics.unknown)parts.push(`у чужих комментариев (${num(pics.unknown)}) — нейтральная заглушка`);box.append(el('p','gaps-note','ЖЖ не сообщил, какой юзерпик был выбран: '+parts.join(', ')+'. Это не пропуск.'));}
   return box;
 }
 function attemptHistory(attempts){
-  const details=el('details','recovery-history');details.append(el('summary','','Предыдущие попытки'));
+  const details=el('details','recovery-history');details.append(el('summary','','Предыдущие запуски'));
   for(const attempt of [...attempts].reverse()){
-    const row=el('div','recovery-attempt');row.append(el('strong','',new Date(attempt.finished_at).toLocaleString('ru-RU')+' · '+(labels[attempt.status]||'Остановлено')));
-    const closed=(attempt.recovery?.rows||[]).filter(r=>r.resolved).map(r=>`${r.label.toLowerCase()}: ${r.resolved}`).join(' · ');
-    row.append(el('p','fine',attempt.operation==='resume'?(closed?'Закрыто: '+closed:'Новых закрытых пропусков не отмечено.'):`${attempt.entries||0} записей · ${attempt.comments||0} комментариев`));
-    if(attempt.message)row.append(el('p','fine',attempt.message));details.append(row);
+    const row=el('div','recovery-attempt');row.append(el('strong','',new Date(attempt.finished_at).toLocaleString('ru-RU',{day:'numeric',month:'long',hour:'2-digit',minute:'2-digit'})+' · '+(labels[attempt.status]||'Остановлено')));
+    const got=resolvedText(attempt.recovery?.rows||[]);
+    row.append(el('p','fine',attempt.operation==='resume'?(got?'Докачано: '+got+'.':'Ничего нового не докачано.'):`${count(attempt.entries,['запись','записи','записей'])} · ${count(attempt.comments,['комментарий','комментария','комментариев'])}`));
+    details.append(row);
   }return details;
 }
 async function api(path,data){const r=await fetch(path,{method:data===undefined?'GET':'POST',headers:data===undefined?{}:{'Content-Type':'application/json'},body:data===undefined?undefined:JSON.stringify(data),cache:'no-store'});const value=await r.json();if(!r.ok)throw new Error(value.error||'Не удалось выполнить запрос.');return value;}
@@ -70,7 +88,7 @@ function openDialog(kind,archive=null){
   const token=++planToken;preparingResume=resume;$('resume-plan').hidden=!resume;$('resume-plan').replaceChildren();
   if(resume){
     $('resume-plan').append(el('p','fine','Проверяем сохранённый прогресс…'));
-    api('/api/recovery/'+encodeURIComponent(archive.slug)).then(data=>{if(token!==planToken)return;$('resume-plan').replaceChildren(recoveryView(data));if(data.attempts?.length)$('resume-plan').append(attemptHistory(data.attempts));}).catch(()=>{if(token===planToken)$('resume-plan').replaceChildren(el('p','fine','Список пропусков недоступен. Можно продолжить с сохранённого этапа.'));}).finally(()=>{if(token===planToken){preparingResume=false;setBusy(busy);}});
+    api('/api/recovery/'+encodeURIComponent(archive.slug)).then(data=>{if(token!==planToken)return;$('resume-plan').replaceChildren(gapsView(data,{plan:true}));if(data.attempts?.length)$('resume-plan').append(attemptHistory(data.attempts));}).catch(()=>{if(token===planToken)$('resume-plan').replaceChildren(el('p','fine','Список пропусков недоступен. Можно продолжить с сохранённого этапа.'));}).finally(()=>{if(token===planToken){preparingResume=false;setBusy(busy);}});
   }
   setBusy(busy);
   $('source-type').value=archive?.parameters?.source_type||'own';$('source-type').disabled=!isNew;
@@ -86,34 +104,59 @@ function openDialog(kind,archive=null){
   else{$('request-limit').required=false;$('entry-urls').required=false;$('entry-urls').disabled=true;$('resume-note').textContent=archive.username+' · '+(scopes[archive.parameters?.mode]||'загрузка');}
   setSource();$('export-dialog').showModal();(isNew?$('username'):$('password')).focus();
 }
-function duration(seconds){const n=Math.max(0,Math.ceil(seconds||0));return n<60?n+' с':n<3600?Math.floor(n/60)+' мин '+n%60+' с':Math.floor(n/3600)+' ч '+Math.floor(n%3600/60)+' мин';}
+// Minutes for the long work; seconds only for a countdown the person is watching.
+function minutes(seconds){const n=Math.max(0,Math.round((seconds||0)/60));return n<1?'меньше минуты':n<60?n+' мин':Math.floor(n/60)+' ч'+(n%60?' '+n%60+' мин':'');}
+function countdown(seconds){const n=Math.max(0,Math.ceil(seconds||0));return n<60?n+' с':minutes(n);}
+const doing={preparing:'Готовим загрузку',verify:'Проверяем сохранённые файлы',login:'Входим в ЖЖ',posts:'Получаем записи',comments:'Получаем комментарии',reactions:'Получаем реакции',materials:'Скачиваем изображения',userpics:'Скачиваем юзерпики',videos:'Скачиваем видео',personal:'Сохраняем профиль и переписку',render:'Собираем страницы архива',retrying:'Повторяем недополученное',loading:'Получаем данные'};
+const finished={complete:'Архив готов',partial:'Загрузка не завершена',cancelled:'Остановлено',error:'Загрузка прервалась',demo:'Пример готов'};
+const network=new Set(['login','posts','comments','reactions','materials','userpics','videos','personal','loading','retrying']);
+function waitText(s,clock){
+  const w=s.wait||{};
+  const why=w.reason==='http'?(w.http_status===429?'ЖЖ просит подождать':'Сервер не отвечает'):w.reason==='api_limit'?'ЖЖ просит подождать':['timeout','connection','transfer','tls'].includes(w.reason)?'Нет связи с сервером':'Пауза перед повтором';
+  const parts=[why];if(w.host)parts.push(w.host);if(w.attempt)parts.push(`попытка ${w.attempt} из ${w.max_attempts}`);
+  if(s.retry_at>clock)parts.push('повтор через '+countdown(s.retry_at-clock));if(w.server_delay)parts.push('срок назначил сервер');
+  return parts.join(' · ');
+}
+function nowContent(s,clock){
+  if(s.phase==='waiting')return [waitText(s,clock)];
+  if(s.request_limit_reached)return ['Полученное сохранено. Докачать можно новым запуском со своим лимитом.'];
+  if(s.phase==='cancelled')return ['Полученное сохранено. Продолжить можно в любой момент.'];
+  if(['complete','demo'].includes(s.phase)||!s.message)return [];
+  // «Комментарии к записи #232» → the entry's title, linked to its page.
+  const entry=mapSlug===s.slug&&s.entry_id&&mapView?.items.find(i=>i.id===s.entry_id),mark='#'+s.entry_id;
+  if(entry&&s.message.includes(mark)){const [before,...rest]=s.message.split(mark),link=el('a','',`«${entry.title}»`);link.href='/archive/'+encodeURIComponent(s.slug)+'/'+entry.url;return [before,link,rest.join(mark)];}
+  return [s.message];
+}
 function showStatus(s){lastState=s;if(!s.phase||s.phase==='idle'||s.job_id&&s.job_id===dismissedJob)return;$('job').hidden=false;$('job-title').textContent=s.username||'';
-  let phase=s.request_limit_reached?'Лимит запросов':labels[s.phase]||'Загрузка';
-  if(s.phase==='waiting'&&s.retry_at)phase=s.retry_at>(s.server_time||Date.now()/1000)?'Пауза до '+new Date(s.retry_at*1000).toLocaleTimeString('ru-RU'):'Срок паузы истёк';
-  $('job-stage').textContent=s.cancelling?'Остановка…':phase;
-  const details=[],wait=s.phase==='waiting'?s.wait:null,clock=s.server_time||Date.now()/1000;
-  if(wait){if(wait.host)details.push(wait.host);if(wait.attempt)details.push('Попытка '+wait.attempt+' / '+wait.max_attempts);if(s.retry_at>clock)details.push('Повтор через '+duration(s.retry_at-clock));if(wait.server_delay)details.push('Срок задан сервером');}
-  if(s.started_at){details.push('Работа '+duration(s.working_seconds));details.push('Ожидание '+duration(s.waiting_seconds));}
-  if(s.last_saved_at)details.push('Последнее сохранение '+duration(clock-s.last_saved_at)+' назад');
-  else if(s.last_success_at)details.push('Последний ответ '+duration(clock-s.last_success_at)+' назад');
-  if(!terminal.has(s.phase)&&s.worker_alive===false)details.push('Процесс не работает');
-  $('job-activity').hidden=!details.length;$('job-activity').textContent=details.join(' · ');
-  $('job-stage').classList.toggle('paused-message',['error','partial'].includes(s.phase));
-  $('posts-count').textContent=mapSlug===s.slug&&mapView?.data?.expected?`${mapView.data.known} / ${mapView.data.expected}`:s.entries||0;$('comments-count').textContent=s.comments||0;
-  $('requests-count').textContent=`${s.requests_used||0}${s.request_limit?' / '+s.request_limit:''} запросов`;
-  $('progress').hidden=terminal.has(s.phase)||(!$('job-timeline').hidden&&!localProgress(s.phase));if(s.total){$('progress').max=s.total;$('progress').value=s.completed||0;}else $('progress').removeAttribute('value');
-  $('open-result').hidden=!s.archive_url;if(s.archive_url)$('open-result').href=s.archive_url;
+  const clock=s.server_time||Date.now()/1000,done=terminal.has(s.phase),stalled=!done&&s.worker_alive===false;
+  const silent=!done&&network.has(s.phase)&&s.last_success_at&&clock-s.last_success_at>180;
+  let stage=s.cancelling?'Останавливаем…':stalled?'Загрузка прервалась':s.request_limit_reached?'Достигнут лимит запросов':done?finished[s.phase]||labels[s.phase]:doing[s.phase]||'Загружаем';
+  if(s.phase==='waiting'&&!s.cancelling&&!stalled)stage=s.retry_at>clock?'Пауза до '+new Date(s.retry_at*1000).toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'}):'Продолжаем после паузы';
+  // Only this sentence is announced; it changes with the stage, not every second.
+  if($('job-stage').textContent!==stage)$('job-stage').textContent=stage;
+  $('job-state').dataset.tone=stalled||s.phase==='error'?'error':s.phase==='waiting'||silent?'wait':['complete','demo'].includes(s.phase)&&!s.request_limit_reached?'done':done?'warn':'run';
+  $('job-kind').hidden=s.operation!=='resume';$('job-kind').textContent='докачка пропусков';
+  const now=nowContent(s,clock);if(silent)now.unshift(`ЖЖ не отвечает ${minutes(clock-s.last_success_at)}. `);
+  $('job-now').hidden=!now.length;$('job-message').replaceChildren(...now);$('job-now').classList.toggle('is-problem',['error','partial'].includes(s.phase)||stalled);
+  const meta=[],data=mapSlug===s.slug&&mapView?.data;
+  if(!data?.expected)meta.push(count(s.entries,['запись','записи','записей']));
+  meta.push(count(s.comments,['комментарий','комментария','комментариев']));
+  if(s.started_at&&s.working_seconds!=null){const pause=s.waiting_seconds||0;meta.push((done?'заняло ':'идёт ')+minutes((s.working_seconds||0)+pause)+(pause>=60?`, из них пауз ${minutes(pause)}`:''));}
+  if(s.request_limit)meta.push(`запросов ${num(s.requests_used)} из ${num(s.request_limit)}`);
+  $('job-meta').textContent=meta.join(' · ');
+  $('progress').hidden=done||(!$('job-timeline').hidden&&!localProgress(s.phase));if(s.total){$('progress').max=s.total;$('progress').value=s.completed||0;}else $('progress').removeAttribute('value');
+  const ready=['complete','demo'].includes(s.phase);
+  $('open-result').hidden=!s.archive_url;if(s.archive_url)$('open-result').href=s.archive_url;$('open-result').className='btn'+(ready?' primary':'');
   $('job-statistics').hidden=!s.archive_url;if(s.archive_url)$('job-statistics').href=s.archive_url.replace(/index\.html$/,'statistics.html');
   $('job-report').hidden=!s.archive_url;if(s.archive_url)$('job-report').href=s.archive_url.replace(/index\.html$/,'report.html');
   $('job-settings').hidden=!s.parameters;
   $('job-diagnostics').hidden=!s.slug||s.slug==='_demo';
-  $('job-message').textContent=s.message||'';$('job-message').hidden=!s.message||['complete','demo'].includes(s.phase)||!!s.request_limit_reached;
   $('job-recovery').hidden=!s.recovery;
-  const recoveryKey=JSON.stringify([s.job_id,s.operation,s.recovery]);if($('job-recovery').dataset.key!==recoveryKey){const reasonsOpen=$('job-recovery-content').querySelector('.recovery-reasons')?.open;$('job-recovery').dataset.key=recoveryKey;$('job-recovery-content').replaceChildren(recoveryView(s.recovery,s.operation==='resume'));const reasons=$('job-recovery-content').querySelector('.recovery-reasons');if(reasons)reasons.open=!!reasonsOpen;}
-  $('job-recovery-title').textContent=terminal.has(s.phase)?'Результат запуска':'Докачка пропусков';
-  const entry=mapSlug===s.slug&&s.entry_id&&mapView?.items.find(i=>i.id===s.entry_id);$('job-entry').hidden=!entry||terminal.has(s.phase);if(entry){$('job-entry').href='/archive/'+encodeURIComponent(s.slug)+'/'+entry.url;$('job-entry').textContent=entry.title;}
-  $('job-action').disabled=!!s.cancelling;$('job-action').textContent=!terminal.has(s.phase)?'Остановить':['complete','demo'].includes(s.phase)?'Закрыть':s.phase==='cancelled'?'Продолжить':'Докачать пропуски';
-  setBusy(!terminal.has(s.phase));
+  const recoveryKey=JSON.stringify([s.job_id,s.operation,done,s.recovery]);if($('job-recovery').dataset.key!==recoveryKey){$('job-recovery').dataset.key=recoveryKey;$('job-recovery-content').replaceChildren(gapsView(s.recovery,{attempt:s.operation==='resume',running:!done}));}
+  $('job-hint').hidden=done||!!s.cancelling;
+  $('job-action').disabled=!!s.cancelling;$('job-action').textContent=!done?'Остановить':ready?'Скрыть':s.phase==='cancelled'||s.phase==='error'?'Продолжить':'Докачать пропуски';
+  $('job-action').className='btn'+(ready?' text':done?' primary':'');
+  setBusy(!done);
 }
 async function library(){const data=await api('/api/archives');storageStatus(data.relocation);const key=JSON.stringify(data);if(key===libraryKey){setBusy(busy);return;}libraryKey=key;
   const open=new Set(Array.from(document.querySelectorAll('#archives details[open]'),menu=>menu.closest('tr').dataset.archive));
@@ -143,8 +186,9 @@ async function refreshMap(state){
   if(Date.now()-mapTime<8000&&mapPhase===state.phase){mapView.active=terminal.has(state.phase)?null:state.entry_id;mapView.draw();return;}
   mapTime=Date.now();mapPhase=state.phase;
   const data=await api('/api/timeline/'+encodeURIComponent(state.slug));
-  $('job-timeline').hidden=!data.expected;mapView.set(data,data.active);
-  if(data.expected){$('progress').hidden=terminal.has(state.phase)||!localProgress(state.phase);$('posts-count').textContent=`${data.known} / ${data.expected}`;}
+  const first=$('job-timeline').hidden&&data.expected;$('job-timeline').hidden=!data.expected;mapView.set(data,data.active);
+  if(data.expected)$('progress').hidden=terminal.has(state.phase)||!localProgress(state.phase);
+  if(first)showStatus(lastState);
 }
 let previousKey='';async function poll(){if(closed)return;let received=false;try{const state=await api('/api/status');received=true;showStatus(state);await refreshMap(state);error('');const key=JSON.stringify([state.phase,state.slug,state.archive_url]);if(key!==previousKey||!busy){await library();previousKey=key;}}catch(e){if(!received){$('job-stage').textContent='Нет связи';error('Нет связи с приложением. Показан последний полученный статус.');}else error(e.message);}finally{if(!closed)pollTimer=setTimeout(poll,busy?1200:5000);}}
 document.querySelectorAll('[data-new]').forEach(b=>b.onclick=()=>openDialog('new'));

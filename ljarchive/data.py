@@ -33,6 +33,9 @@ def snapshot(store):
                      for r in store.db.execute("SELECT kind,object_id,saved_at,payload FROM versions ORDER BY saved_at,kind,object_id,digest")],
         "coverage": {"posts_done": bool(store.get("posts_done")), "comments_done": bool(store.get("bodies_done")),
                      "reactions": reaction_report(store), "discussions": store.get("entry_comments", {}),
+                     "reaction_count_attempts": store.get('reaction_count_attempts', {}),
+                     "unavailable_entries": {str(eid): store.get('sync_job', {}).get('unavailable_attempts', {}).get(str(eid), 1)
+                                             for eid in store.get('sync_job', {}).get('unavailable', [])},
                      "personal_requested": store.get("personal_requested", {})},
     }
 

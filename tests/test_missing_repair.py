@@ -65,14 +65,14 @@ def test_incomplete_reactions_repeat_only_missing_targets(tmp_path):
 def test_persistently_missing_comments_stop_after_finite_passes(tmp_path):
     client = Journal(no_body=True)
     report = SyncExporter(tmp_path, client, Scope('urls', urls=SCOPE.urls[:1])).run()
-    assert report['status'] == 'partial'
+    # One collection and two repeats; then the discussion is settled as unavailable.
     pages = [p for m, p in client.calls if m == 'getcomments' and p['page'] == 2]
     assert len(pages) == 3
-    state = report['sync']
-    assert not state['done'] and state['phase'] == 'comments'
+    assert report['status'] == 'complete' and report['unavailable_comment_entry_ids'] == [1]
+    assert report['sync']['done']
 
 
-def test_missing_avatar_resume_does_not_repeat_posts_comments_or_reactions(tmp_path, monkeypatch):
+def test_unavailable_avatar_is_asked_three_times_then_settled(tmp_path, monkeypatch):
     import requests
     from ljarchive.media import Media
     from test_limited_export import Response
@@ -87,22 +87,22 @@ def test_missing_avatar_resume_does_not_repeat_posts_comments_or_reactions(tmp_p
     monkeypatch.setattr('requests.Session.get', unavailable)
     scope = Scope('urls', urls=SCOPE.urls[:1])
     first = SyncExporter(tmp_path, WithAvatar(), scope).run()
-    assert first['status'] == 'partial' and not first['sync']['done']
-    assert first['sync']['phase'] == 'render'
-    assert first['userpics']['missing'] == 1 and len(requests_made) == 1
+    assert requests_made == ['https://example.org/owner.png'] * 3
+    assert first['status'] == 'complete', first['issues']
+    assert first['userpics']['missing'] == 0 and first['userpics']['unavailable'] == 1
+    # A continuation or a whole-journal update does not chase it again.
     requests_made.clear()
+    SyncExporter(tmp_path, WithAvatar(), Scope()).run()
+    assert requests_made == []
+    # An explicit refresh of that entry asks again.
     monkeypatch.setattr('requests.Session.get', lambda self, url, **kw: requests_made.append(url) or Response(content=b'pic', headers={'Content-Type': 'image/png'}))
-    client = WithAvatar()
-    second = SyncExporter(tmp_path, client, scope).run()
+    second = SyncExporter(tmp_path, WithAvatar(), scope).run()
     assert second['status'] == 'complete', second
-    assert second['userpics']['saved'] == 1 and len(requests_made) == 1
-    assert client.calls == []
+    assert second['userpics']['saved'] == 1 and requests_made == ['https://example.org/owner.png']
 
 
-def test_old_comment_metadata_is_enriched_without_reloading_posts(tmp_path, monkeypatch):
+def test_unknown_comment_userpic_needs_no_rereading_of_discussions(tmp_path, monkeypatch):
     from ljarchive.storage import Store
-    from ljarchive.media import Media
-    from test_limited_export import Response
     scope = Scope('urls', urls=SCOPE.urls[:1])
     SyncExporter(tmp_path, Journal(), scope).run()
     store = Store(tmp_path)
@@ -110,22 +110,13 @@ def test_old_comment_metadata_is_enriched_without_reloading_posts(tmp_path, monk
         with store.db:
             for comment in store.comments():
                 comment.pop('userpic', None); store.save_comment(comment)
-            store.set('userpic_comments_requested', [])
             state = store.get('sync_job'); state.update(phase='render', done=False); store.set('sync_job', state)
     finally:
         store.close()
-    class Enriched(Journal):
-        def call(self, method, **params):
-            result = super().call(method, **params)
-            if method == 'getcomments':
-                assert params['extra'] == 1
-                result['comments'][0]['userpic'] = 'https://example.org/comment.png'
-            return result
-    monkeypatch.setattr('ljarchive.media.public_url', lambda _: None)
-    monkeypatch.setattr(Media, 'wait', lambda self, seconds: True)
-    monkeypatch.setattr('requests.Session.get', lambda *a, **kw: Response(content=b'pic', headers={'Content-Type': 'image/png'}))
-    client = Enriched()
+    client = Journal()
     report = SyncExporter(tmp_path, client, scope).run()
     assert report['status'] == 'complete', report
-    assert all(method == 'getcomments' for method, _ in client.calls)
-    assert report['userpics']['saved'] == 2
+    assert not any(method == 'getcomments' for method, _ in client.calls)
+    assert report['userpics']['complete'] and report['userpics']['unknown'] == 2
+    page = (tmp_path / 'entries/1.html').read_text(encoding='utf-8')
+    assert page.count('userpic-unknown') == 2

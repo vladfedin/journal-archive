@@ -11,6 +11,8 @@ from .exporter import Exporter, now
 from .entries import is_repost
 from .storage import atomic_write, dumps
 from .sources import bind_source, source
+from .retry import restored_deadline
+from .gaps import ATTEMPTS, closed, fail, reopen
 
 
 @dataclass(frozen=True)
@@ -100,11 +102,44 @@ class SyncExporter(Exporter):
                                    ("sync_candidates", []), ("sync_cursor", "1970-01-01 00:00:00"), ("sync_scan_done", False)):
                     store.set(key, value)
                 store.set("sync_job", self.state)
+            if self.scope.mode == "urls":
+                self.reopen_entries({url_id(self.client.user, url) // 256 for url in self.scope.urls})
         with store.db:
             store.set("username", self.client.user)
             store.set("entry_limit", None)
             store.set("started_at", self.state["started_at"])
             store.set("journal_id", getattr(self.client, "journal_id", None) or store.get("journal_id"))
+
+    def reopen_entries(self, ids):
+        """An explicit refresh of these entries gives their closed gaps new attempts."""
+        store = self.store
+        statuses, materials = store.get("entry_comments", {}), store.get("entry_materials", {})
+        errors = store.get("media_errors", {})
+        videos = store.get('videos', {})
+        counters = store.get('reaction_count_attempts', {})
+        targets = {('post', eid) for eid in ids}
+        targets.update(('comment', c['id']) for c in store.comments() if int(c.get('jitemid', 0)) in ids)
+        target_names = {f'{kind}:{oid}' for kind, oid in targets}
+        for eid in ids:
+            if closed(statuses.get(str(eid))):
+                reopen(statuses[str(eid)])
+            for url in materials.get(str(eid), {}).get("urls", []):
+                if url in errors:
+                    reopen(errors[url])
+        for record in videos.values():
+            if ids.intersection(record.get('entries', [])):
+                reopen(record)
+        with store.db:
+            store.set("entry_comments", statuses)
+            store.set("media_errors", errors)
+            store.set('videos', videos)
+            for kind in ('post', 'comment'):
+                for oid, record in store.reactions(kind).items():
+                    if (kind, oid) in targets and record.get('authors'):
+                        reopen(record['authors'])
+                        store.save_reactions(kind, oid, record)
+            store.set('reaction_count_attempts', {key: value for key, value in counters.items()
+                      if key not in target_names})
 
     def accept(self, entry):
         if not isinstance(entry, dict) or "event" not in entry or type(entry.get("itemid")) is not int or not isinstance(entry.get("eventtime"), str):
@@ -117,8 +152,11 @@ class SyncExporter(Exporter):
                 statuses = self.store.get("entry_comments", {})
                 statuses[str(entry["itemid"])] = {"next_page": 1, "done": False}
                 self.store.set("entry_comments", statuses)
+        attempts = dict(self.state.get("unavailable_attempts", {}))
+        attempts.pop(str(entry["itemid"]), None)
         self.checkpoint(seen=sorted(set(self.state["seen"]) | {entry["itemid"]}),
-                        unavailable=sorted(set(self.state["unavailable"]) - {entry["itemid"]}))
+                        unavailable=sorted(set(self.state["unavailable"]) - {entry["itemid"]}),
+                        unavailable_attempts=attempts)
 
     def fetch_one(self, eid, expected_did=None):
         result = self.client.call("getevents", selecttype="one", itemid=eid, lineendings="unix", noprops=0, truncate=0)
@@ -132,7 +170,9 @@ class SyncExporter(Exporter):
                 raise ExportError("ID в URL не совпадает с записью, которую вернул ЖЖ.")
             self.accept(entry)
         if not events:
-            self.checkpoint(unavailable=sorted(set(self.state["unavailable"]) | {eid}))
+            attempts = dict(self.state.get("unavailable_attempts", {}))
+            attempts[str(eid)] = attempts.get(str(eid), 1 if eid in self.state["unavailable"] else 0) + 1
+            self.checkpoint(unavailable=sorted(set(self.state["unavailable"]) | {eid}), unavailable_attempts=attempts)
             row = self.store.db.execute("SELECT payload FROM entries WHERE id=?", (eid,)).fetchone()
             if row:
                 entry = json.loads(row[0])
@@ -203,10 +243,15 @@ class SyncExporter(Exporter):
             store.set("posts_done", True)
         self.checkpoint(phase="comments", selected=sorted(self.selected_ids))
 
+    def open_unavailable(self):
+        attempts = self.state.get("unavailable_attempts", {})
+        return [eid for eid in self.state.get("unavailable", []) if attempts.get(str(eid), 1) < ATTEMPTS]
+
     def unavailable_posts(self):
-        for eid in list(self.state.get("unavailable", [])):
+        # An entry LJ does not return after the last attempt is treated as deleted or hidden.
+        for eid in self.open_unavailable():
             self.fetch_one(eid)
-        if self.state.get("unavailable"):
+        if self.open_unavailable():
             raise IncompleteData("ЖЖ не вернул часть записей. Ранее сохранённые тексты оставлены в архиве.")
         self.selected_ids = set(self.state["seen"])
         self.checkpoint(selected=sorted(self.selected_ids))
@@ -293,7 +338,16 @@ class SyncExporter(Exporter):
                     incomplete_entries.add(eid)
         if missing:
             for eid in incomplete_entries:
-                statuses[str(eid)] = {"next_page": 1, "done": False}
+                previous = statuses.get(str(eid), {})
+                statuses[str(eid)] = fail({"next_page": 1, "done": False,
+                                           "error": "Не все комментарии получены."}, previous)
+            if all(closed(statuses[str(eid)]) for eid in incomplete_entries):
+                with self.store.db:
+                    self.store.set("entry_comments", statuses)
+                if failure:
+                    raise failure
+                self.checkpoint(phase="reactions")
+                return
             with self.store.db:
                 self.store.set("entry_comments", statuses)
                 self.store.set("bodies_done", False)
@@ -308,10 +362,11 @@ class SyncExporter(Exporter):
         selected = self.selected_ids or set(self.state.get("selected", self.state.get("seen", [])))
         comments = self.store.comments()
         missing = [{"id": c["id"], "state": c["state"]} for c in comments if "body" not in c and c["state"] not in ("D", "X")]
-        unavailable = self.state.get("unavailable", [])
-        issues = [error] if error else []
+        unavailable = self.open_unavailable()
+        issues = ([error] if error else []) + self.access_issues()
         if unavailable:
             issues.append(f"ЖЖ не вернул {len(unavailable)} записей. Ранее сохранённые тексты оставлены в архиве.")
+        absent = sorted(set(self.state.get("unavailable", [])) - set(unavailable))
         if self.state.get("phase") not in ("render", "done") and not error:
             issues.append("Обновление ещё не завершено. Повторный запуск того же режима продолжит очередь.")
         return {"username": self.client.user, "created_at": now(), "started_at": self.state.get("started_at"),
@@ -321,7 +376,9 @@ class SyncExporter(Exporter):
                 "screened_comments": sum(c["state"] == "S" for c in comments),
                 "deleted_comments": sum(c["state"] in ("D", "X") for c in comments), "missing_comments": missing,
                 "pending_days": [dict(r) for r in self.store.db.execute("SELECT day,expected FROM days WHERE done!=1")],
-                "orphan_entry_ids": [], "pending_comment_entry_ids": [eid for eid in sorted(selected) if not statuses.get(str(eid), {}).get("done")], "unknown_encoding_entry_ids": [],
+                "orphan_entry_ids": [], "pending_comment_entry_ids": [eid for eid in sorted(selected) if not statuses.get(str(eid), {}).get("done") and not closed(statuses.get(str(eid)))],
+                "unavailable_comment_entry_ids": [eid for eid in sorted(selected) if closed(statuses.get(str(eid)))],
+                "unavailable_entry_ids": absent, "unknown_encoding_entry_ids": [],
                 "entry_limit": None, "issues": issues, "images_requested": self.images, "videos_requested": self.videos,
                 "scope": "Накопительный архив. Последнее обновление: " + {"full": "весь журнал с проверкой", "period": f"период {self.scope.start or 'с начала'} — {self.scope.end or 'по сегодня'}", "urls": "записи по указанным URL"}[self.scope.mode] + ". Даты относятся к публикации записей; их комментарии загружаются за всё время.",
                 "sync": {**self.state, "selected_count": len(self.selected_ids)},
@@ -336,7 +393,7 @@ class SyncExporter(Exporter):
         error, cancelled = None, False
         try:
             self.prepare()
-            self.client.not_before = store.get("request_not_before", 0)
+            self.client.not_before = restored_deadline(store)
             def save_cooldown(deadline):
                 with store.db:
                     store.set("request_not_before", deadline)
@@ -380,8 +437,6 @@ class SyncExporter(Exporter):
                     stage(self.unavailable_posts, "записи")
                 if self.state["phase"] == "comments" or (self.state["phase"] == "posts" and self.selected_ids):
                     stage(self.comments, "комментарии")
-                if not failures:
-                    stage(self.userpic_metadata, "юзерпики")
                 if self.state["phase"] in ("comments", "reactions"):
                     try:
                         if self.reactions(entry_ids=self.selected_ids, checkpoint="sync_reaction_counts") and not failures:
@@ -392,6 +447,7 @@ class SyncExporter(Exporter):
                     self.checkpoint(phase="posts")
                 self.personal()
                 self.video_stage()
+                self.retry_materials()
                 error = " ".join(failures) or None
             except Cancelled as exc:
                 error, cancelled = str(exc), True

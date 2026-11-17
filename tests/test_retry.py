@@ -4,7 +4,7 @@ from email.utils import format_datetime
 
 import pytest
 from ljarchive.client import LiveJournalClient, RequestBudget, ExportError, Cancelled
-from ljarchive.retry import retry_after, backoff
+from ljarchive.retry import retry_after, backoff, restored_deadline
 from test_limited_export import Response
 
 
@@ -14,6 +14,19 @@ def test_retry_after_seconds_and_http_date_are_not_shortened():
     assert retry_after(format_datetime(datetime.fromtimestamp(10000, timezone.utc)), now=1000) == 9000
     assert retry_after('bad') == 0
     assert backoff(1, limited=True) > backoff(0, limited=True)
+    assert backoff(5) == backoff(5, limited=True) == 8
+
+
+def test_upgrade_keeps_server_waits_and_discards_obsolete_local_pauses(monkeypatch):
+    monkeypatch.setattr('time.time', lambda: 1000)
+    saved = {'request_not_before': 5000, 'request_wait': {'reason': 'incomplete'}}
+    assert restored_deadline(saved) == 0
+    saved['request_wait'] = {'reason': 'http', 'server_delay': False}
+    assert restored_deadline(saved) == 1008
+    saved['request_wait']['server_delay'] = True
+    assert restored_deadline(saved) == 5000
+    saved['request_wait'] = {}
+    assert restored_deadline(saved) == 5000
 
 
 def test_429_retry_is_paced_counted_and_persisted(monkeypatch):
@@ -68,14 +81,18 @@ def test_xmlrpc_rate_limit_retries_with_new_challenge(monkeypatch):
 
 def test_media_retry_after_uses_same_budget(tmp_path,monkeypatch):
     from ljarchive.media import Media
+    from test_media_errors import ImageResponse
     budget=RequestBudget(2)
     media=Media(tmp_path,True,threading.Event(),budget=budget)
     waits=[]
     monkeypatch.setattr(media,'wait',lambda seconds:waits.append(seconds) or True)
     monkeypatch.setattr('ljarchive.media.public_url',lambda _:None)
-    replies=iter([Response(status=429,headers={'Retry-After':'3600'}),
+    replies=iter([ImageResponse(status=429,headers={'Retry-After':'3600'}),
                   Response(content=b'fixture-image',headers={'Content-Type':'image/png'})])
     monkeypatch.setattr(media.session,'get',lambda *a,**k:next(replies))
-    assert media.get('https://example.org/image.png').startswith('media/')
+    url = 'https://example.org/image.png'
+    assert media.get(url) is None
+    media.retry_failed()
+    assert media.mapping[url].startswith('media/')
     assert budget.used==2 and max(waits)>3590
     media.close()

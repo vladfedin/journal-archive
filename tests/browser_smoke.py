@@ -63,7 +63,8 @@ def main():
                 page.locator('#username').fill('example_journal')
                 page.locator('#password').fill('browser-test-secret')
                 page.locator('#submit-export').click()
-                expect(page.locator('#job-stage')).to_have_text('Готов', timeout=15000)
+                expect(page.locator('#job-stage')).to_have_text('Архив готов', timeout=15000)
+                expect(page.locator('#job-action')).to_have_text('Скрыть')
                 expect(page.locator('#password')).to_have_value('')
                 assert calls[0][1]['mode'] == 'full' and calls[0][1]['max_requests'] is None
                 page.locator('#job-action').click()
@@ -98,10 +99,13 @@ def main():
                 fresh['archives'][0]['resumable'] = True
                 fresh['archives'][0]['status'] = 'partial'
                 fresh['archives'][0]['parameters_known'].remove('videos')
-                recovery = {'available': True, 'discovery_complete': True,
+                recovery = {'available': True, 'discovery_complete': True, 'attempts': 3,
                             'rows': [{'key': 'images', 'label': 'Изображения и юзерпики', 'remaining': 12,
-                                      'before': 12, 'resolved': 0, 'new': 0}],
-                            'reasons': [{'message': 'HTTP 404 — файл не найден', 'count': 2}],
+                                      'unavailable': 0, 'before': 12, 'resolved': 0, 'new': 0,
+                                      'reasons': [{'message': 'ещё не запрашивались', 'final': False, 'count': 12}]},
+                                     {'key': 'discussions', 'label': 'Обсуждения', 'remaining': 0, 'unavailable': 2,
+                                      'before': 2, 'resolved': 0, 'new': 0,
+                                      'reasons': [{'message': 'ЖЖ отдал не все комментарии', 'final': True, 'count': 2}]}],
                             'attempts': [{'finished_at': '2026-11-17T12:00:00Z', 'status': 'partial',
                                           'operation': 'resume', 'recovery': {'rows': []}}]}
                 page.route('**/api/recovery/*', lambda route: route.fulfill(json=recovery))
@@ -109,10 +113,11 @@ def main():
                 page.locator('#archives summary').click()
                 page.locator('#archives [data-resume]').click()
                 expect(page.locator('#dialog-title')).to_have_text('Докачать пропуски')
-                expect(page.locator('#resume-plan [data-recovery-kind=images]')).to_contain_text('12')
+                expect(page.locator('#resume-plan .is-open [data-recovery-kind=images] .gap-count')).to_have_text('12')
+                expect(page.locator('#resume-plan .is-closed [data-recovery-kind=discussions]')).to_contain_text('ЖЖ отдал не все комментарии')
                 expect(page.locator('#submit-export')).to_be_enabled()
                 expect(page.locator('#password')).to_be_focused()
-                expect(page.locator('.recovery-history summary')).to_have_text('Предыдущие попытки')
+                expect(page.locator('.recovery-history summary')).to_have_text('Предыдущие запуски')
                 page.locator('#resume-settings summary').click()
                 expect(page.locator('#resume-parameters tr').filter(has_text='Видео')).to_contain_text('Не сохранено')
                 expect(page.locator('#resume-parameters tr').filter(has_text='Изображения')).to_contain_text('Да')
@@ -135,13 +140,17 @@ def main():
                 page.locator('#settings-close').click()
                 # A resume shows closed and remaining gaps without collapsing open reasons on polling.
                 state.update(operation='resume', phase='waiting', retry_at=4102444800, recovery=recovery,
-                             started_at=100, working_seconds=125, waiting_seconds=61, last_success_at=4102444600, server_time=4102444700,
+                             started_at=100, working_seconds=125, waiting_seconds=61, last_success_at=4102444600, server_time=4102444700, worker_alive=True,
                              wait={'reason':'timeout','host':'images.example','attempt':2,'max_attempts':6},
                              message='Загрузка изображения · попытка 2 из 6')
                 page.evaluate('s => showStatus(s)', state)
                 expect(page.locator('#job-stage')).to_contain_text('Пауза до')
-                expect(page.locator('#job-activity')).to_contain_text('Попытка 2 / 6')
-                expect(page.locator('#job-activity')).to_contain_text('Повтор через 1 мин 40 с')
+                expect(page.locator('#job-state')).to_have_attribute('data-tone', 'wait')
+                expect(page.locator('#job-message')).to_contain_text('Нет связи с сервером · images.example · попытка 2 из 6')
+                expect(page.locator('#job-message')).to_contain_text('повтор через 2 мин')
+                expect(page.locator('#job-meta')).to_contain_text('идёт 3 мин, из них пауз 1 мин')
+                expect(page.locator('#job-kind')).to_have_text('докачка пропусков')
+                assert page.locator('#job [aria-live]:not([aria-live=off]), #job [role=status]').evaluate_all('n => n.map(x => x.id)') == ['job-stage']
                 page.locator('#job-diagnostics').click()
                 expect(page.locator('#diagnostics-download')).to_be_visible()
                 page.locator('#diagnostics-dialog summary').click()
@@ -152,16 +161,20 @@ def main():
                 assert 'browser-test-secret' not in diagnostic and 'https://' not in diagnostic
                 assert json.loads(diagnostic)['schema_version'] == 1
                 page.locator('#diagnostics-close').click()
-                expect(page.locator('#job-recovery [data-recovery-kind=images] td')).to_have_text(['12', '0', '12'])
-                page.locator('#job-recovery .recovery-reasons summary').click()
+                expect(page.locator('#job-recovery .is-open h3')).to_have_text('Докачиваем')
+                expect(page.locator('#job-recovery [data-recovery-kind=images] .gap-count')).to_have_text('12')
+                expect(page.locator('#job-recovery .is-closed h3')).to_have_text('Недоступно в ЖЖ')
+                expect(page.locator('#job-action')).to_have_text('Остановить')
                 recovery['rows'][0].update(resolved=10, remaining=2)
                 recovery['checked_at'] = '2026-11-17T12:01:00Z'
                 state.update(phase='partial', message='Два файла недоступны.')
                 page.evaluate('s => showStatus(s)', state)
-                expect(page.locator('#job-recovery-title')).to_have_text('Результат запуска')
-                expect(page.locator('#job-recovery [data-recovery-kind=images] td')).to_have_text(['12', '10', '2'])
-                expect(page.locator('#job-recovery .recovery-reasons')).to_have_attribute('open', '')
+                expect(page.locator('#job-stage')).to_have_text('Загрузка не завершена')
+                expect(page.locator('#job-recovery .gaps-done')).to_have_text('Докачано: 10 изображений.')
+                expect(page.locator('#job-recovery .is-open h3')).to_have_text('Осталось докачать')
+                expect(page.locator('#job-recovery [data-recovery-kind=images] .gap-count')).to_have_text('2')
                 expect(page.locator('#job-action')).to_have_text('Докачать пропуски')
+                expect(page.locator('#job-action')).to_have_class('btn primary')
                 assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
                 page.screenshot(path=str(Path(tempfile.gettempdir()) / 'ljarchive-recovery-mobile.png'), full_page=True)
                 page.set_viewport_size({'width': 1440, 'height': 1100})
@@ -413,7 +426,12 @@ def main():
                 expect(page.locator('.timeline-bar')).to_have_count(6)
                 expect(page.locator('.timeline-year')).to_be_visible()
                 page.locator('.timeline-bar').first.hover()
-                expect(page.locator('.timeline-tip')).to_contain_text('Комментарии:')
+                expect(page.locator('.timeline-tip')).to_be_visible()
+                expect(page.locator('.timeline-tip')).not_to_contain_text('Комментарии:')
+                below = page.locator('.timeline-viewport').bounding_box()
+                page.mouse.move(5, 5)
+                expect(page.locator('.timeline-tip')).to_be_hidden()
+                assert page.locator('.timeline-viewport').bounding_box() == below, 'the card must not move the page'
                 page.locator('.timeline-bar').first.click()
                 expect(page.locator('.post h1')).to_be_visible()
                 page.goto((root / 'example_journal/timeline.html').as_uri())
@@ -444,7 +462,8 @@ def main():
                 page.locator('.timeline-bar').first.focus()
                 page.keyboard.press('ArrowRight')
                 assert page.locator('.timeline-bar:focus').count() == 1
-                expect(page.locator('.timeline-tip')).to_contain_text('reader: 12')
+                expect(page.locator('.timeline-tip')).to_contain_text('Post 4999')
+                expect(page.locator('.timeline-tip')).to_contain_text('199 комментариев · 2 изображения')
                 page.screenshot(path=str(Path(tempfile.gettempdir()) / 'ljarchive-timeline-desktop.png'), full_page=True)
                 page.set_viewport_size({'width': 390, 'height': 844})
                 expect(page.locator('.timeline-bar').first).to_have_css('width', '44px')
