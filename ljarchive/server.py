@@ -365,7 +365,7 @@ class Jobs:
                 if data.get('_resuming'):
                     from .recovery import read_inventory, summary
                     self.progress(message='Подсчитываем сохранённые пропуски…')
-                    before = read_inventory(self.output / slug)
+                    before = read_inventory(self.output / slug, cancel=self.cancel, progress=self.progress)
                     with self.lock:
                         self.recovery_before = before
                     self.progress(recovery=summary(before, before), **(before['counts'] if before else {}))
@@ -396,7 +396,7 @@ class Jobs:
             self.progress(phase="error", message=f"Не удалось завершить загрузку ({type(exc).__name__}). Проверьте папку и свободное место.", cancelling=False)
         finally:
             data.clear()
-            if not demo:
+            if not demo and not self.cancel.is_set():
                 self.refresh_recovery(force=True)
             with self.lock:
                 if not demo and self.state.get('phase') in TERMINAL:

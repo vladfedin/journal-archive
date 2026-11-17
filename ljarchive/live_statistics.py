@@ -2,6 +2,7 @@
 from datetime import datetime, timezone
 import threading
 import time
+from uuid import uuid4
 
 from .statistics import statistics, statistics_source
 from .storage import Store
@@ -45,7 +46,7 @@ class LiveStatistics:
                         data = statistics(source)
                         data['generated_at'] = captured
                         with self.lock:
-                            record.update(data=data, version=str(time.time_ns()), revision=current, phase='ready')
+                            record.update(data=data, version=uuid4().hex, revision=current, phase='ready')
                     except Exception:
                         with self.lock:
                             record.update(phase='error')

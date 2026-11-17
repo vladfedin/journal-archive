@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 import requests
 
-from ljarchive.client import ExportError
+from ljarchive.client import ExportError, Cancelled
 from ljarchive.recovery import inventory, read_inventory, summary, fingerprint
 from ljarchive.server import Jobs
 from ljarchive.storage import Store
@@ -86,6 +86,47 @@ def test_personal_media_and_sections_are_in_inventory(tmp_path):
 def test_unavailable_inventory_is_not_empty_and_never_creates_database(tmp_path):
     assert summary(read_inventory(tmp_path))['available'] is False
     assert not list(tmp_path.iterdir())
+
+
+def test_cancel_during_resume_inventory_stops_before_network_or_writes(tmp_path, monkeypatch):
+    store = Store(tmp_path)
+    urls = ['https://example.org/a', 'https://example.org/b']
+    with store.db:
+        store.set('entry_materials', {'1': {'urls': urls}})
+        store.save_entry({'itemid': 1, 'poster_userpic_url': ''})
+        store.set('media', {url: 'media/absent.png' for url in urls})
+    cancel, updates = threading.Event(), []
+    original = Path.is_file
+    def inspect(path):
+        if path.name == 'absent.png':
+            cancel.set()
+        return original(path)
+    monkeypatch.setattr(Path, 'is_file', inspect)
+    before = store.db.total_changes
+    with pytest.raises(Cancelled):
+        read_inventory(tmp_path, cancel=cancel, progress=lambda **v: updates.append(v))
+    assert store.db.total_changes == before and updates
+    assert any(v.get('total') == 1 for v in updates)
+    store.close()
+
+
+def test_cancelled_preparation_does_not_repeat_inventory_in_finalizer(tmp_path, monkeypatch):
+    jobs = Jobs(tmp_path)
+    jobs.current = {'username': 'fixture', 'archive': 'fixture', 'entry_limit': None, 'mode': 'full',
+                    'max_requests': None, 'images': False, 'videos': False, 'delay': 3}
+    jobs.state = {'phase': 'partial', 'slug': 'fixture'}
+    jobs.persist()
+    calls = []
+    def cancel_read(folder, **kwargs):
+        calls.append(folder)
+        kwargs['cancel'].set()
+        raise Cancelled('Stopped')
+    monkeypatch.setattr('ljarchive.recovery.read_inventory', cancel_read)
+    monkeypatch.setattr('ljarchive.server.sync', lambda *a, **kw: pytest.fail('No network after cancellation'))
+    jobs.start({'resume': 'fixture', 'password': 'test-only'})
+    jobs.thread.join(3)
+    assert not jobs.thread.is_alive() and jobs.snapshot()['phase'] == 'cancelled'
+    assert len(calls) == 1
 
 
 def test_job_resume_saves_attempt_result_across_restart(tmp_path, monkeypatch):

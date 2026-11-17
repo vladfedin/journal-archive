@@ -10,6 +10,7 @@ import sqlite3
 from datetime import datetime, timezone
 
 from .entries import is_repost
+from .client import Cancelled
 from .media import error_message
 from .storage import Store
 from .userpics import resolve, picture_url
@@ -45,7 +46,17 @@ def metadata_snapshot(store):
             'captured': store.db.execute("SELECT id FROM account_sections WHERE json_extract(payload,'$.status') IN ('captured','source_exhausted')").fetchall()}
 
 
-def inventory_snapshot(data):
+def check_cancel(cancel):
+    if cancel is not None and cancel.is_set():
+        raise Cancelled('Проверка остановлена. Можно продолжить позже.')
+
+
+def inventory_snapshot(data, *, cancel=None, progress=None):
+    def tick(completed, total, message):
+        check_cancel(cancel)
+        if progress and (completed == 1 or completed % 100 == 0 or completed == total):
+            progress(message=message, completed=completed, total=total)
+    check_cancel(cancel)
     settings = {key: json.loads(value) for key, value in data['settings'].items()}
     units = {key: set() for key in LABELS}
     reasons = Counter()
@@ -63,7 +74,9 @@ def inventory_snapshot(data):
             units['pictures'].add(f'{kind}:{oid}')
         if pic['url']:
             urls.add(pic['url'])
-    for row in data['entries']:
+    records = len(data['entries']) + len(data['comments'])
+    for index, row in enumerate(data['entries'], 1):
+        tick(index, records, 'Проверяем записи и комментарии…')
         eid, entry = row[0], json.loads(row[1])
         if selected is not None and eid not in selected:
             continue
@@ -74,7 +87,8 @@ def inventory_snapshot(data):
         urls.update(materials.get(str(eid), {}).get('urls', []))
         if entry.get('ditemid') or entry.get('anum') is not None:
             reaction_targets.add(('post', eid))
-    for row in data['comments']:
+    for index, row in enumerate(data['comments'], len(data['entries']) + 1):
+        tick(index, records, 'Проверяем записи и комментарии…')
         if row[1] in entries:
             item = json.loads(row[2])
             item['state'] = row[3] or item.get('state', 'A')
@@ -96,6 +110,7 @@ def inventory_snapshot(data):
         from .progress import Images
         images_requested = settings.get('personal_images_requested', False)
         for row in data['messages']:
+            check_cancel(cancel)
             item = json.loads(row[0])
             urls.add(picture_url(item.get('picture')))
             if images_requested:
@@ -103,13 +118,15 @@ def inventory_snapshot(data):
                 parser.feed(item.get('body') if isinstance(item.get('body'), str) else '')
                 urls.update(parser.urls)
     urls.discard(None); urls.discard('')
-    for url in urls:
+    for index, url in enumerate(urls, 1):
+        tick(index, len(urls), 'Проверяем сохранённые изображения…')
         path = mapping.get(url)
         if not path or not (data['folder'] / path).is_file():
             units['images'].add(fingerprint(url))
             if url in errors:
                 reasons[error_message(errors[url])] += 1
     for url, record in settings.get('videos', {}).items():
+        check_cancel(cancel)
         if record.get('status') == 'not_requested' or not entries.intersection(record.get('entries', [])):
             continue
         if record.get('status') != 'saved' or not record.get('path') or not (data['folder'] / record['path']).is_file():
@@ -142,15 +159,21 @@ def inventory_snapshot(data):
     return {'units': units, 'reasons': reasons, 'discovery_complete': bool(settings.get('posts_done')), 'counts': data['counts']}
 
 
-def read_inventory(folder):
+def read_inventory(folder, *, cancel=None, progress=None):
+    check_cancel(cancel)
+    if progress:
+        progress(message='Читаем сохранённый прогресс…', completed=0, total=0)
     try:
         store = Store.reader(folder)
         try:
+            if cancel is not None:
+                store.db.set_progress_handler(lambda: int(cancel.is_set()), 10000)
             data = metadata_snapshot(store)
         finally:
             store.close()
-        return inventory_snapshot(data)
+        return inventory_snapshot(data, cancel=cancel, progress=progress)
     except (OSError, sqlite3.Error, ValueError, TypeError):
+        check_cancel(cancel)
         return None
 
 

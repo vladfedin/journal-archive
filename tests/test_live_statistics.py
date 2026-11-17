@@ -23,6 +23,8 @@ def join(cache):
 
 
 def test_background_snapshot_is_consistent_and_does_not_lock_writer(tmp_path, monkeypatch):
+    # Windows may return the same wall-clock tick for both completed calculations.
+    monkeypatch.setattr('ljarchive.live_statistics.time.time_ns', lambda: 123456)
     store = seed(tmp_path)
     cache = LiveStatistics(interval=0)
     entered, release = threading.Event(), threading.Event()
