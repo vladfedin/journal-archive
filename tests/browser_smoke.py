@@ -90,13 +90,26 @@ def main():
                 fresh['archives'][0]['resumable'] = True
                 fresh['archives'][0]['status'] = 'partial'
                 fresh['archives'][0]['parameters_known'].remove('videos')
+                recovery = {'available': True, 'discovery_complete': True,
+                            'rows': [{'key': 'images', 'label': 'Изображения и юзерпики', 'remaining': 12,
+                                      'before': 12, 'resolved': 0, 'new': 0}],
+                            'reasons': [{'message': 'HTTP 404 — файл не найден', 'count': 2}],
+                            'attempts': [{'finished_at': '2026-11-17T12:00:00Z', 'status': 'partial',
+                                          'operation': 'resume', 'recovery': {'rows': []}}]}
+                page.route('**/api/recovery/*', lambda route: route.fulfill(json=recovery))
                 page.evaluate('library()')
                 page.locator('#archives summary').click()
                 page.locator('#archives [data-resume]').click()
+                expect(page.locator('#dialog-title')).to_have_text('Докачать пропуски')
+                expect(page.locator('#resume-plan [data-recovery-kind=images]')).to_contain_text('12')
+                expect(page.locator('#submit-export')).to_be_enabled()
+                expect(page.locator('#password')).to_be_focused()
+                expect(page.locator('.recovery-history summary')).to_have_text('Предыдущие попытки')
                 page.locator('#resume-settings summary').click()
                 expect(page.locator('#resume-parameters tr').filter(has_text='Видео')).to_contain_text('Не сохранено')
                 expect(page.locator('#resume-parameters tr').filter(has_text='Изображения')).to_contain_text('Да')
                 page.keyboard.press('Escape')
+                page.unroute('**/api/recovery/*')
                 page.unroute('**/api/archives')
                 page.evaluate('library()')
                 # Verification remains visible even with an existing timeline.
@@ -112,6 +125,23 @@ def main():
                 expect(page.locator('#settings-dialog')).to_be_visible()
                 assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
                 page.locator('#settings-close').click()
+                # A resume shows closed and remaining gaps without collapsing open reasons on polling.
+                state.update(operation='resume', phase='waiting', retry_at=4102444800, recovery=recovery,
+                             message='Загрузка изображения · попытка 2 из 6')
+                page.evaluate('s => showStatus(s)', state)
+                expect(page.locator('#job-stage')).to_contain_text('Пауза до')
+                expect(page.locator('#job-recovery [data-recovery-kind=images] td')).to_have_text(['12', '0', '12'])
+                page.locator('#job-recovery .recovery-reasons summary').click()
+                recovery['rows'][0].update(resolved=10, remaining=2)
+                recovery['checked_at'] = '2026-11-17T12:01:00Z'
+                state.update(phase='partial', message='Два файла недоступны.')
+                page.evaluate('s => showStatus(s)', state)
+                expect(page.locator('#job-recovery-title')).to_have_text('Результат запуска')
+                expect(page.locator('#job-recovery [data-recovery-kind=images] td')).to_have_text(['12', '10', '2'])
+                expect(page.locator('#job-recovery .recovery-reasons')).to_have_attribute('open', '')
+                expect(page.locator('#job-action')).to_have_text('Докачать пропуски')
+                assert page.evaluate('document.documentElement.scrollWidth <= innerWidth')
+                page.screenshot(path=str(Path(tempfile.gettempdir()) / 'ljarchive-recovery-mobile.png'), full_page=True)
                 page.set_viewport_size({'width': 1440, 'height': 1100})
                 page.unroute('**/api/status')
                 page.screenshot(path=str(root / 'library.png'), full_page=True)
@@ -327,21 +357,58 @@ def main():
                 expect(page.locator('.timeline-bar')).to_have_count(6)
                 page.evaluate("""() => {
                     window.largeTimeline = new ArchiveTimeline(document.querySelector('#archive-timeline'));
-                    const entries = Array.from({length: 8000}, (_,i) => ({id:i+1,date:`${2000+Math.floor(i/400)}-01-01`,
+                    const entries = Array.from({length: 10000}, (_,i) => ({id:i+1,date:`${2000+Math.floor(i/500)}-${String(1+Math.floor(i%500/42)).padStart(2,'0')}-01`,
                       title:'Post '+i,url:'entries/3.html',state:i%7===0?'partial':'ready',comments:i%800,
                       expected_comments:i%800,materials:{saved:2,requested:2},top:[['reader',12]]}));
-                    largeTimeline.set({entries,gaps:[],known:8000,expected:8000,ready:6857,partial:1143});
+                    window.denseTimelineData={entries,gaps:[],known:10000,expected:10000,ready:8571,partial:1429};
+                    largeTimeline.set(denseTimelineData);
                 }""")
                 assert page.locator('.timeline-bar').count() < 150
+                assert page.evaluate('largeTimeline.overviewBins.reduce((sum,b)=>sum+b.count,0)') == 10000
+                assert page.evaluate('largeTimeline.overviewBins.length <= innerWidth')
+                assert page.evaluate('largeTimeline.bands.every(b=>b.count===500)')
+                assert page.evaluate('largeTimeline.overviewBins.some(b=>b.count>1&&b.state==="partial")')
+                rect = page.locator('.timeline-overview').bounding_box()
+                page.mouse.click(rect['x'] + rect['width'] * .775, rect['y'] + 10)
+                assert page.evaluate('Math.floor(largeTimeline.viewport.scrollLeft/largeTimeline.slot)') == 7500
+                page.mouse.move(rect['x'] + rect['width'] * .752, rect['y'] + 48)
+                page.mouse.down()
+                page.mouse.move(rect['x'] + rect['width'] * .9, rect['y'] + 48, steps=5)
+                page.mouse.up()
+                assert page.evaluate('Math.floor(largeTimeline.viewport.scrollLeft/largeTimeline.slot)') > 8500
                 page.locator('.timeline-year').select_option('2010')
+                assert page.evaluate('Math.floor(largeTimeline.viewport.scrollLeft/largeTimeline.slot)') == 5000
                 page.locator('.timeline-bar').first.focus()
                 page.keyboard.press('ArrowRight')
                 assert page.locator('.timeline-bar:focus').count() == 1
                 expect(page.locator('.timeline-tip')).to_contain_text('reader: 12')
                 page.screenshot(path=str(Path(tempfile.gettempdir()) / 'ljarchive-timeline-desktop.png'), full_page=True)
                 page.set_viewport_size({'width': 390, 'height': 844})
+                page.wait_for_function('largeTimeline.slot===44')
+                assert page.locator('.timeline-bar').count() < 20
                 assert not page.evaluate('document.documentElement.scrollWidth > innerWidth')
                 page.screenshot(path=str(Path(tempfile.gettempdir()) / 'ljarchive-timeline-mobile.png'), full_page=True)
+                # Equal-year mapping, empty years and refresh anchoring also work with 300 posts/year.
+                page.evaluate("""() => {
+                    const entries=denseTimelineData.entries.slice(0,6000).map((e,i)=>({...e,date:`${2000+Math.floor(i/300)}-01-01`}));
+                    largeTimeline.set({...denseTimelineData,entries,known:6000,expected:6000});
+                    largeTimeline.jump(3000,false);
+                    const anchor=largeTimeline.items[Math.floor(largeTimeline.viewport.scrollLeft/largeTimeline.slot)].id;
+                    entries.unshift({...entries[0],id:20001,date:'1998-01-01'});
+                    largeTimeline.set({...denseTimelineData,entries,known:6001,expected:6001});
+                    window.preservedAnchor=anchor===largeTimeline.items[Math.floor(largeTimeline.viewport.scrollLeft/largeTimeline.slot)].id;
+                }""")
+                assert page.evaluate('preservedAnchor')
+                assert page.evaluate('largeTimeline.bands.find(b=>b.label==="1999").count') == 0
+                assert page.evaluate('largeTimeline.bands.find(b=>b.label==="2010").count') == 300
+                page.locator('.timeline-year').select_option('2019')
+                page.locator('.timeline-bar').last.focus()
+                page.keyboard.press('End')
+                expect(page.locator('.timeline-bar:focus')).to_have_attribute('data-timeline-index', '6000')
+                page.evaluate("""() => {largeTimeline.set({entries:[],gaps:[{date:'2010-03-01',count:500}],known:0,expected:500,ready:0,partial:0});largeTimeline.jump(0,false);} """)
+                assert page.locator('.timeline-bar').count() > 0
+                assert page.locator('a.timeline-bar').count() == 0
+                assert page.evaluate('largeTimeline.overviewBins.reduce((n,b)=>n+b.count,0)') == 500
                 page.goto((root / 'example_journal/account.html').as_uri())
                 expect(page.locator('h1')).to_be_visible()
                 page.goto((root / 'example_journal/messages.html').as_uri())

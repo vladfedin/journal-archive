@@ -142,6 +142,8 @@ class Media:
                     return None
                 self.budget.consume(category)
                 requests_made += 1
+                if attempt:
+                    self.budget.progress(phase="materials", message=f"Загрузка изображения · попытка {attempt + 1} из 6")
                 checked_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
                 http_status = None
                 try:

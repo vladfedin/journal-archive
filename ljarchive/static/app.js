@@ -1,7 +1,7 @@
 'use strict';
 const $ = id => document.getElementById(id);
 const terminal = new Set(['idle','complete','partial','cancelled','error','demo']);
-const labels = {preparing:'Подготовка',verify:'Проверка',login:'Вход',posts:'Записи',comments:'Комментарии',reactions:'Реакции',videos:'Видео',materials:'Материалы',personal:'Личные данные',userpics:'Юзерпики',render:'Страницы',waiting:'Пауза',complete:'Готов',partial:'Не завершён',cancelled:'Остановлено',error:'Ошибка',demo:'Пример'};
+const labels = {preparing:'Подготовка',verify:'Проверка',login:'Вход',posts:'Записи',comments:'Комментарии',reactions:'Реакции',videos:'Видео',materials:'Материалы',personal:'Личные данные',userpics:'Юзерпики',render:'Страницы',waiting:'Пауза',retrying:'Повтор запроса',complete:'Готов',partial:'Не завершён',cancelled:'Остановлено',error:'Ошибка',demo:'Пример'};
 const localProgress = phase => ['preparing','verify','render'].includes(phase);
 const scopes = {full:'весь журнал',period:'за период',urls:'по ссылкам',latest:'тест (последние 10 записей)'};
 const el = (tag, cls, text) => {const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n;};
@@ -24,17 +24,48 @@ function showParameters(archive){
   $('settings-content').replaceChildren(parameterTable(archive.parameters,archive.parameters_known));
   $('settings-dialog').showModal();
 }
-let moving=false,libraryKey='',dismissedJob=null,busy=false,closed=false,submitting=false,pollTimer,mode='new',scope='full',selected=null,limitEdited=false,lastState={},archives=[];
+let moving=false,libraryKey='',dismissedJob=null,busy=false,closed=false,submitting=false,preparingResume=false,planToken=0,pollTimer,mode='new',scope='full',selected=null,limitEdited=false,lastState={},archives=[];
+const resumeLabel=archive=>archive.status==='cancelled'?'Продолжить':'Докачать пропуски';
+function recoveryView(data,attempt=false){
+  const box=el('div','recovery-view');
+  if(!data?.available){box.append(el('p','fine',data?.message||'Список пропусков пока недоступен.'));return box;}
+  const rows=data.rows||[];
+  if(rows.length){
+    const table=el('table','recovery-table'),head=el('thead'),hr=el('tr');
+    for(const title of attempt?['','Было','Закрыто','Осталось']:['Что не получено','Осталось'])hr.append(el('th','',title));
+    head.append(hr);table.append(head);const body=el('tbody');
+    for(const row of rows){const tr=el('tr');tr.dataset.recoveryKind=row.key;tr.append(el('th','',row.label));for(const value of attempt?[row.before??'—',row.resolved??'—',row.remaining]:[row.remaining])tr.append(el('td','mono',String(value)));body.append(tr);if(attempt&&row.new){const note=el('tr'),td=el('td','fine',`Обнаружено дополнительно: ${row.new}`);td.colSpan=4;note.append(td);body.append(note);}}
+    table.append(body);box.append(table);
+  }else box.append(el('p','fine','Известных пропусков не осталось.'));
+  if(!data.discovery_complete)box.append(el('p','fine','Обход записей ещё не завершён. Список может пополниться.'));
+  if(data.reasons?.length){const details=el('details','recovery-reasons'),list=el('ul');details.append(el('summary','','Причины оставшихся пропусков'));for(const reason of data.reasons)list.append(el('li','',`${reason.message} · ${reason.count}`));details.append(list);box.append(details);}
+  return box;
+}
+function attemptHistory(attempts){
+  const details=el('details','recovery-history');details.append(el('summary','','Предыдущие попытки'));
+  for(const attempt of [...attempts].reverse()){
+    const row=el('div','recovery-attempt');row.append(el('strong','',new Date(attempt.finished_at).toLocaleString('ru-RU')+' · '+(labels[attempt.status]||'Остановлено')));
+    const closed=(attempt.recovery?.rows||[]).filter(r=>r.resolved).map(r=>`${r.label.toLowerCase()}: ${r.resolved}`).join(' · ');
+    row.append(el('p','fine',attempt.operation==='resume'?(closed?'Закрыто: '+closed:'Новых закрытых пропусков не отмечено.'):`${attempt.entries||0} записей · ${attempt.comments||0} комментариев`));
+    if(attempt.message)row.append(el('p','fine',attempt.message));details.append(row);
+  }return details;
+}
 async function api(path,data){const r=await fetch(path,{method:data===undefined?'GET':'POST',headers:data===undefined?{}:{'Content-Type':'application/json'},body:data===undefined?undefined:JSON.stringify(data),cache:'no-store'});const value=await r.json();if(!r.ok)throw new Error(value.error||'Не удалось выполнить запрос.');return value;}
 function error(message,form=false){const target=$(form?'form-error':'app-error');target.textContent=message;target.hidden=!message;}
-function setBusy(value){busy=value;document.querySelectorAll('[data-new],[data-update],[data-resume]').forEach(b=>b.disabled=value||moving||closed);$('submit-export').disabled=value||moving||submitting||closed;$('move-storage').disabled=value||moving||closed;$('move-storage').title=value?'После завершения загрузки':'';}
+function setBusy(value){busy=value;document.querySelectorAll('[data-new],[data-update],[data-resume]').forEach(b=>b.disabled=value||moving||closed);$('submit-export').disabled=value||moving||submitting||preparingResume||closed;$('move-storage').disabled=value||moving||closed;$('move-storage').title=value?'После завершения загрузки':'';}
 function setScope(value){scope=value;document.querySelectorAll('[data-scope]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.scope===value)));$('period-fields').hidden=value!=='period';$('url-fields').hidden=value!=='urls';$('entry-urls').required=value==='urls';$('entry-urls').disabled=value!=='urls';if(!limitEdited)$('request-limit').value=value==='latest'?'50':'';$('request-limit').required=value==='latest';$('account').checked=value==='full';}
 function openDialog(kind,archive=null){
   if(busy||moving||closed)return;mode=kind;selected=archive;error('',true);const resume=kind==='resume',isNew=kind==='new';
   document.querySelectorAll('.more[open]').forEach(menu=>menu.open=false);
   $('export-form').reset();limitEdited=false;
-  $('dialog-title').textContent=resume?'Продолжить загрузку':isNew?'Новый архив':'Обновить архив';
-  $('submit-export').textContent=resume?'Продолжить':isNew?'Создать':'Обновить';
+  $('dialog-title').textContent=resume?resumeLabel(archive):isNew?'Новый архив':'Обновить архив';
+  $('submit-export').textContent=resume?resumeLabel(archive):isNew?'Создать':'Обновить';
+  const token=++planToken;preparingResume=resume;$('resume-plan').hidden=!resume;$('resume-plan').replaceChildren();
+  if(resume){
+    $('resume-plan').append(el('p','fine','Проверяем сохранённый прогресс…'));
+    api('/api/recovery/'+encodeURIComponent(archive.slug)).then(data=>{if(token!==planToken)return;$('resume-plan').replaceChildren(recoveryView(data));if(data.attempts?.length)$('resume-plan').append(attemptHistory(data.attempts));}).catch(()=>{if(token===planToken)$('resume-plan').replaceChildren(el('p','fine','Список пропусков недоступен. Можно продолжить с сохранённого этапа.'));}).finally(()=>{if(token===planToken){preparingResume=false;setBusy(busy);}});
+  }
+  setBusy(busy);
   $('username').value=isNew?'':archive.username;$('username').readOnly=!isNew;$('username-field').hidden=resume;
   $('credentials').classList.toggle('is-resume',resume);$('password').type='password';$('show-password').setAttribute('aria-label','Показать пароль');
   $('scope-fields').hidden=resume;$('resume-note').hidden=!resume;
@@ -48,7 +79,7 @@ function openDialog(kind,archive=null){
 }
 function showStatus(s){lastState=s;if(!s.phase||s.phase==='idle'||s.job_id&&s.job_id===dismissedJob)return;$('job').hidden=false;$('job-title').textContent=s.username||'';
   let phase=s.request_limit_reached?'Лимит запросов':labels[s.phase]||'Загрузка';
-  if(s.phase==='waiting'&&s.retry_at)phase=s.retry_at*1000>Date.now()?'Пауза до '+new Date(s.retry_at*1000).toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'}):'Повтор запроса';
+  if(s.phase==='waiting'&&s.retry_at)phase=s.retry_at*1000>Date.now()?'Пауза до '+new Date(s.retry_at*1000).toLocaleTimeString('ru-RU'):'Повтор запроса';
   $('job-stage').textContent=s.cancelling?'Остановка…':phase;
   $('job-stage').classList.toggle('paused-message',['error','partial'].includes(s.phase));
   $('posts-count').textContent=mapSlug===s.slug&&mapView?.data?.expected?`${mapView.data.known} / ${mapView.data.expected}`:s.entries||0;$('comments-count').textContent=s.comments||0;
@@ -59,7 +90,11 @@ function showStatus(s){lastState=s;if(!s.phase||s.phase==='idle'||s.job_id&&s.jo
   $('job-report').hidden=!s.archive_url;if(s.archive_url)$('job-report').href=s.archive_url.replace(/index\.html$/,'report.html');
   $('job-settings').hidden=!s.parameters;
   $('job-message').textContent=s.message||'';$('job-message').hidden=!s.message||['complete','demo'].includes(s.phase)||!!s.request_limit_reached;
-  $('job-action').disabled=!!s.cancelling;$('job-action').textContent=!terminal.has(s.phase)?'Остановить':['complete','demo'].includes(s.phase)?'Закрыть':s.phase==='error'?'Повторить':'Продолжить';
+  $('job-recovery').hidden=!s.recovery;
+  const recoveryKey=JSON.stringify([s.job_id,s.operation,s.recovery]);if($('job-recovery').dataset.key!==recoveryKey){const reasonsOpen=$('job-recovery-content').querySelector('.recovery-reasons')?.open;$('job-recovery').dataset.key=recoveryKey;$('job-recovery-content').replaceChildren(recoveryView(s.recovery,s.operation==='resume'));const reasons=$('job-recovery-content').querySelector('.recovery-reasons');if(reasons)reasons.open=!!reasonsOpen;}
+  $('job-recovery-title').textContent=terminal.has(s.phase)?'Результат запуска':'Докачка пропусков';
+  const entry=mapSlug===s.slug&&s.entry_id&&mapView?.items.find(i=>i.id===s.entry_id);$('job-entry').hidden=!entry||terminal.has(s.phase);if(entry){$('job-entry').href='/archive/'+encodeURIComponent(s.slug)+'/'+entry.url;$('job-entry').textContent=entry.title;}
+  $('job-action').disabled=!!s.cancelling;$('job-action').textContent=!terminal.has(s.phase)?'Остановить':['complete','demo'].includes(s.phase)?'Закрыть':s.phase==='cancelled'?'Продолжить':'Докачать пропуски';
   setBusy(!terminal.has(s.phase));
 }
 async function library(){const data=await api('/api/archives');storageStatus(data.relocation);const key=JSON.stringify(data);if(key===libraryKey){setBusy(busy);return;}libraryKey=key;
@@ -73,7 +108,7 @@ async function library(){const data=await api('/api/archives');storageStatus(dat
     const cell=el('td'),actions=el('div','row-actions');if(archive.url){const open=el('a','btn','Открыть');open.href=archive.url;actions.append(open);}
     const more=el('details','more'),summary=el('summary','','⋯');summary.setAttribute('aria-label','Действия с архивом '+archive.username);const menu=el('div','menu');
     const settings=el('button','','Параметры');settings.type='button';settings.onclick=()=>showParameters(archive);menu.append(settings);
-    if(archive.resumable){const resume=el('button','','Продолжить');resume.type='button';resume.dataset.resume='';resume.onclick=()=>openDialog('resume',archive);menu.append(resume);}
+    if(archive.resumable){const resume=el('button','',resumeLabel(archive));resume.type='button';resume.dataset.resume='';resume.onclick=()=>openDialog('resume',archive);menu.append(resume);}
     const update=el('button','','Обновить');update.type='button';update.dataset.update='';update.onclick=()=>openDialog('update',archive);menu.append(update);
     if(archive.url){menu.append(el('hr'));for(const [text,url] of [['Скачать JSON',archive.activitystreams_url],['Исходный JSON',archive.json_url],['Скачать ZIP',archive.zip_url],['Статистика',archive.url.replace('index.html','statistics.html')],['Календарь',archive.url.replace('index.html','calendar.html')],['Хронология',archive.url.replace('index.html','timeline.html')],['Профиль',archive.url.replace('index.html','account.html')],['Переписка',archive.url.replace('index.html','messages.html')],['Состояние архива',archive.report_url]]){const a=el('a','',text);a.href=url;menu.append(a);}}
     more.open=open.has(archive.slug);more.append(summary,menu);actions.append(more);cell.append(actions);row.append(cell);
@@ -85,7 +120,7 @@ async function library(){const data=await api('/api/archives');storageStatus(dat
 let mapView=null,mapSlug='',mapTime=0,mapPhase='';
 async function refreshMap(state){
   if(!state.slug||state.slug==='_demo')return;
-  if(mapSlug!==state.slug){mapView?.resize.disconnect();mapSlug=state.slug;mapTime=0;mapView=new window.ArchiveTimeline($('job-timeline'),'/archive/'+encodeURIComponent(state.slug)+'/');}
+  if(mapSlug!==state.slug){mapView?.destroy();mapSlug=state.slug;mapTime=0;mapView=new window.ArchiveTimeline($('job-timeline'),'/archive/'+encodeURIComponent(state.slug)+'/');}
   if(Date.now()-mapTime<8000&&mapPhase===state.phase){mapView.active=terminal.has(state.phase)?null:state.entry_id;mapView.draw();return;}
   mapTime=Date.now();mapPhase=state.phase;
   const data=await api('/api/timeline/'+encodeURIComponent(state.slug));
@@ -96,10 +131,10 @@ let previousKey='';async function poll(){if(closed)return;try{const state=await 
 document.querySelectorAll('[data-new]').forEach(b=>b.onclick=()=>openDialog('new'));
 document.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>$('export-dialog').close());
 document.querySelectorAll('[data-scope]').forEach(b=>b.onclick=()=>setScope(b.dataset.scope));
-$('export-dialog').addEventListener('close',()=>$('password').value='');
+$('export-dialog').addEventListener('close',()=>{$('password').value='';planToken++;preparingResume=false;setBusy(busy);});
 $('request-limit').oninput=()=>limitEdited=true;
 $('show-password').onclick=()=>{const show=$('password').type==='password';$('password').type=show?'text':'password';$('show-password').setAttribute('aria-label',show?'Скрыть пароль':'Показать пароль');};
-$('export-form').onsubmit=async e=>{e.preventDefault();if(busy||submitting||closed)return;error('',true);let data;
+$('export-form').onsubmit=async e=>{e.preventDefault();if(busy||submitting||preparingResume||closed)return;error('',true);let data;
   if(mode==='resume')data={resume:selected.slug,password:$('password').value};
   else data={username:$('username').value,password:$('password').value,entry_limit:scope==='latest'?10:null,mode:scope==='latest'?null:scope,images:$('images').checked,videos:$('videos').checked,account:$('account').checked,messages:$('messages').checked,delay:Number($('delay').value),max_requests:$('request-limit').value?Number($('request-limit').value):null,date_from:scope==='period'?$('date-from').value||null:null,date_to:scope==='period'?$('date-to').value||null:null,urls:scope==='urls'?$('entry-urls').value:[],archive:selected?.slug||null};
   submitting=true;$('submit-export').disabled=true;

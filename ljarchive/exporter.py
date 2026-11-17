@@ -82,6 +82,8 @@ class Exporter:
         import time
         for attempt in range(3):
             self.client.check()
+            if attempt:
+                self.update("retrying", f"Докачка: {label} · проход {attempt + 1} из 3")
             try:
                 return operation()
             except IncompleteData:
@@ -91,7 +93,7 @@ class Exporter:
                 with self.store.db:
                     self.store.set("request_not_before", deadline)
                     self.store.set("repair", {"stage": label, "pass": attempt + 2, "retry_at": deadline})
-                self.update("waiting", f"Повторная загрузка пропусков: {label}", retry_at=deadline)
+                self.update("waiting", f"Докачка: {label} · следующий проход {attempt + 2} из 3", retry_at=deadline)
                 if hasattr(self.client, "_wait"):
                     self.client._wait(deadline - time.time())
                 elif self.client.cancel.wait(max(0, deadline - time.time())):
@@ -495,6 +497,7 @@ class Exporter:
         from .personal import Personal
         with self.store.db:
             self.store.set("personal_requested", {"account": self.account, "messages": self.messages})
+            self.store.set("personal_images_requested", self.images)
         if self.account or self.messages:
             Personal(self).run(self.account, self.messages)
 

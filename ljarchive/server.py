@@ -5,6 +5,7 @@ import math
 import mimetypes
 import secrets
 import threading
+import time
 import webbrowser
 import zipfile
 from http.cookies import SimpleCookie
@@ -38,6 +39,11 @@ class Jobs:
         self.thread = None
         self.stopping = False
         self.current = None
+        self.recovery_before = None
+        self.recovery_time = 0
+        self.recovery_lock = threading.Lock()
+        self.recovery_thread = None
+        self.history = []
         self.move_thread = None
         self.preparation_lock = threading.Lock()
         self.preparations = {}
@@ -59,6 +65,7 @@ class Jobs:
             if self.state.get("phase") not in TERMINAL:
                 self.state.update(phase="cancelled", message="Загрузка прервана. Можно продолжить.", cancelling=False)
             self.current = latest["parameters"]
+            self.history = latest.get('history', [])
             self.persist()
 
     def move(self, value):
@@ -98,7 +105,7 @@ class Jobs:
             from .storage import atomic_write, dumps
             from .exporter import now
             atomic_write(self.task_path(self.current["archive"]), dumps({
-                "parameters": self.current, "state": self.state, "updated_at": now()}))
+                "parameters": self.current, "state": self.state, "history": self.history[-10:], "updated_at": now()}))
 
     def legacy_parameters(self, slug):
         self.task_path(slug)
@@ -171,10 +178,48 @@ class Jobs:
 
     def snapshot(self):
         with self.lock:
+            if (self.recovery_before is not None and time.monotonic() - self.recovery_time >= 5
+                    and not (self.recovery_thread and self.recovery_thread.is_alive())):
+                self.recovery_thread = threading.Thread(target=self.refresh_recovery, daemon=True)
+                self.recovery_thread.start()
             state = dict(self.state)
             if self.current:
                 state["parameters"] = {key: self.current[key] for key in self.PARAMS if key in self.current}
             return state
+
+    def recovery_plan(self, slug):
+        from .recovery import read_inventory, summary
+        path = self.task_path(slug)
+        folder = (self.output / slug).resolve()
+        if not folder.is_relative_to(self.output.resolve()):
+            raise ExportError('Нет доступа к архиву.')
+        result = summary(read_inventory(folder))
+        try:
+            result['attempts'] = json.loads(path.read_text(encoding='utf-8')).get('history', [])[-5:]
+        except (OSError, ValueError):
+            result['attempts'] = []
+        return result
+
+    def refresh_recovery(self, force=False):
+        if not force and (self.recovery_before is None or time.monotonic() - self.recovery_time < 5):
+            return
+        if not self.recovery_lock.acquire(blocking=force):
+            return
+        try:
+            from .recovery import read_inventory, summary
+            with self.lock:
+                if not self.current:
+                    return
+                job_id, slug, before = self.state.get('job_id'), self.current['archive'], self.recovery_before
+                folder = self.output / slug
+            current = read_inventory(folder)
+            result = summary(current, before)
+            with self.lock:
+                if self.state.get('job_id') == job_id:
+                    self.state['recovery'] = result
+                    self.recovery_time = time.monotonic()
+        finally:
+            self.recovery_lock.release()
 
     def progress(self, **values):
         with self.lock:
@@ -200,6 +245,7 @@ class Jobs:
                 raise ExportError("Другая загрузка ещё выполняется.")
             if self.materials.running:
                 raise ExportError('Сейчас сохраняется материал из записи. Дождитесь завершения или отмените его загрузку.')
+            resuming = bool(data.get('resume')) and not demo
             if not demo:
                 if data.get("resume"):
                     try:
@@ -250,8 +296,18 @@ class Jobs:
                 data.setdefault("delay", 3)
             self.cancel = threading.Event()
             slug = "_demo" if demo else data["archive"]
+            self.recovery_before = None
+            self.recovery_time = 0
+            self.history = []
+            if not demo:
+                try:
+                    self.history = json.loads(self.task_path(slug).read_text(encoding='utf-8')).get('history', [])
+                except (OSError, ValueError):
+                    pass
+            data['_resuming'] = resuming
             self.state = {"phase": "render" if demo else "preparing", "message": "Подготовка архива…", "entries": 0, "comments": 0,
-                          "username": "example_journal" if demo else data["username"], "slug": slug, "cancelling": False, "job_id": secrets.token_hex(8)}
+                          "username": "example_journal" if demo else data["username"], "slug": slug, "cancelling": False, "job_id": secrets.token_hex(8),
+                          "operation": "resume" if resuming else "export"}
             self.current = None if demo else {key: data.get(key) for key in self.PARAMS}
             if not demo:
                 self.state.update(requests_used=0, request_limit=data["max_requests"], entry_limit=data["entry_limit"])
@@ -268,6 +324,13 @@ class Jobs:
             if demo:
                 report = create_demo(self.output / slug, progress=self.progress)
             else:
+                if data.get('_resuming'):
+                    from .recovery import read_inventory, summary
+                    self.progress(message='Подсчитываем сохранённые пропуски…')
+                    before = read_inventory(self.output / slug)
+                    with self.lock:
+                        self.recovery_before = before
+                    self.progress(recovery=summary(before, before), **(before['counts'] if before else {}))
                 password = data.pop("password")
                 if data.get("sync_scope"):
                     scope = data["sync_scope"]
@@ -295,7 +358,17 @@ class Jobs:
             self.progress(phase="error", message=f"Не удалось завершить загрузку ({type(exc).__name__}). Проверьте папку и свободное место.", cancelling=False)
         finally:
             data.clear()
+            if not demo:
+                self.refresh_recovery(force=True)
             with self.lock:
+                if not demo and self.state.get('phase') in TERMINAL:
+                    from .exporter import now
+                    self.history.append({'job_id': self.state.get('job_id'), 'finished_at': now(), 'status': self.state.get('phase'),
+                                         'operation': self.state.get('operation'), 'message': self.state.get('message'),
+                                         'entries': self.state.get('entries', 0), 'comments': self.state.get('comments', 0),
+                                         'recovery': self.state.get('recovery'), 'requests_used': self.state.get('requests_used', 0)})
+                    self.history = self.history[-10:]
+                self.recovery_before = None
                 self.persist()
 
     def archives(self):
@@ -486,6 +559,11 @@ def make_server(output: Path, port=8787):
                     return self.json(data)
                 except (ExportError, OSError, sqlite3.Error):
                     return self.json({"entries": [], "gaps": [], "known": 0, "expected": 0, "ready": 0, "partial": 0})
+            if path.startswith('/api/recovery/'):
+                try:
+                    return self.json(jobs.recovery_plan(path.removeprefix('/api/recovery/')))
+                except ExportError as exc:
+                    return self.json({'error': str(exc)}, 400)
             if path.startswith("/static/"):
                 target = (ROOT / "static" / path.removeprefix("/static/")).resolve()
                 if not target.is_relative_to((ROOT / "static").resolve()):

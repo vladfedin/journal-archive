@@ -7,12 +7,13 @@
 <div id="job-timeline" class="timeline" hidden></div>
 <progress id="progress" aria-label="Ход загрузки"></progress>
 <div class="job-bottom"><div class="job-counts mono"><span><b id="posts-count">0</b> записей</span><span><b id="comments-count">0</b> комментариев</span><span id="requests-count">0 запросов</span></div><div class="job-buttons"><a class="btn" id="open-result" hidden>Открыть</a><button class="btn" id="job-action">Остановить</button></div></div>
-<p id="job-message" class="job-note" hidden></p></section>
+<p id="job-message" class="job-note" hidden></p><a id="job-entry" class="small" hidden></a>
+<details id="job-recovery" class="recovery-panel" open hidden><summary id="job-recovery-title">Докачка пропусков</summary><div id="job-recovery-content"></div></details></section>
 <p id="app-error" class="notice" role="alert" hidden></p>
 <div id="empty" class="empty" hidden><p>Архивов пока нет</p><button class="btn" data-new><span data-icon="plus"></span>Новый архив</button></div>
 <table class="library" id="library" hidden><thead><tr><th scope="col">Журнал</th><th scope="col">Записи</th><th scope="col">Комментарии</th><th scope="col">Обновлён</th><th scope="col">Статус</th><th scope="col"><span class="sr-only">Действия</span></th></tr></thead><tbody id="archives"></tbody></table>
 <p class="storage"><span data-icon="folder"></span><code id="output-path"></code><button type="button" class="btn text" id="move-storage">Переместить</button></p>
-</main><footer class="footer"><span>Архив ЖЖ · 0.7.7</span><button class="btn text" type="button" id="quit">Завершить приложение</button></footer>
+</main><footer class="footer"><span>Архив ЖЖ · 0.7.8</span><button class="btn text" type="button" id="quit">Завершить приложение</button></footer>
 <dialog id="storage-dialog" class="dialog" aria-labelledby="storage-title"><form id="storage-form"><div class="dialog-head"><h2 id="storage-title">Переместить архивы</h2><button type="button" class="btn text" id="storage-close">Закрыть</button></div><div class="dialog-body"><div class="field"><label for="storage-path">Новая папка</label><input id="storage-path" class="input" required spellcheck="false" autocomplete="off"></div><p class="fine">Все архивы, файлы и прогресс загрузки.</p><p id="storage-status" role="status"></p><button id="storage-submit" class="btn primary">Переместить</button></div></form></dialog>
 <dialog id="export-dialog" class="dialog" aria-labelledby="dialog-title"><form id="export-form">
 <div class="dialog-head"><h2 id="dialog-title">Новый архив</h2><button class="icon" type="button" data-close aria-label="Закрыть"><span data-icon="x"></span></button></div>
@@ -26,6 +27,7 @@
 <label class="check"><input type="checkbox" id="videos">Скачать видео</label>
 <details class="form-advanced"><summary>Настройки загрузки</summary><div class="form-grid"><div class="field"><label for="request-limit">Лимит запросов</label><input class="input" type="number" id="request-limit" placeholder="Без лимита" min="1" max="10000"></div><div class="field"><label for="delay">Пауза, сек.</label><input class="input" type="number" id="delay" value="3" min="1" max="60"></div></div></details></div>
 <p id="resume-note" class="form-note" hidden></p>
+<div id="resume-plan" hidden></div>
 <details id="resume-settings" class="form-advanced" hidden><summary>Параметры</summary><div id="resume-parameters"></div></details>
 <p id="form-error" class="notice" role="alert" hidden></p><div class="dialog-actions"><a href="/help#limits" target="_blank" rel="noopener" class="limit-caption">Помощь</a><div class="dialog-buttons"><button class="btn" type="button" data-close>Отмена</button><button class="btn primary" type="submit" id="submit-export">Создать</button></div></div>
 </form></dialog>

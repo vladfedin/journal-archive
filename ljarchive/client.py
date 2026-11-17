@@ -186,6 +186,8 @@ class LiveJournalClient:
                 self.budget.consume(category)  # Raise before waiting for a request that cannot be sent.
             self._wait(max(self.not_before, self.budget.not_before) - time.time())
             self._wait(self.delay - (time.monotonic() - self._last_request))
+            if attempt:
+                self.progress(phase="retrying", message=f"Повтор запроса к ЖЖ · попытка {attempt + 1} из {self.max_attempts}")
             self.budget.consume(category)
             self._last_request = time.monotonic()
             try:
@@ -210,6 +212,8 @@ class LiveJournalClient:
                         if size > 64 * 1024 * 1024:
                             raise ExportError("Ответ ЖЖ превышает 64 МБ. Выгрузка остановлена без потери прогресса.")
                         chunks.append(chunk)
+                    if attempt:
+                        self.progress(phase="loading", message="Ответ ЖЖ получен. Продолжаем загрузку.")
                     return b"".join(chunks)
             except requests.exceptions.SSLError as exc:
                 raise ExportError("Не удалось проверить TLS-сертификат ЖЖ. Проверьте часы и сертификаты системы; проверка HTTPS не отключалась.") from exc
@@ -239,6 +243,9 @@ class LiveJournalClient:
     def call(self, method: str, **params) -> dict:
         for attempt in range(self.max_attempts):
             try:
+                if attempt:
+                    self._wait(max(self.not_before, self.budget.not_before) - time.time())
+                    self.progress(phase="retrying", message=f"Повтор запроса XML-RPC · попытка {attempt + 1} из {self.max_attempts}")
                 challenge = self._rpc("getchallenge").get("challenge")
                 if not isinstance(challenge, str) or not challenge:
                     raise ExportError("ЖЖ не выдал challenge для входа.")
