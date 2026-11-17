@@ -212,7 +212,7 @@ class Content(HTMLParser):
             return
         if tag == "img":
             src = urljoin(self.base, attrs.get("src", ""))
-            local = self.media.get(src)
+            local = self.media.get(src, referer=self.base)
             if local:
                 self.out.append(f'<img src="../{html.escape(local, quote=True)}" alt="{html.escape(attrs.get("alt", ""), quote=True)}" loading="lazy">')
             else:
@@ -331,10 +331,10 @@ def render_feed(entry, user, links, media, comment_ids):
     return feed.replace('src="../media/', 'src="media/').replace('data-video-path="../media/', 'data-video-path="media/')
 
 
-def build_archive(store: Store, report: dict, *, images=False, userpics=False, client_cancel=None, progress=None, budget=None, media=None):
+def build_archive(store: Store, report: dict, *, images=False, userpics=False, client_cancel=None, progress=None, budget=None, media=None, client=None):
     folder, user = store.folder, report["username"]
     cancel = client_cancel or threading.Event()
-    media = media or Media(folder, images, cancel, budget=budget)
+    media = media or Media(folder, images, cancel, budget=budget, client=client)
     media.enabled = images
     media.load_state(store)
     entries, comments = store.entries(), store.comments()

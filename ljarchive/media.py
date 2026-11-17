@@ -1,4 +1,4 @@
-"""Optional raster-image download, isolated from the authenticated LJ session."""
+"""Image downloads; LJ credentials are restricted to its HTTPS image hosts."""
 from __future__ import annotations
 
 import hashlib
@@ -8,7 +8,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import requests
 
@@ -17,6 +17,25 @@ from .client import RequestBudget, RequestLimitReached
 from .retry import backoff
 
 TYPES = {"image/jpeg": ".jpg", "image/png": ".png", "image/gif": ".gif", "image/webp": ".webp", "image/avif": ".avif"}
+IMAGE_HOSTS = frozenset(('ic.pics.livejournal.com', 'pics.livejournal.com', 'l-userpic.livejournal.com', 'userpic.livejournal.com'))
+BROWSER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36'
+
+
+def authenticated_image_host(url):
+    try:
+        parts = urlsplit(url)
+        return parts.scheme == 'https' and parts.hostname in IMAGE_HOSTS and not parts.username and not parts.password and parts.port in (None, 443)
+    except ValueError:
+        return False
+
+
+def image_url(url):
+    """Old posts often embed HTTP URLs; use TLS on known LJ image hosts."""
+    parts = urlsplit(url)
+    if (parts.scheme == 'http' and parts.hostname in IMAGE_HOSTS and not parts.username
+            and not parts.password and parts.port in (None, 80)):
+        return urlunsplit(('https', parts.hostname, parts.path, parts.query, parts.fragment))
+    return url
 
 REASONS = {
     "timeout": "Сервер не ответил вовремя", "connection": "Ошибка соединения",
@@ -35,6 +54,8 @@ REASONS = {
 def error_message(error):
     if error.get("reason") == "http":
         code = error.get("http_status")
+        if code in (401, 403) and error.get('authentication') == 'missing':
+            return f"HTTP {code} — требуется вход в ЖЖ"
         detail = {401: "требуется авторизация", 403: "доступ запрещён", 404: "файл не найден",
                   429: "слишком много запросов"}.get(code, "ошибка сервера")
         return f"HTTP {code} — {detail}"
@@ -53,21 +74,40 @@ def public_url(url):
 
 
 class Media:
-    def __init__(self, folder: Path, enabled: bool, cancel: threading.Event, budget=None):
+    def __init__(self, folder: Path, enabled: bool, cancel: threading.Event, budget=None, client=None):
         self.folder, self.enabled, self.cancel = folder, enabled, cancel
         self.mapping, self.errors = {}, {}
         self.budget = budget or RequestBudget()
+        self.client = client
         self.session = requests.Session()
-        self.session.headers["User-Agent"] = "LiveJournalLocalArchive/0.4"
-        # Never attach credentials from .netrc or the owner's LJ cookie to embeds.
+        self.session.headers.update({'User-Agent': BROWSER_AGENT, 'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8', 'Accept-Language': 'ru,en;q=0.8'})
+        # Never attach credentials from .netrc; LJ cookies are set per request below.
         self.session.trust_env = False
         self.stopped = False
         self.stop_reason = "paused"
         self.paused_origins = set()
         self.attempted = set()
+        self.authentication = {}
         self.verified_files = set()
         self.used_urls = {"images": set(), "userpics": set()}
         self.videos, self.video_embeds, self.external_embeds = {}, {}, {}
+
+    def headers(self, url, referer=None):
+        headers = {}
+        if authenticated_image_host(url) and self.client:
+            origin = f"https://{self.client.user.replace('_', '-')}.livejournal.com/"
+            headers['Referer'] = referer if referer and referer.startswith(origin) else origin
+            if getattr(self.client, '_cookie', None):
+                # Keep domain/path restrictions on web cookies issued by LJ itself.
+                jar = requests.cookies.RequestsCookieJar()
+                for cookie in self.client.session.cookies:
+                    if cookie.name in ('ljsession', 'ljmastersession', 'ljloggedin'):
+                        jar.set_cookie(cookie)
+                value = requests.cookies.get_cookie_header(jar, requests.Request('GET', url).prepare()) or ''
+                if not any(part.strip().startswith('ljsession=') for part in value.split(';')):
+                    value += ('; ' if value else '') + 'ljsession=' + self.client._cookie
+                headers['Cookie'] = value
+        return headers
 
     def load_state(self, store):
         self.videos, self.video_embeds = store.get('videos', {}), store.get('video_embeds', {})
@@ -85,6 +125,7 @@ class Media:
     def record_error(self, url, reason, *, status="failed", http_status=None, requests_made=0, checked_at=None):
         self.errors[url] = {"status": status, "reason": reason, "http_status": http_status,
                             "requests": requests_made, "checked_at": checked_at,
+                            "authentication": self.authentication.get(url, 'not_requested'),
                             "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
 
     def wait(self, seconds):
@@ -102,7 +143,7 @@ class Media:
         self.budget.save_cooldown(self.budget.not_before)
         self.budget.announce_wait()
 
-    def get(self, url: str, *, required=False, category="images") -> str | None:
+    def get(self, url: str, *, required=False, category="images", referer=None) -> str | None:
         self.used_urls[category].add(url)
         if self.mapping.get(url) and url not in self.verified_files:
             if not (self.folder / self.mapping[url]).is_file():
@@ -127,7 +168,7 @@ class Media:
         requests_made, http_status, checked_at = 0, None, None
         reason = "invalid_url"
         try:
-            current = url
+            current = image_url(url)
             for attempt in range(6):
                 reason = "invalid_url"
                 parts = urlsplit(current)
@@ -150,7 +191,11 @@ class Media:
                 checked_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
                 http_status = None
                 try:
-                    response = self.session.get(current, stream=True, timeout=(10, 20), allow_redirects=False)
+                    # Recompute on every redirect; never forward a cookie to a different service.
+                    self.session.cookies.clear()
+                    headers = self.headers(current, referer)
+                    self.authentication[url] = ('sent' if headers.get('Cookie') else 'missing') if authenticated_image_host(current) else 'not_applicable'
+                    response = self.session.get(current, headers=headers, stream=True, timeout=(10, 20), allow_redirects=False)
                 except (requests.Timeout, requests.ConnectionError) as exc:
                     self.defer(backoff(attempt), reason="timeout" if isinstance(exc, requests.Timeout) else "connection",
                                category=category, url=current, attempt=attempt + 1, max_attempts=6)
@@ -169,7 +214,7 @@ class Media:
                             response.raise_for_status()
                         continue
                     if 300 <= response.status_code < 400:
-                        current = urljoin(current, response.headers.get("Location", ""))
+                        current = image_url(urljoin(current, response.headers.get("Location", "")))
                         continue
                     response.raise_for_status()
                     ext = TYPES.get(response.headers.get("Content-Type", "").split(";")[0].lower())
@@ -228,4 +273,5 @@ class Media:
             return None
 
     def close(self):
+        self.session.cookies.clear()
         self.session.close()

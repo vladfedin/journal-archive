@@ -28,7 +28,7 @@ def capture_materials(exporter, entry):
     media = getattr(exporter, '_media', None)
     if media is None:
         media = exporter._media = Media(store.folder, exporter.images, exporter.client.cancel,
-                                       getattr(exporter.client, 'budget', None))
+                                       getattr(exporter.client, 'budget', None), client=exporter.client)
         media.load_state(store)
     comments = store.comments(eid)
     parser = Images(original_url(exporter.client.user, entry))
@@ -54,7 +54,7 @@ def capture_materials(exporter, entry):
     for url, category in requested:
         exporter.client.check()
         exporter.update('materials', f'Материалы записи #{eid}', entry_id=eid)
-        media.get(url, required=category == 'userpics', category=category)
+        media.get(url, required=category == 'userpics', category=category, referer=parser.base)
         checkpoint()
 
 

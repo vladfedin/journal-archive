@@ -655,7 +655,7 @@ class Exporter:
                     store.set("last_request_stats", budget.snapshot())
             self.update("render", "Собираем страницы, поиск и отчёт о полноте…")
             report = build_archive(store, report, images=self.images and not cancelled, userpics=not cancelled,
-                                   client_cancel=self.client.cancel, progress=self.progress, budget=budget, media=getattr(self, "_media", None))
+                                   client_cancel=self.client.cancel, progress=self.progress, budget=budget, media=getattr(self, "_media", None), client=self.client)
             with store.db:
                 store.set("finished", report["status"] == "complete")
                 if budget:
@@ -671,11 +671,11 @@ class Exporter:
 
 
 def export(user, password, output, *, images=False, delay=2, cancel=None, progress=None,
-           entry_limit=10, max_requests=50, account=False, messages=False, videos=False, journal=None, source_type=None):
+           entry_limit=10, max_requests=50, account=False, messages=False, videos=False, journal=None, source_type=None, session_ready=None):
     user = username(user)
     entry_limit = validate_entry_limit(entry_limit)
     budget = RequestBudget(max_requests, progress=progress)
-    client = LiveJournalClient(user, password, delay=delay, cancel=cancel, budget=budget, progress=progress, journal=journal, source_type=source_type)
+    client = LiveJournalClient(user, password, delay=delay, cancel=cancel, budget=budget, progress=progress, journal=journal, source_type=source_type, session_ready=session_ready)
     try:
         return Exporter(Path(output) / archive_slug(client.user, entry_limit), client, images=images,
                         progress=progress, entry_limit=entry_limit, account=account, messages=messages, videos=videos).run()

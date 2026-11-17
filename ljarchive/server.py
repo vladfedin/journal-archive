@@ -50,6 +50,9 @@ class Jobs:
         self.preparation_lock = threading.Lock()
         self.preparations = {}
         self.preparation_threads = []
+        self.formatting = set()
+        from .sessions import Sessions
+        self.sessions = Sessions()
         from .live_statistics import LiveStatistics
         self.statistics_cache = LiveStatistics()
         from .on_demand import MaterialQueue
@@ -77,7 +80,7 @@ class Jobs:
     def move(self, value):
         from .relocation import target_path, relocate
         with self.lock:
-            if self.stopping or (self.thread and self.thread.is_alive()) or self.materials.running or self.materials.queue:
+            if self.stopping or (self.thread and self.thread.is_alive()) or self.materials.running or self.materials.queue or self.formatting:
                 raise ExportError("Перенос доступен после завершения загрузки.")
             if self.move_thread and self.move_thread.is_alive():
                 raise ExportError("Перенос уже выполняется.")
@@ -127,28 +130,41 @@ class Jobs:
                 "images": bool(report.get("images_requested")), "videos": bool(report.get("videos_requested")), "delay": 3,
                 "max_requests": report.get("request_limit", 50 if report.get("entry_limit") else None)}
 
+    def archive_busy(self, slug):
+        """Called with lock held; a completed task file never blocks new work."""
+        if self.relocation['phase'] == 'copying':
+            return 'перенос архивов'
+        if self.thread and self.thread.is_alive():
+            active = (self.current or {}).get('archive') or self.state.get('slug')
+            if active is None or active == slug:
+                return 'идёт выгрузка этого архива'
+        if slug in self.formatting:
+            return 'обновляются страницы этого архива'
+        return None
+
     def prepare_format(self, slug):
         """Return immediately; a separate status endpoint stays responsive during rendering."""
         self.task_path(slug)
-        if self.stopping or self.relocation['phase'] == 'copying' or (self.thread and self.thread.is_alive()) or self.materials.running:
-            return None
         folder = self.output / slug
         path = folder / 'export-report.json'
-        with self.preparation_lock:
+        with self.lock, self.preparation_lock:
             if self.preparations.get(slug, {}).get('phase') == 'preparing':
                 return dict(self.preparations[slug])
+            if self.stopping or self.archive_busy(slug) or self.materials.running:
+                return None
             if not path.is_file() or not (folder / 'archive.sqlite3').is_file():
                 return None
             saved_report = json.loads(path.read_text(encoding='utf-8'))
             if saved_report.get('format_version') == __version__ and saved_report.get('calendar_version') == 2:
                 return None
             self.preparations[slug] = {'phase': 'preparing', 'message': 'Чтение архива', 'completed': 0, 'total': 0}
+            self.formatting.add(slug)
             def update(**values):
                 with self.preparation_lock:
                     self.preparations[slug].update({k: v for k, v in values.items() if k != 'phase'})
             def worker():
                 try:
-                    self.refresh_format(slug, progress=update)
+                    self.refresh_format(slug, progress=update, reserved=True)
                     state = {'phase': 'complete'}
                 except Exception:
                     state = {'phase': 'error', 'message': 'Не удалось подготовить архив. Проверьте папку и свободное место.'}
@@ -165,13 +181,17 @@ class Jobs:
         with self.preparation_lock:
             return dict(self.preparations.get(slug, {'phase': 'complete'}))
 
-    def refresh_format(self, slug, progress=None):
+    def refresh_format(self, slug, progress=None, *, reserved=False):
         """Rebuild derived pages on first opening an older archive, without network access."""
         self.task_path(slug)
         folder = self.output / slug
         with self.lock:
-            if self.relocation["phase"] == "copying" or (self.thread and self.thread.is_alive()) or self.materials.running:
+            if not reserved and (self.archive_busy(slug) or self.materials.running):
                 return
+            self.formatting.add(slug)
+        # Never hold the application lock while rendering: status, cancel and the
+        # queue must remain responsive. The archive has its own writer lock.
+        try:
             path = folder / "export-report.json"
             if not path.is_file() or not (folder / "archive.sqlite3").is_file():
                 return
@@ -185,6 +205,9 @@ class Jobs:
                 build_archive(store, report, images=False, progress=progress)
             finally:
                 store.close()
+        finally:
+            with self.lock:
+                self.formatting.discard(slug)
 
     def snapshot(self):
         with self.lock:
@@ -339,6 +362,8 @@ class Jobs:
                 data.setdefault("delay", 3)
             self.cancel = threading.Event()
             slug = "_demo" if demo else data["archive"]
+            if slug in self.formatting:
+                raise ExportError('Обновляются страницы этого архива. Дождитесь завершения.')
             self.recovery_before = None
             self.recovery_time = 0
             self.history = []
@@ -382,11 +407,13 @@ class Jobs:
                     report = sync(data["username"], password, self.output, journal=data['journal'], source_type=data['source_type'], images=data["images"], videos=data.get("videos", False),
                                   delay=data["delay"], cancel=self.cancel, progress=self.progress,
                                   max_requests=data["max_requests"], mode=scope["mode"], start=scope["start"],
-                                  end=scope["end"], urls=scope["urls"], archive=slug, account=data.get("account", False), messages=data.get("messages", False))
+                                  end=scope["end"], urls=scope["urls"], archive=slug, account=data.get("account", False), messages=data.get("messages", False),
+                                  session_ready=self.sessions.remember)
                 else:
                     report = export(data["username"], password, self.output, journal=data['journal'], source_type=data['source_type'], images=data["images"], videos=data.get("videos", False),
                                     delay=data["delay"], cancel=self.cancel, progress=self.progress,
-                                    entry_limit=data["entry_limit"], max_requests=data["max_requests"], account=data.get("account", False), messages=data.get("messages", False))
+                                    entry_limit=data["entry_limit"], max_requests=data["max_requests"], account=data.get("account", False), messages=data.get("messages", False),
+                                    session_ready=self.sessions.remember)
                 password = ""
             message = "Лимит запросов" if report.get("request_limit_reached") else ""
             if report["status"] not in ("complete", "demo") and not message:
@@ -765,7 +792,7 @@ def make_server(output: Path, port=8787):
                     activity = extension == ".activitystreams.json"
                     filename = "activitystreams.json" if activity else "archive.json"
                     with jobs.lock:
-                        if jobs.relocation["phase"] == "copying" or (jobs.thread and jobs.thread.is_alive()) or jobs.materials.running:
+                        if jobs.archive_busy(slug) or jobs.materials.running:
                             return self.json({"error": "Дождитесь окончания выгрузки перед скачиванием JSON."}, 409)
                         if not (folder / "archive.sqlite3").is_file():
                             target = folder / "data" / filename
@@ -794,7 +821,7 @@ def make_server(output: Path, port=8787):
                         return self.file(target, download=slug + ".json")
                 # Hold the job lock through ZIP construction to avoid mixing snapshots.
                 with jobs.lock:
-                    if jobs.relocation["phase"] == "copying" or (jobs.thread and jobs.thread.is_alive()) or jobs.materials.running:
+                    if jobs.archive_busy(slug) or jobs.materials.running:
                         return self.json({"error": "Дождитесь окончания выгрузки перед скачиванием ZIP."}, 409)
                     try:
                         jobs.refresh_format(slug)
@@ -861,6 +888,7 @@ def make_server(output: Path, port=8787):
                         for thread in jobs.preparation_threads:
                             thread.join()
                         if jobs.materials.thread: jobs.materials.thread.join()
+                        jobs.sessions.clear()
                         self.server.shutdown()
                     self.json({"message": "Сохраняем прогресс и завершаем приложение."})
                     self.wfile.flush()
@@ -902,4 +930,5 @@ def run_server(server, open_browser=True):
         for thread in server.jobs.preparation_threads:
             thread.join()
         if server.jobs.materials.thread: server.jobs.materials.thread.join()
+        server.jobs.sessions.clear()
         server.server_close()

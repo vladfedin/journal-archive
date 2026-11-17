@@ -169,9 +169,10 @@ def parse_comments(data: bytes) -> CommentPage:
 class LiveJournalClient:
     def __init__(self, user: str, password: str, *, delay: float = 2.0,
                  cancel: threading.Event | None = None, budget: RequestBudget | None = None,
-                 progress=None, max_attempts=6, journal=None, source_type=None):
+                 progress=None, max_attempts=4, journal=None, source_type=None, session_ready=None):
         from .sources import source
         self.source = source(user, journal, source_type)
+        self.session_ready = session_ready
         self.account = self.source['login_username']
         self.user = self.source['username']
         self._password_hash = hashlib.md5(password.encode("utf-8")).hexdigest()
@@ -364,6 +365,8 @@ class LiveJournalClient:
             self.journal_id = identity['userid']
         self.source['id'] = self.journal_id
         self.source['access']['status'] = 'verified'
+        if self.session_ready:
+            self.session_ready(self)
 
     def personal_page(self, path):
         if self.source['type'] == 'community':

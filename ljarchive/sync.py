@@ -402,7 +402,7 @@ class SyncExporter(Exporter):
             report = self.report(error, cancelled)
             report['source'] = identity
             report = build_archive(store, report, images=self.images and not cancelled, userpics=not cancelled,
-                                   client_cancel=self.client.cancel, progress=self.progress, budget=self.client.budget, media=getattr(self, "_media", None))
+                                   client_cancel=self.client.cancel, progress=self.progress, budget=self.client.budget, media=getattr(self, "_media", None), client=self.client)
             complete = self.state["phase"] == "render" and not error and report["status"] == "complete"
             if complete:
                 self.checkpoint(phase="done", done=True, finished_at=now())
@@ -429,13 +429,13 @@ class SyncExporter(Exporter):
 
 def sync(user, password, output, *, mode="full", start=None, end=None, urls=None, images=False,
          delay=3, max_requests=None, cancel=None, progress=None, archive=None, account=False, messages=False, videos=False,
-         journal=None, source_type=None):
+         journal=None, source_type=None, session_ready=None):
     user = username(user)
     identity = source(user, journal, source_type)
     scope = validate_scope(identity['username'], mode, start, end, urls)
     slug = target_slug(identity['username'], archive)
     budget = RequestBudget(max_requests, progress)
-    client = LiveJournalClient(user, password, delay=delay, cancel=cancel, budget=budget, progress=progress, journal=journal, source_type=source_type)
+    client = LiveJournalClient(user, password, delay=delay, cancel=cancel, budget=budget, progress=progress, journal=journal, source_type=source_type, session_ready=session_ready)
     return SyncExporter(Path(output) / slug, client, scope, images=images, progress=progress, account=account, messages=messages, videos=videos).run()
 
 

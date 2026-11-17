@@ -8,7 +8,7 @@ from html.parser import HTMLParser
 from urllib.parse import urljoin
 
 from .client import Cancelled, ExportError, LiveJournalClient, RequestBudget, RequestLimitReached
-from .media import Media, error_message
+from .media import Media, authenticated_image_host, image_url, error_message
 from .render import build_archive, original_url, text_value
 from .storage import Store
 from .video import VideoArchive, VideoRefs, VideoStop, canonical_video, embed_key
@@ -52,7 +52,7 @@ def validate(store, data):
     return entry
 
 
-def download_one(store, data, cancel, update):
+def download_one(store, data, cancel, update, sessions=None):
     """Only the selected material; never re-fetch comments or change authored text."""
     entry = validate(store, data)
     eid, kind, value = data['entry_id'], data['kind'], data['value']
@@ -61,8 +61,11 @@ def download_one(store, data, cancel, update):
     identity = stored_source(store)
     client = LiveJournalClient(identity['login_username'], data.get('password', ''),
                                journal=identity['username'], source_type=identity['type'],
-                               delay=data.get('delay', 3), cancel=cancel, budget=budget, progress=update)
+                               delay=data.get('delay', 3), cancel=cancel, budget=budget, progress=update,
+                               session_ready=sessions.remember if sessions else None)
     client.session.trust_env = False
+    if sessions:
+        sessions.restore(client)
     budget.not_before = client.not_before = store.get('request_not_before', 0)
     budget.wait_info = store.get('request_wait', {})
     def cooldown(deadline):
@@ -74,12 +77,21 @@ def download_one(store, data, cancel, update):
     try:
         update(phase='running', message='Загрузка…', **budget.snapshot())
         if kind == 'image':
-            media = Media(store.folder, True, cancel, budget); media.load_state(store)
-            path = media.get(value)
+            trusted = authenticated_image_host(image_url(value))
+            if trusted and data.get('password'):
+                client.login()
+            media = Media(store.folder, True, cancel, budget, client=client); media.load_state(store)
+            path = media.get(value, referer=original_url(client.user, entry))
             with store.db: media.save_state(store)
             if cancel.is_set(): raise Cancelled('Загрузка остановлена.')
             if not path:
-                raise ExportError(error_message(media.errors.get(value, {})))
+                error = media.errors.get(value, {})
+                if (trusted and error.get('http_status') in (401, 403) and error.get('authentication') in ('missing', 'sent')
+                        and not data.get('password')):
+                    if sessions:
+                        sessions.forget(client)
+                    raise NeedsLogin('Для закрытого изображения войдите в ЖЖ.')
+                raise ExportError(error_message(error))
             asset = {'kind': 'image', 'path': path}
         else:
             manager = VideoArchive(store, client, update)
@@ -94,6 +106,8 @@ def download_one(store, data, cancel, update):
                         raise
                     except ExportError as exc:
                         if not data.get('password') and ('401/403' in str(exc) or 'требуется вход' in str(exc)):
+                            if sessions:
+                                sessions.forget(client)
                             raise NeedsLogin('Для этой вставки может потребоваться вход в ЖЖ.') from exc
                         raise
                 if key in manager.external:
@@ -206,13 +220,17 @@ class MaterialQueue:
                 if self.jobs.stopping or not self.queue:
                     self.thread = None
                     return
-                busy = ((self.jobs.thread and self.jobs.thread.is_alive()) or self.jobs.relocation['phase'] == 'copying'
-                        or any(t.is_alive() for t in self.jobs.preparation_threads))
-                if busy:
-                    for task_id, _ in self.queue:
-                        self.states[task_id]['message'] = 'В очереди · архив занят'
-                else:
-                    task_id, request = self.queue.popleft()
+                available = None
+                for candidate, pending in self.queue:
+                    reason = self.jobs.archive_busy(pending['archive'])
+                    if reason:
+                        self.states[candidate]['message'] = 'В очереди · ' + reason
+                    elif available is None:
+                        available = (candidate, pending)
+                busy = available is None
+                if not busy:
+                    task_id, request = available
+                    self.queue.remove(available)
                     if self.states[task_id]['phase'] == 'cancelled': request.clear(); continue
                     self.current, self.running, self.cancel = task_id, True, threading.Event()
             if busy:
@@ -237,7 +255,7 @@ class MaterialQueue:
                 build_archive(store, report, images=False)
             try:
                 store = Store(self.jobs.output / request['archive'])
-                asset = download_one(store, request, self.cancel, update)
+                asset = download_one(store, request, self.cancel, update, sessions=self.jobs.sessions)
                 refresh()
                 update(phase='complete', message='Сохранено' if asset['kind'] != 'external' else 'Онлайн-плеер', asset=asset)
             except NeedsLogin as exc:
