@@ -384,7 +384,7 @@ def main():
                 expect(page.locator('.timeline-tip')).to_contain_text('reader: 12')
                 page.screenshot(path=str(Path(tempfile.gettempdir()) / 'ljarchive-timeline-desktop.png'), full_page=True)
                 page.set_viewport_size({'width': 390, 'height': 844})
-                page.wait_for_function('largeTimeline.slot===44')
+                expect(page.locator('.timeline-bar').first).to_have_css('width', '44px')
                 assert page.locator('.timeline-bar').count() < 20
                 assert not page.evaluate('document.documentElement.scrollWidth > innerWidth')
                 page.screenshot(path=str(Path(tempfile.gettempdir()) / 'ljarchive-timeline-mobile.png'), full_page=True)
