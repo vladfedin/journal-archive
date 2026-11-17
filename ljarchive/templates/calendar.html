@@ -1,0 +1,9 @@
+{% extends 'base.html' %}
+{% set archive_section = 'calendar' %}
+{% block title %}Календарь · {{ user }}{% endblock %}
+{% block head %}<script defer src="assets/calendar-data.js"></script><script defer src="assets/calendar.js"></script>{% endblock %}
+{% block body %}<main class="main calendar-main stats-main">
+<h1>Календарь</h1>{% include 'archive-nav.html' %}
+<div class="calendar-tools"><div><span id="calendar-count" aria-live="polite"></span><span id="calendar-undated" class="fine"></span></div><div class="calendar-switch"><button class="btn" id="calendar-prev" aria-label="Предыдущий год">←</button><select id="calendar-year" aria-label="Год публикации"></select><button class="btn" id="calendar-next" aria-label="Следующий год">→</button></div></div>
+<div class="calendar-grid" id="calendar-grid"></div><noscript><p><a href="index.html">Открыть все записи</a>. Для календаря включите JavaScript.</p></noscript>
+</main>{% endblock %}

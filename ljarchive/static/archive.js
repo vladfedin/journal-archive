@@ -73,9 +73,11 @@ document.addEventListener("DOMContentLoaded", () => {
     for (const key of ["year", "tag", "security", "sort"]) if (params.has(key)) $(key).value = params.get(key);
     search.value = params.get("q") || "";
     let page = 1, timer;
-    let view = params.get("view") || "compact";
+    let view = params.get("view") || "full";
     if (!params.has("view")) try { view = localStorage.getItem("ljarchive-view") || view; } catch {}
     if (view !== "full") view = "compact";
+    let selectedDate = /^\d{4}-\d{2}-\d{2}$/.test(params.get('date')||'') ? params.get('date') : '';
+    let selectedMonth = !selectedDate && /^\d{4}-\d{2}$/.test(params.get('month')||'') ? params.get('month') : '';
     const bodies = new Map(), pending = new Map();
     window.ArchivePost = (id, html) => {
       bodies.set(id, html);
@@ -129,7 +131,8 @@ document.addEventListener("DOMContentLoaded", () => {
       const query = search.value.trim().toLocaleLowerCase("ru");
       const terms = query.split(/\s+/).filter(Boolean);
       const year = $("year").value, tag = $("tag").value, security = $("security").value;
-      const accepts = (e) => e && (!year || e.year === year) && (!tag || e.tags.includes(tag)) && (!security || e.security === security);
+      const period=selectedDate||selectedMonth;
+      const accepts = (e) => e && (!year || e.year === year) && (!period || e.date.startsWith(period)) && (!tag || e.tags.includes(tag)) && (!security || e.security === security);
       let rows = terms.length ? normalized.filter(d => accepts(byEntry.get(d.entry)) && terms.every(t => d.haystack.includes(t))).map(d => ({e: byEntry.get(d.entry), d})) : entries.filter(accepts).map(e => ({e}));
       if (view === "full") {
         const seen = new Set();
@@ -139,7 +142,10 @@ document.addEventListener("DOMContentLoaded", () => {
       const pages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE)); page = Math.min(page, pages);
       const active = FILTERS.filter(key => $(key).value).length;
       $("results-count").textContent = terms.length ? plural(rows.length, "совпадение", "совпадения", "совпадений") : plural(rows.length, "запись", "записи", "записей");
-      $("reset-filters").hidden = !active && !terms.length;
+      $("reset-filters").hidden = !active && !terms.length && !period;
+      $('date-filter').hidden=!period;
+      $('date-filter').textContent=selectedDate?ruDate(selectedDate)+' ×':selectedMonth?('Январь Февраль Март Апрель Май Июнь Июль Август Сентябрь Октябрь Ноябрь Декабрь'.split(' ')[Number(selectedMonth.slice(5))-1]+' '+selectedMonth.slice(0,4)+' ×'):'';
+      $('date-filter').setAttribute('aria-label','Снять ограничение по дате');
 
       const list = $("entry-list"); list.replaceChildren();
       if (!rows.length) { const empty = el("div", "empty-state"); empty.append(el("p", "", "Ничего не найдено")); list.append(empty); }
@@ -187,12 +193,15 @@ document.addEventListener("DOMContentLoaded", () => {
       const state = new URLSearchParams(); if (query) state.set("q", search.value);
       for (const key of FILTERS) if ($(key).value) state.set(key, $(key).value);
       if ($("sort").value === "old") state.set("sort", "old");
-      if (view === "full") state.set("view", "full");
+      state.set("view", view);
+      if(selectedDate)state.set('date',selectedDate);
+      if(selectedMonth)state.set('month',selectedMonth);
       try { history.replaceState(null, "", location.pathname + (state.size ? "?" + state.toString() : "")); } catch {}
     }
     search.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(() => { page = 1; render(); }, 180); });
-    for (const key of [...FILTERS, "sort"]) $(key).addEventListener("change", () => { page = 1; render(); });
-    $("reset-filters").onclick = () => { search.value = ""; for (const key of FILTERS) $(key).value = ""; page = 1; render(); };
+    for (const key of [...FILTERS, "sort"]) $(key).addEventListener("change", () => { if(key==='year'){selectedDate='';selectedMonth='';}page = 1; render(); });
+    $('date-filter').onclick=()=>{selectedDate='';selectedMonth='';page=1;render();};
+    $("reset-filters").onclick = () => { search.value = ""; selectedDate='';selectedMonth='';for (const key of FILTERS) $(key).value = ""; page = 1; render(); };
     document.addEventListener("keydown", e => { if (e.key === "/" && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) { e.preventDefault(); search.focus(); } });
     render();
   }

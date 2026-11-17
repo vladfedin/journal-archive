@@ -13,6 +13,7 @@ import bleach
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from markupsafe import Markup
 
+from . import __version__
 from .media import Media
 from .data import export_json
 from .reactions import reaction_report
@@ -280,6 +281,30 @@ def threaded(comments):
     return result
 
 
+def entry_summary(entry, comments, screened, picture):
+    from .entries import is_repost, repost_url
+    eid = int(entry['itemid'])
+    props = entry.get('props') if isinstance(entry.get('props'), dict) else {}
+    security = entry.get('security', 'public')
+    date = text_value(entry.get('eventtime'))
+    return {'repost': is_repost(entry), 'repost_url': repost_url(entry), 'userpic': picture,
+            'id': eid, 'title': plain(entry.get('subject')) or 'Без заголовка', 'date': date, 'year': date[:4],
+            'tags': [t.strip() for t in text_value(props.get('taglist')).split(',') if t.strip()],
+            'security': security, 'security_label': {'public': 'Открытая', 'private': 'Личная', 'usemask': 'Для друзей / группы'}.get(security, security),
+            'comments': comments, 'screened': screened, 'excerpt': excerpt(plain(entry.get('event'))),
+            'url': f'entries/{eid}.html', 'reactions': reaction_view(entry.get('reactions'))}
+
+
+def render_feed(entry, user, links, media, comment_ids):
+    props = entry.get('props') if isinstance(entry.get('props'), dict) else {}
+    current = [(label, plain(props[key])) for key, label in CURRENT if plain(props.get(key)).strip()]
+    feed = ENV.get_template('feed-post.html').render(
+        content=safe_content(entry.get('event'), original_url(user, entry), links, media, comment_ids),
+        current=current, post_autoformat=needs_autoformat(entry.get('event'), props))
+    feed = re.sub(r'href="([0-9]+\.html(?:#[^"\s]*)?)"', r'href="entries/\1"', feed)
+    return feed.replace('src="../media/', 'src="media/')
+
+
 def build_archive(store: Store, report: dict, *, images=False, userpics=False, client_cancel=None, progress=None, budget=None, media=None):
     folder, user = store.folder, report["username"]
     cancel = client_cancel or threading.Event()
@@ -287,7 +312,7 @@ def build_archive(store: Store, report: dict, *, images=False, userpics=False, c
     media.enabled = images
     media.load_state(store)
     entries, comments = store.entries(), store.comments()
-    report["format_version"] = "0.7.4"
+    report["format_version"] = __version__
     report.setdefault("issues", [])
     report["reactions"] = reaction_report(store)
     if report.get("status") == "complete" and not (report["reactions"]["complete"] and report["reactions"]["authors_complete"]):
@@ -335,10 +360,9 @@ def build_archive(store: Store, report: dict, *, images=False, userpics=False, c
             links[(url.hostname, url.path)] = str(entry["itemid"]) + ".html"
     comment_ids = {int(c["id"]) for c in comments}
     (folder / "assets").mkdir(exist_ok=True)
-    for asset in ("archive.css", "archive.js", "theme.js", "common.js", "favicon.svg", "favicon.ico", "timeline.js", "statistics.js"):
+    for asset in ("archive.css", "archive.js", "theme.js", "common.js", "favicon.svg", "favicon.ico", "timeline.js", "statistics.js", "calendar.js"):
         shutil.copyfile(ROOT / "static" / asset, folder / "assets" / asset)
     search, summaries = [], []
-    labels = {"public": "Открытая", "private": "Личная", "usemask": "Для друзей / группы"}
     from .comment_state import comment_view
     from .entries import is_repost, repost_url
     from .progress import material_progress, coverage_notice
@@ -355,14 +379,7 @@ def build_archive(store: Store, report: dict, *, images=False, userpics=False, c
             url = original_url(user, entry)
             entry_comments = [] if is_repost(entry) else threaded(by_entry[eid])
             props = entry.get("props") if isinstance(entry.get("props"), dict) else {}
-            security = entry.get("security", "public")
-            tags = [t.strip() for t in text_value(entry.get("props", {}).get("taglist", "")).split(",") if t.strip()]
-            date = entry.get("eventtime", "")
-            summary = {"repost": is_repost(entry), "repost_url": repost_url(entry), "userpic": pictures["post"].get(str(eid)), "id": eid, "title": title, "date": date, "year": date[:4], "tags": tags,
-                       "security": security, "security_label": labels.get(security, security),
-                       "comments": len(entry_comments), "screened": sum(c["state"] == "S" for c in entry_comments),
-                       "excerpt": excerpt(plain(entry.get("event"))), "url": f"entries/{eid}.html",
-                       "reactions": reaction_view(entry.get("reactions"))}
+            summary = entry_summary(entry, len(entry_comments), sum(c['state'] == 'S' for c in entry_comments), pictures['post'].get(str(eid)))
             summaries.append(summary)
             search.append({"entry": eid, "title": title, "text": plain(entry.get("event")), "url": summary["url"], "kind": "post"})
             for item in entry_comments:
@@ -392,11 +409,7 @@ def build_archive(store: Store, report: dict, *, images=False, userpics=False, c
                             material_progress(material_records.get(str(eid), {}), {**saved_media, **media.mapping}), repost=is_repost(entry), videos=missing_videos.get(eid, 0)),
                         report=report)
             atomic_write(folder / "entries" / f"{eid}.html", rendered)
-            feed = ENV.get_template("feed-post.html").render(content=safe_content(entry.get("event"), url, links, media, comment_ids),
-                    current=current, post_autoformat=needs_autoformat(entry.get("event"), entry.get("props")))
-            # Rewrite only internal links and local images for the archive root. Original text is unchanged.
-            feed = re.sub(r'href="([0-9]+\.html(?:#[^"\s]*)?)"', r'href="entries/\1"', feed)
-            feed = feed.replace('src="../media/', 'src="media/')
+            feed = render_feed(entry, user, links, media, comment_ids)
             atomic_write(folder / "assets" / "posts" / f"{eid}.js",
                          "window.ArchivePost(" + str(eid) + "," + dumps(str(feed)).replace("<", "\\u003c") + ");")
     finally:
@@ -439,6 +452,8 @@ def build_archive(store: Store, report: dict, *, images=False, userpics=False, c
     render_personal(store, report)
     from .progress import write_timeline
     write_timeline(store, report)
+    from .calendar import write_calendar
+    write_calendar(store, report)
     if progress:
         progress(phase='render', message='Статистика', completed=0, total=0)
     from .statistics import write_statistics

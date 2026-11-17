@@ -490,27 +490,45 @@ def make_server(output: Path, port=8787):
                             return
                     except (ExportError, OSError, ValueError):
                         return self.json({"error": "Не удалось обновить оформление архива. Проверьте папку и свободное место."}, 409)
-                active = jobs.snapshot().get("slug") == relative.parts[0] and jobs.snapshot().get("phase") not in TERMINAL
-                if len(relative.parts) == 3 and relative.parts[1] == "assets" and relative.parts[2] in {"archive.css", "archive.js", "theme.js", "common.js", "timeline.js", "favicon.svg", "favicon.ico"}:
+                snapshot = jobs.snapshot()
+                active = snapshot.get("slug") == relative.parts[0] and snapshot.get("phase") not in TERMINAL
+                if len(relative.parts) == 3 and relative.parts[1] == "assets" and relative.parts[2] in {"archive.css", "archive.js", "theme.js", "common.js", "timeline.js", "calendar.js", "favicon.svg", "favicon.ico"}:
                     if active or not target.exists():
                         return self.file(ROOT / "static" / relative.parts[2])
-                if (active or not target.exists()) and ((len(relative.parts) == 3 and relative.parts[1] == "entries" and target.stem.isdigit() and target.suffix == ".html") or (len(relative.parts) == 2 and target.name in ("index.html", "timeline.html"))):
+                live_data = len(relative.parts) == 3 and relative.parts[1] == 'assets' and target.name in ('search-data.js', 'calendar-data.js')
+                live_feed = len(relative.parts) == 4 and relative.parts[1:3] == ('assets', 'posts') and target.stem.isdigit() and target.suffix == '.js'
+                live_page = (len(relative.parts) == 3 and relative.parts[1] == "entries" and target.stem.isdigit() and target.suffix == ".html") or (len(relative.parts) == 2 and target.name in ("index.html", "timeline.html", "calendar.html"))
+                if (active or not target.exists()) and (live_page or live_data or live_feed):
                     from .storage import Store
                     from .progress import preview_entry
                     from .render import ENV
+                    from .live import preview_index, preview_search, preview_feed
                     import sqlite3
                     try:
                         store = Store.reader(jobs.output / relative.parts[0])
                         try:
-                            if relative.parts[1] == "entries":
+                            if live_feed:
+                                html = preview_feed(store, int(target.stem))
+                            elif live_data:
+                                if target.name == 'search-data.js':
+                                    html = preview_search(store)
+                                else:
+                                    from .calendar import calendar_data
+                                    html = 'window.CALENDAR=' + json.dumps(calendar_data(store)) + ';'
+                            elif relative.parts[1] == "entries":
                                 html = preview_entry(store, int(target.stem))
+                            elif target.name == 'index.html':
+                                html = preview_index(store)
+                            elif target.name == 'calendar.html':
+                                html = ENV.get_template('calendar.html').render(user=store.get('username'), report={'created_at': store.get('started_at', '')})
                             else:
                                 html = ENV.get_template("timeline.html").render(user=store.get("username"), report={"created_at": store.get("started_at", "")}, source="/api/timeline/" + relative.parts[0])
                         finally:
                             store.close()
                         if html:
-                            body = html.replace('<body>', '<body data-library-url="/">', 1).encode("utf-8")
-                            self.response_headers(200, "text/html; charset=utf-8", len(body))
+                            script = live_data or live_feed
+                            body = (html if script else html.replace('<body>', '<body data-library-url="/">', 1)).encode("utf-8")
+                            self.response_headers(200, ('text/javascript' if script else 'text/html') + '; charset=utf-8', len(body))
                             self.wfile.write(body)
                             return
                     except (sqlite3.Error, OSError):

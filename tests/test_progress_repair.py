@@ -146,6 +146,9 @@ def test_live_routes_work_before_archive_has_any_html(local_server):
             assert result.status_code == 200 and 'Post 1' in result.text
             assert 'data-library-url="/"' in result.text
             result = session.get(base + '/archive/fixture/index.html')
+            assert result.status_code == 200 and 'id="entry-list"' in result.text
+            assert 'id="archive-timeline"' not in result.text
+            result = session.get(base + '/archive/fixture/timeline.html')
             assert result.status_code == 200 and 'data-source="/api/timeline/fixture"' in result.text
             assert session.get(base + '/archive/fixture/assets/timeline.js').status_code == 200
             assert session.get(base + '/archive/fixture/archive.sqlite3').status_code == 403
