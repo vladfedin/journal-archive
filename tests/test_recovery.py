@@ -1,5 +1,6 @@
 import json
 import threading
+from pathlib import Path
 
 import pytest
 import requests
@@ -131,6 +132,35 @@ def test_status_stays_responsive_during_inventory_scan(tmp_path, monkeypatch):
     finally:
         release.set()
         jobs.recovery_thread.join(5)
+
+
+def test_slow_filesystem_inventory_does_not_hold_database_read_lock(tmp_path, monkeypatch):
+    writer = Store(tmp_path)
+    entered, release = threading.Event(), threading.Event()
+    result = []
+    with writer.db:
+        writer.save_entry({'itemid': 1, 'poster_userpic_url': 'https://example.org/picture'})
+        writer.set('media', {'https://example.org/picture': 'media/picture.png'})
+    check_file = Path.is_file
+    def slow_file(path):
+        if path == tmp_path / 'media/picture.png':
+            entered.set()
+            release.wait(5)
+            return False
+        return check_file(path)
+    monkeypatch.setattr(Path, 'is_file', slow_file)
+    reader = threading.Thread(target=lambda: result.append(read_inventory(tmp_path)))
+    reader.start()
+    try:
+        assert entered.wait(2)
+        writer.db.execute('PRAGMA busy_timeout=100')
+        with writer.db:
+            writer.set('checkpoint_during_scan', 1)
+    finally:
+        release.set()
+        reader.join(5)
+        writer.close()
+    assert result[0]['units']['images'] == {fingerprint('https://example.org/picture')}
 
 
 def test_recovery_endpoint_requires_session_and_rejects_foreign_paths(local_server):
