@@ -4,6 +4,8 @@
 
 **[Скачать для Windows, macOS или Linux](https://github.com/vladfedin/journal-archive/releases/latest)**
 
+[Пошаговый гайд для Windows со скриншотами](docs/guide/README.md) · [PDF](docs/guide/guide.pdf)
+
 ## Запуск
 
 - Windows x64: запустите `.exe`.

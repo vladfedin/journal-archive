@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="440" viewBox="0 0 1120 440" role="img" aria-labelledby="title desc">
+  <title id="title">Разрешение первого запуска: схема</title>
+  <desc id="desc">В обычном предупреждении SmartScreen нажмите «Подробнее», затем проверьте имя файла и нажмите «Выполнить в любом случае». Это схема, а не снимок Windows.</desc>
+  <rect width="1120" height="440" rx="12" fill="#f3f5f8"/>
+  <g font-family="Segoe UI,Arial,sans-serif">
+    <text x="30" y="35" font-size="15" fill="#536172">Схема окна SmartScreen · оформление зависит от версии Windows</text>
+    <rect x="30" y="58" width="500" height="350" rx="5" fill="#0069b5"/>
+    <rect x="590" y="58" width="500" height="350" rx="5" fill="#0069b5"/>
+    <g fill="white">
+      <text x="52" y="104" font-size="24">Система Windows защитила</text><text x="52" y="136" font-size="24">ваш компьютер</text>
+      <text x="52" y="181" font-size="16">Предупреждение о неопознанном приложении</text>
+      <text x="52" y="240" font-size="20" text-decoration="underline">Подробнее</text>
+      <text x="612" y="104" font-size="24">Система Windows защитила</text><text x="612" y="136" font-size="24">ваш компьютер</text>
+      <text x="612" y="186" font-size="16">Приложение:</text>
+      <text x="612" y="215" font-size="16">JournalArchive-0.7.4-windows-x64.exe</text>
+      <text x="612" y="252" font-size="16">Издатель: Неизвестный издатель</text>
+    </g>
+    <rect x="42" y="209" width="141" height="46" rx="4" fill="none" stroke="#ffdf75" stroke-width="3"/>
+    <rect x="611" y="331" width="267" height="48" fill="#e3edf5"/>
+    <text x="627" y="361" fill="#172a3c" font-size="18">Выполнить в любом случае</text>
+    <rect x="607" y="327" width="275" height="56" rx="4" fill="none" stroke="#ffdf75" stroke-width="3"/>
+    <rect x="897" y="331" width="169" height="48" fill="#e3edf5"/>
+    <text x="911" y="361" fill="#172a3c" font-size="18">Не выполнять</text>
+    <rect x="334" y="331" width="170" height="48" fill="#e3edf5"/>
+    <text x="348" y="361" fill="#172a3c" font-size="18">Не выполнять</text>
+    <text x="543" y="245" fill="#536172" font-size="30">→</text>
+  </g>
+</svg>
