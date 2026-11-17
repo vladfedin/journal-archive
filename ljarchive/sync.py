@@ -10,6 +10,7 @@ from .client import Cancelled, ExportError, IncompleteData, LiveJournalClient, R
 from .exporter import Exporter, now
 from .entries import is_repost
 from .storage import atomic_write, dumps
+from .sources import bind_source, source
 
 
 @dataclass(frozen=True)
@@ -84,8 +85,8 @@ class SyncExporter(Exporter):
 
     def prepare(self):
         store = self.store
-        if store.get("username") not in (None, self.client.user):
-            raise ExportError("Архив принадлежит другому журналу.")
+        with store.db:
+            bind_source(store, self.client)
         old = store.get("sync_job", {})
         if old and not old.get("done") and old.get("scope") == self.scope.data():
             self.state = old
@@ -356,8 +357,12 @@ class SyncExporter(Exporter):
                                 quarantine = store.folder / "quarantine" / path.name
                                 quarantine.parent.mkdir(exist_ok=True)
                                 path.replace(quarantine)
-                self.update("login", "Входим в журнал владельца…")
-                self.client.login()
+                self.update("login", "Входим в ЖЖ и проверяем доступ…")
+                try:
+                    self.client.login()
+                finally:
+                    with store.db:
+                        bind_source(store, self.client)
                 with store.db:
                     store.set("journal_id", self.client.journal_id)
                     if getattr(self.client, "userpics", None) is not None:
@@ -392,7 +397,10 @@ class SyncExporter(Exporter):
                 error, cancelled = str(exc), True
             except ExportError as exc:
                 error = str(exc)
+            with store.db:
+                identity = bind_source(store, self.client)
             report = self.report(error, cancelled)
+            report['source'] = identity
             report = build_archive(store, report, images=self.images and not cancelled, userpics=not cancelled,
                                    client_cancel=self.client.cancel, progress=self.progress, budget=self.client.budget, media=getattr(self, "_media", None))
             complete = self.state["phase"] == "render" and not error and report["status"] == "complete"
@@ -420,12 +428,14 @@ class SyncExporter(Exporter):
 
 
 def sync(user, password, output, *, mode="full", start=None, end=None, urls=None, images=False,
-         delay=3, max_requests=None, cancel=None, progress=None, archive=None, account=False, messages=False, videos=False):
+         delay=3, max_requests=None, cancel=None, progress=None, archive=None, account=False, messages=False, videos=False,
+         journal=None, source_type=None):
     user = username(user)
-    scope = validate_scope(user, mode, start, end, urls)
-    slug = target_slug(user, archive)
+    identity = source(user, journal, source_type)
+    scope = validate_scope(identity['username'], mode, start, end, urls)
+    slug = target_slug(identity['username'], archive)
     budget = RequestBudget(max_requests, progress)
-    client = LiveJournalClient(user, password, delay=delay, cancel=cancel, budget=budget, progress=progress)
+    client = LiveJournalClient(user, password, delay=delay, cancel=cancel, budget=budget, progress=progress, journal=journal, source_type=source_type)
     return SyncExporter(Path(output) / slug, client, scope, images=images, progress=progress, account=account, messages=messages, videos=videos).run()
 
 

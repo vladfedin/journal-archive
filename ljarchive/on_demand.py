@@ -57,7 +57,10 @@ def download_one(store, data, cancel, update):
     entry = validate(store, data)
     eid, kind, value = data['entry_id'], data['kind'], data['value']
     budget = RequestBudget(data.get('max_requests', 50), progress=update)
-    client = LiveJournalClient(store.get('username'), data.get('password', ''),
+    from .sources import stored_source
+    identity = stored_source(store)
+    client = LiveJournalClient(identity['login_username'], data.get('password', ''),
+                               journal=identity['username'], source_type=identity['type'],
                                delay=data.get('delay', 3), cancel=cancel, budget=budget, progress=update)
     client.session.trust_env = False
     budget.not_before = client.not_before = store.get('request_not_before', 0)

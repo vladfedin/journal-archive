@@ -127,6 +127,9 @@ def to_activitystreams(data):
     identity = lambda kind, number: namespace + kind + ":" + quote(str(number), safe="")
     media = data.get("media", {})
     owner = person(user, journal.get("id"))
+    community = (data.get('source') or {}).get('type') == 'community'
+    if owner and community:
+        owner['type'] = 'Group'
     entries = {e["itemid"]: e for e in data.get("entries", [])}
     items, objects, replies = [], {}, defaultdict(list)
 
@@ -161,7 +164,8 @@ def to_activitystreams(data):
                 obj["ja:repost"] = True
                 if repost_url(record):
                     obj["ja:originalURL"] = repost_url(record)
-            author = person(record.get("poster"), record.get("posterid")) or owner
+            from .entries import author as post_author, author_id
+            author = person(post_author(record), author_id(record)) or (None if community else owner)
             url = entry_url(record)
             if isinstance(record.get("security"), str):
                 obj["ja:security"] = record["security"]
@@ -340,6 +344,7 @@ def to_activitystreams(data):
         items.append(obj)
     source = json.dumps(data, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
     return {"@context": CONTEXT, "id": namespace + "archive", "type": "Collection", "name": user,
+            **({'attributedTo': owner} if owner else {}),
             "totalItems": len(items), "items": items, "ja:profileVersion": PROFILE_VERSION,
             "ja:source": {"type": "Document", "name": "archive.json", "mediaType": "application/json", "content": source,
                           "ja:sha256": hashlib.sha256(source.encode("utf-8")).hexdigest()}}

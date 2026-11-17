@@ -6,6 +6,7 @@
 |---|---|
 | `schema_version` | Версия структуры: `1`. |
 | `journal` | `username` и числовой `id` журнала (null, если ещё неизвестен). |
+| `source` | Тип (`own` / `community`), имя и ID журнала, `login_username` аккаунта для входа, наблюдаемые `access` и `capabilities`. Подробности — в [описании источников](activitystreams.md#журнал-и-аккаунт-для-входа). |
 | `scope` | `entry_limit` (null — накопительный архив; область последнего обновления — в `last_sync`), `started_at`. |
 | `entries` | Исходные записи API ЖЖ. Ключ `itemid`; текст `event`, заголовок `subject`, дата `eventtime`, `props`, `security`, другие исходные поля и `reactions`, если получены. |
 | `comments` | Исходные комментарии: `id`, `jitemid` (ссылка на `entries.itemid`), `parentid` (0 — корень), `posterid`, `user` (имя или null), `state`, `body`, `subject`, `date`, `props`, другие исходные поля и `reactions`, если получены. |

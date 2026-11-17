@@ -2,6 +2,14 @@
 from urllib.parse import urlsplit
 
 
+def author(entry, default=None):
+    return entry.get('poster') or entry.get('postername') or default
+
+
+def author_id(entry):
+    return entry.get('posterid') or entry.get('poster_id')
+
+
 def is_repost(entry):
     return entry.get('repost') in (1, '1', True)
 

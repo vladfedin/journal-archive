@@ -12,6 +12,7 @@ function parameterTable(params={},known=Object.keys(params)){
   const value=(key,format=v=>String(v))=>known.includes(key)?format(params[key]):'Не сохранено';
   const yes=v=>v?'Да':'Нет';
   const rows=[['Объём',value('mode',v=>scopes[v]||v||'Не сохранено')]];
+  if(params.source_type==='community')rows.unshift(['Сообщество',params.journal],['Аккаунт для входа',params.username]);
   if(params.mode==='period')rows.push(['С',value('date_from',v=>day(v)||'С начала журнала')],['По',value('date_to',v=>day(v)||'По последнюю запись')]);
   if(params.mode==='urls')rows.push(['Ссылки',value('urls',v=>Array.isArray(v)?v.join('\n'):v||'—')]);
   rows.push(['Изображения',value('images',yes)],['Видео',value('videos',yes)],['Профиль, друзья, настройки',value('account',yes)],['Переписка',value('messages',yes)],['Пауза',value('delay',v=>v+' сек.')],['Лимит запросов',value('max_requests',v=>v??'Без лимита')]);
@@ -53,7 +54,13 @@ function attemptHistory(attempts){
 async function api(path,data){const r=await fetch(path,{method:data===undefined?'GET':'POST',headers:data===undefined?{}:{'Content-Type':'application/json'},body:data===undefined?undefined:JSON.stringify(data),cache:'no-store'});const value=await r.json();if(!r.ok)throw new Error(value.error||'Не удалось выполнить запрос.');return value;}
 function error(message,form=false){const target=$(form?'form-error':'app-error');target.textContent=message;target.hidden=!message;}
 function setBusy(value){busy=value;document.querySelectorAll('[data-new],[data-update],[data-resume]').forEach(b=>b.disabled=value||moving||closed);$('submit-export').disabled=value||moving||submitting||preparingResume||closed;$('move-storage').disabled=value||moving||closed;$('move-storage').title=value?'После завершения загрузки':'';}
-function setScope(value){scope=value;document.querySelectorAll('[data-scope]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.scope===value)));$('period-fields').hidden=value!=='period';$('url-fields').hidden=value!=='urls';$('entry-urls').required=value==='urls';$('entry-urls').disabled=value!=='urls';if(!limitEdited)$('request-limit').value=value==='latest'?'50':'';$('request-limit').required=value==='latest';$('account').checked=value==='full';}
+function setScope(value){scope=value;document.querySelectorAll('[data-scope]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.scope===value)));$('period-fields').hidden=value!=='period';$('url-fields').hidden=value!=='urls';$('entry-urls').required=value==='urls';$('entry-urls').disabled=value!=='urls';if(!limitEdited)$('request-limit').value=value==='latest'?'50':'';$('request-limit').required=value==='latest';$('account').checked=value==='full';setSource();}
+function setSource(){
+  const community=$('source-type').value==='community';
+  $('journal-field').hidden=!community;$('journal').required=community&&mode!=='resume';$('journal').disabled=!community||mode==='resume';
+  for(const key of ['account','messages']){$(key).closest('label').hidden=community;$(key).disabled=community;if(community)$(key).checked=false;}
+}
+$('source-type').onchange=setSource;
 function openDialog(kind,archive=null){
   if(busy||moving||closed)return;mode=kind;selected=archive;error('',true);const resume=kind==='resume',isNew=kind==='new';
   document.querySelectorAll('.more[open]').forEach(menu=>menu.open=false);
@@ -66,7 +73,9 @@ function openDialog(kind,archive=null){
     api('/api/recovery/'+encodeURIComponent(archive.slug)).then(data=>{if(token!==planToken)return;$('resume-plan').replaceChildren(recoveryView(data));if(data.attempts?.length)$('resume-plan').append(attemptHistory(data.attempts));}).catch(()=>{if(token===planToken)$('resume-plan').replaceChildren(el('p','fine','Список пропусков недоступен. Можно продолжить с сохранённого этапа.'));}).finally(()=>{if(token===planToken){preparingResume=false;setBusy(busy);}});
   }
   setBusy(busy);
-  $('username').value=isNew?'':archive.username;$('username').readOnly=!isNew;$('username-field').hidden=resume;
+  $('source-type').value=archive?.parameters?.source_type||'own';$('source-type').disabled=!isNew;
+  $('journal').value=archive?.parameters?.journal||archive?.username||'';$('journal').readOnly=!isNew;$('source-fields').hidden=resume;
+  $('username').value=isNew?'':archive.parameters?.username||archive.username;$('username').readOnly=!isNew;$('username-field').hidden=resume;
   $('credentials').classList.toggle('is-resume',resume);$('password').type='password';$('show-password').setAttribute('aria-label','Показать пароль');
   $('scope-fields').hidden=resume;$('resume-note').hidden=!resume;
   $('resume-settings').hidden=!resume;$('resume-settings').open=false;
@@ -75,7 +84,7 @@ function openDialog(kind,archive=null){
   const to=new Date(),from=new Date(to);from.setDate(from.getDate()-29);$('date-from').value=dateValue(from);$('date-to').value=dateValue(to);
   if(!resume){setScope(isNew?'full':'period');if(archive?.parameters){$('images').checked=!!archive.parameters.images;$('videos').checked=!!archive.parameters.videos;}}
   else{$('request-limit').required=false;$('entry-urls').required=false;$('entry-urls').disabled=true;$('resume-note').textContent=archive.username+' · '+(scopes[archive.parameters?.mode]||'загрузка');}
-  $('export-dialog').showModal();(isNew?$('username'):$('password')).focus();
+  setSource();$('export-dialog').showModal();(isNew?$('username'):$('password')).focus();
 }
 function duration(seconds){const n=Math.max(0,Math.ceil(seconds||0));return n<60?n+' с':n<3600?Math.floor(n/60)+' мин '+n%60+' с':Math.floor(n/3600)+' ч '+Math.floor(n%3600/60)+' мин';}
 function showStatus(s){lastState=s;if(!s.phase||s.phase==='idle'||s.job_id&&s.job_id===dismissedJob)return;$('job').hidden=false;$('job-title').textContent=s.username||'';
@@ -146,7 +155,7 @@ $('request-limit').oninput=()=>limitEdited=true;
 $('show-password').onclick=()=>{const show=$('password').type==='password';$('password').type=show?'text':'password';$('show-password').setAttribute('aria-label',show?'Скрыть пароль':'Показать пароль');};
 $('export-form').onsubmit=async e=>{e.preventDefault();if(busy||submitting||preparingResume||closed)return;error('',true);let data;
   if(mode==='resume')data={resume:selected.slug,password:$('password').value};
-  else data={username:$('username').value,password:$('password').value,entry_limit:scope==='latest'?10:null,mode:scope==='latest'?null:scope,images:$('images').checked,videos:$('videos').checked,account:$('account').checked,messages:$('messages').checked,delay:Number($('delay').value),max_requests:$('request-limit').value?Number($('request-limit').value):null,date_from:scope==='period'?$('date-from').value||null:null,date_to:scope==='period'?$('date-to').value||null:null,urls:scope==='urls'?$('entry-urls').value:[],archive:selected?.slug||null};
+  else data={username:$('username').value,journal:$('source-type').value==='community'?$('journal').value:$('username').value,source_type:$('source-type').value,password:$('password').value,entry_limit:scope==='latest'?10:null,mode:scope==='latest'?null:scope,images:$('images').checked,videos:$('videos').checked,account:$('account').checked,messages:$('messages').checked,delay:Number($('delay').value),max_requests:$('request-limit').value?Number($('request-limit').value):null,date_from:scope==='period'?$('date-from').value||null:null,date_to:scope==='period'?$('date-to').value||null:null,urls:scope==='urls'?$('entry-urls').value:[],archive:selected?.slug||null};
   submitting=true;$('submit-export').disabled=true;
   try{const state=await api('/api/export',data);$('export-dialog').close();showStatus(state);await library();}
   catch(e){error(e.message,true);$('password').value='';$('password').focus();}

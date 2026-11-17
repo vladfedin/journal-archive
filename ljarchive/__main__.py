@@ -56,6 +56,7 @@ def main():
     verify = sub.add_parser("verify", help="Проверить базу и контрольные суммы файлов без сети")
     verify.add_argument("folder", type=Path)
     for command in (cli, update):
+        command.add_argument('--journal', help='Имя управляемого сообщества; username — аккаунт для входа')
         command.add_argument("--videos", action="store_true", help="Скачивать встроенные видео")
         command.add_argument("--account", action="store_true", help="Профиль, друзья, настройки, каталог юзерпиков")
         command.add_argument("--messages", action="store_true", help="Входящие и исходящие из доступной выдачи ЖЖ")
@@ -147,8 +148,8 @@ def main():
                 from .client import username
                 args.username = username(args.username)
                 if args.command == "sync":
-                    validate_scope(args.username, args.mode, args.date_from, args.date_to, args.url)
-                    target_slug(args.username, args.archive)
+                    validate_scope(args.journal or args.username, args.mode, args.date_from, args.date_to, args.url)
+                    target_slug(args.journal or args.username, args.archive)
             password = getpass.getpass("Пароль ЖЖ (не сохраняется): ")
             if not password:
                 raise ExportError("Пароль не может быть пустым.")
@@ -162,18 +163,18 @@ def main():
                     print(message, flush=True)
                     last_message = message
             if args.command == "sync":
-                report = sync(args.username, password, args.output, mode=args.mode, start=args.date_from, end=args.date_to,
+                report = sync(args.username, password, args.output, journal=args.journal, mode=args.mode, start=args.date_from, end=args.date_to,
                               urls=args.url, archive=args.archive, images=args.images, videos=args.videos, delay=args.delay,
                               cancel=cancel, progress=progress, max_requests=args.max_requests, account=args.account, messages=args.messages)
             elif full_export:
-                report = sync(args.username, password, args.output, mode="full", images=args.images, videos=args.videos,
+                report = sync(args.username, password, args.output, journal=args.journal, mode="full", images=args.images, videos=args.videos,
                               delay=args.delay, cancel=cancel, progress=progress, max_requests=args.max_requests, account=args.account, messages=args.messages)
             else:
-                report = export(args.username, password, args.output, images=args.images, videos=args.videos,
+                report = export(args.username, password, args.output, journal=args.journal, images=args.images, videos=args.videos,
                                 delay=args.delay, cancel=cancel, progress=progress,
                                 entry_limit=entry_limit, max_requests=args.max_requests, account=args.account, messages=args.messages)
             password = ""
-            slug = target_slug(args.username, args.archive) if args.command == "sync" else archive_slug(report["username"], entry_limit)
+            slug = target_slug(report['username'], args.archive) if args.command == "sync" else archive_slug(report["username"], entry_limit)
             print((args.output / slug / "index.html").resolve())
             print(f"HTTP-запросов: {report['requests_used']}" + (f" / {report['request_limit']}" if report["request_limit"] else ""))
             if report["status"] != "complete":

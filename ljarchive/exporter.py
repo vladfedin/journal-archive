@@ -9,6 +9,7 @@ from .client import APIError, Cancelled, ExportError, IncompleteData, LiveJourna
 from .storage import Store, atomic_write, dumps
 from .comment_state import DELETED, merge_comment
 from .entries import is_repost
+from .sources import bind_source
 
 
 def now():
@@ -497,6 +498,10 @@ class Exporter:
             store.set("bodies_done", True)
 
     def personal(self):
+        if getattr(self.client, 'source', {}).get('type') == 'community':
+            with self.store.db:
+                self.store.set('personal_requested', {'account': False, 'messages': False})
+            return
         from .personal import Personal
         with self.store.db:
             self.store.set("personal_requested", {"account": self.account, "messages": self.messages})
@@ -565,7 +570,7 @@ class Exporter:
                 **(budget.snapshot() if budget else store.get("last_request_stats", {})),
                 "issues": issues, "images_requested": self.images, "videos_requested": self.videos,
                 "scope": (f"Пробный архив: последние {entry_limit} записей по дате публикации на момент выбора и их комментарии. Проверяются страницы getcomments и наличие текстов, включая скрытые."
-                          if entry_limit is not None else "Личный журнал владельца. Полнота проверяется по календарю и метаданным API ЖЖ на момент выгрузки."),
+                          if entry_limit is not None else "Полнота журнала проверяется по календарю и метаданным API ЖЖ на момент выгрузки."),
                 "limitations": "Удалённые тексты и данные, которые ЖЖ не отдаёт владельцу, восстановить нельзя. Изменения во время выгрузки могут потребовать нового снимка."}
 
     def run(self):
@@ -582,19 +587,24 @@ class Exporter:
                 self.client.budget.save_cooldown = save_cooldown
                 self.client.budget.not_before = self.client.not_before
                 self.client.budget.wait_info = store.get("request_wait", {})
-            self.update("login", "Входим в ЖЖ и получаем сессию владельца…")
-            self.client.login()
-            old_user = store.get("username")
-            if old_user and old_user != self.client.user:
-                raise ExportError("Эта папка принадлежит другому журналу.")
-            if old_user and store.get("entry_limit") != self.entry_limit:
-                raise ExportError("Папка содержит архив с другим объёмом выгрузки. Используйте отдельную папку.")
+            old_user = store.get('username')
+            if old_user and store.get('entry_limit') != self.entry_limit:
+                raise ExportError('Папка содержит архив с другим объёмом выгрузки. Используйте отдельную папку.')
+            with store.db:
+                bind_source(store, self.client)
+                store.set('entry_limit', self.entry_limit)
+            self.update("login", "Входим в ЖЖ и проверяем доступ…")
+            try:
+                self.client.login()
+            finally:
+                with store.db:
+                    bind_source(store, self.client)
             # A new complete run is a new snapshot. Old readable files remain until rebuilt.
             with store.db:
                 if store.get("finished", False):
                     for table in ("entries", "comments", "comment_meta", "users", "days", "settings", "reactions"):
                         store.db.execute(f"DELETE FROM {table}")
-                store.set("username", self.client.user)
+                bind_source(store, self.client)
                 if getattr(self.client, "journal_id", None):
                     store.set("journal_id", self.client.journal_id)
                 if getattr(self.client, "userpics", None) is not None:
@@ -635,7 +645,10 @@ class Exporter:
                 error, cancelled = str(exc), True
             except ExportError as exc:
                 error = str(exc)
+            with store.db:
+                source = bind_source(store, self.client)
             report = self.report(error, cancelled)
+            report['source'] = source
             budget = getattr(self.client, "budget", None)
             if budget:
                 with store.db:
@@ -658,13 +671,13 @@ class Exporter:
 
 
 def export(user, password, output, *, images=False, delay=2, cancel=None, progress=None,
-           entry_limit=10, max_requests=50, account=False, messages=False, videos=False):
+           entry_limit=10, max_requests=50, account=False, messages=False, videos=False, journal=None, source_type=None):
     user = username(user)
     entry_limit = validate_entry_limit(entry_limit)
     budget = RequestBudget(max_requests, progress=progress)
-    client = LiveJournalClient(user, password, delay=delay, cancel=cancel, budget=budget, progress=progress)
+    client = LiveJournalClient(user, password, delay=delay, cancel=cancel, budget=budget, progress=progress, journal=journal, source_type=source_type)
     try:
-        return Exporter(Path(output) / archive_slug(user, entry_limit), client, images=images,
+        return Exporter(Path(output) / archive_slug(client.user, entry_limit), client, images=images,
                         progress=progress, entry_limit=entry_limit, account=account, messages=messages, videos=videos).run()
     finally:
         client.close()

@@ -308,12 +308,12 @@ def threaded(comments):
 
 
 def entry_summary(entry, comments, screened, picture):
-    from .entries import is_repost, repost_url
+    from .entries import is_repost, repost_url, author
     eid = int(entry['itemid'])
     props = entry.get('props') if isinstance(entry.get('props'), dict) else {}
     security = entry.get('security', 'public')
     date = text_value(entry.get('eventtime'))
-    return {'repost': is_repost(entry), 'repost_url': repost_url(entry), 'userpic': picture,
+    return {'repost': is_repost(entry), 'repost_url': repost_url(entry), 'userpic': picture, 'author': author(entry),
             'id': eid, 'title': plain(entry.get('subject')) or 'Без заголовка', 'date': date, 'year': date[:4],
             'tags': [t.strip() for t in text_value(props.get('taglist')).split(',') if t.strip()],
             'security': security, 'security_label': {'public': 'Открытая', 'private': 'Личная', 'usemask': 'Для друзей / группы'}.get(security, security),
@@ -339,6 +339,8 @@ def build_archive(store: Store, report: dict, *, images=False, userpics=False, c
     media.load_state(store)
     entries, comments = store.entries(), store.comments()
     report["format_version"] = __version__
+    from .sources import stored_source
+    report['source'] = stored_source(store)
     report["calendar_version"] = 2
     report.setdefault("issues", [])
     report["reactions"] = reaction_report(store)
@@ -414,7 +416,7 @@ def build_archive(store: Store, report: dict, *, images=False, userpics=False, c
             authors = {int(item["id"]): item["user"] for item in entry_comments}
             for item in entry_comments:
                 item["userpic_view"] = pictures["comment"].get(str(item["id"]))
-                item["by_owner"] = item["user"] == user
+                item["by_owner"] = item["user"] == (summary.get('author') or user)
                 item["parent_user"] = authors.get(int(item.get("parentid") or 0))
                 item.update(comment_view(item))
                 item["html"] = safe_content(item["display_body"], url, links, media, comment_ids)

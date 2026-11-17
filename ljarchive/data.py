@@ -11,7 +11,9 @@ SCHEMA_VERSION = 1
 
 def snapshot(store):
     from .personal import account_data
+    from .sources import stored_source
     return {
+        "source": stored_source(store),
         "account": account_data(store),
         "schema_version": SCHEMA_VERSION,
         "journal": {"username": store.get("username"), "id": store.get("journal_id")},

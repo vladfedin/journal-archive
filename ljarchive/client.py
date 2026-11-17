@@ -169,8 +169,11 @@ def parse_comments(data: bytes) -> CommentPage:
 class LiveJournalClient:
     def __init__(self, user: str, password: str, *, delay: float = 2.0,
                  cancel: threading.Event | None = None, budget: RequestBudget | None = None,
-                 progress=None, max_attempts=6):
-        self.user = username(user)
+                 progress=None, max_attempts=6, journal=None, source_type=None):
+        from .sources import source
+        self.source = source(user, journal, source_type)
+        self.account = self.source['login_username']
+        self.user = self.source['username']
         self._password_hash = hashlib.md5(password.encode("utf-8")).hexdigest()
         self.delay = max(1.0, float(delay))
         self.cancel = cancel or threading.Event()
@@ -279,6 +282,19 @@ class LiveJournalClient:
             raise ExportError(f"ЖЖ вернул некорректный ответ на {method}. Прогресс сохранён.") from exc
 
     def call(self, method: str, **params) -> dict:
+        capability = {'getdaycounts': 'calendar', 'getevents': 'posts', 'getcomments': 'comments', 'syncitems': 'sync'}.get(method)
+        if self.source['type'] == 'community':
+            if method in ('getfriends', 'getfriendof', 'getinbox', 'getusertags'):
+                raise ExportError('Личные данные аккаунта не входят в архив сообщества.')
+            if capability:
+                if self.source['access']['status'] != 'verified':
+                    raise ExportError('Права управления сообществом ещё не подтверждены.')
+                key = 'journal' if method == 'getcomments' else 'usejournal'
+                if any(params.get(k, self.user) != self.user for k in ('journal', 'usejournal')):
+                    raise ExportError('Запрос относится к другому журналу.')
+                if 'journalid' in params and params['journalid'] != self.journal_id:
+                    raise ExportError('ID запроса относится к другому журналу.')
+                params[key] = self.user
         for attempt in range(self.max_attempts):
             try:
                 if attempt:
@@ -288,32 +304,75 @@ class LiveJournalClient:
                 if not isinstance(challenge, str) or not challenge:
                     raise ExportError("ЖЖ не выдал challenge для входа.")
                 response = hashlib.md5((challenge + self._password_hash).encode("utf-8")).hexdigest()
-                return self._rpc(method, {"username": self.user, "ver": 1, "auth_method": "challenge",
-                                          "auth_challenge": challenge, "auth_response": response, **params})
+                result = self._rpc(method, {**params, "username": self.account, "ver": 1, "auth_method": "challenge",
+                                          "auth_challenge": challenge, "auth_response": response})
+                if method == 'getevents' and self.source['type'] == 'community':
+                    self._validate_entries(result)
+                if capability:
+                    self.source['capabilities'][capability] = 'available'
+                return result
             except APIRateLimited:
                 self._defer(backoff(attempt, limited=True), reason="api_limit", category="livejournal",
                             url=BASE_URL, attempt=attempt + 1, max_attempts=self.max_attempts)
                 if attempt == self.max_attempts - 1:
                     raise
+            except APIError as exc:
+                if capability:
+                    self.source['capabilities'][capability] = 'denied' if exc.code in (300, 301, 302, 303, 304) else 'error'
+                raise
+
+    def _validate_entries(self, result):
+        from urllib.parse import urlsplit
+        entries = result.get('events')
+        if not isinstance(entries, list) or any(not isinstance(e, dict) for e in entries):
+            raise ExportError('ЖЖ не вернул список записей сообщества.')
+        for entry in entries:
+            if entry.get('journalid') and entry['journalid'] != self.journal_id:
+                raise ExportError('ЖЖ вернул запись из другого журнала. Данные не смешаны.')
+            if entry.get('url') and not entry.get('repost'):
+                host = urlsplit(entry['url']).hostname
+                if host not in (self.user + '.livejournal.com', self.user.replace('_', '-') + '.livejournal.com'):
+                    raise ExportError('Адрес полученной записи относится к другому журналу.')
 
     def login(self):
-        result = self.call("login", clientversion="Python-LJLocalArchive/0.4", getpickws=1, getpickwurls=1)
-        self.profile = {key: result[key] for key in (
+        community = self.source['type'] == 'community'
+        self.source['access']['status'] = 'unverified'
+        result = self.call("login", clientversion="Python-LJLocalArchive/0.4", **({} if community else {'getpickws': 1, 'getpickwurls': 1}))
+        if result.get('username') and username(result['username']) != self.account:
+            raise ExportError('ЖЖ вернул другой аккаунт при входе.')
+        self.profile = {} if community else {key: result[key] for key in (
             "username", "userid", "fullname", "friendgroups", "usejournals", "caps",
             "is_validated", "is_identity", "identity_type", "identity_value", "identity_display") if key in result}
-        self.userpics = {key: result.get(key) for key in ("pickws", "pickwurls", "defaultpicurl")}
+        self.userpics = None if community else {key: result.get(key) for key in ("pickws", "pickwurls", "defaultpicurl")}
         uid = result.get("userid")
-        if isinstance(uid, int) and not isinstance(uid, bool) and uid > 0:
+        if not community and isinstance(uid, int) and not isinstance(uid, bool) and uid > 0:
             self.journal_id = uid
         cookie = self.call("sessiongenerate", expiration="short", ipfixed=1).get("ljsession")
         if not isinstance(cookie, str) or not cookie or any(c in cookie for c in "\r\n;"):
             raise ExportError("ЖЖ не выдал сессию для выгрузки комментариев.")
         self._cookie = cookie
+        if community:
+            from .sources import managed_communities
+            page = self._request('GET', '/community/manage.bml', headers={'Cookie': 'ljsession=' + self._cookie})
+            if self.user not in managed_communities(page):
+                self.source['access']['status'] = 'unconfirmed'
+                raise ExportError('ЖЖ не подтвердил управление этим сообществом. Проверьте аккаунт и права на странице «Мои сообщества»; право публикации или модерации недостаточно.')
+            identity = self.call('login', usejournal=self.user, getcaps=1)
+            if identity.get('username') != self.user or type(identity.get('userid')) is not int or identity['userid'] <= 0 or 'caps' not in identity:
+                self.source['access']['status'] = 'unconfirmed'
+                raise ExportError('ЖЖ не подтвердил ID и права управления сообществом. Выгрузка не начата.')
+            self.journal_id = identity['userid']
+        self.source['id'] = self.journal_id
+        self.source['access']['status'] = 'verified'
 
     def personal_page(self, path):
+        if self.source['type'] == 'community':
+            raise ExportError('Личные настройки аккаунта не входят в архив сообщества.')
         return self._request("GET", path, category="personal", headers={"Cookie": "ljsession=" + self._cookie})
 
     def personal_feed(self, name):
+        if self.source['type'] == 'community':
+            raise ExportError('Личный профиль аккаунта не входит в архив сообщества.')
         if name not in ("foaf", "userpics"):
             raise ExportError("Неизвестный раздел профиля.")
         return self._request("GET", "/data/" + name, category="personal",
@@ -396,10 +455,15 @@ class LiveJournalClient:
     def comments(self, kind: str, start: int) -> tuple[CommentPage, bytes]:
         if not self._cookie:
             raise ExportError("Сначала войдите в ЖЖ.")
+        if self.source['type'] == 'community' and self.source['access']['status'] != 'verified':
+            raise ExportError('Права управления сообществом ещё не подтверждены.')
         raw = self._request("GET", "/export_comments.bml", params={"get": kind, "startid": start,
-                            "numitems": 1000 if kind == "comment_meta" else 500, "props": 1},
+                            "numitems": 1000 if kind == "comment_meta" else 500, "props": 1,
+                            **({'authas': self.user} if self.source['type'] == 'community' else {})},
                             headers={"Cookie": "ljsession=" + self._cookie})
-        return parse_comments(raw), raw
+        page = parse_comments(raw)
+        self.source['capabilities']['comments'] = 'available'
+        return page, raw
 
     def close(self):
         self._password_hash = ""

@@ -25,7 +25,7 @@ TERMINAL = {"complete", "partial", "cancelled", "error", "demo", "idle"}
 
 
 class Jobs:
-    PARAMS = ("username", "archive", "mode", "date_from", "date_to", "urls", "entry_limit", "images", "videos", "delay", "max_requests", "account", "messages")
+    PARAMS = ("username", "journal", "source_type", "archive", "mode", "date_from", "date_to", "urls", "entry_limit", "images", "videos", "delay", "max_requests", "account", "messages")
 
     def __init__(self, output: Path):
         from .relocation import resolve_output
@@ -118,7 +118,9 @@ class Jobs:
         self.task_path(slug)
         report = json.loads((self.output / slug / "export-report.json").read_text(encoding="utf-8"))
         scope = report.get("sync", {}).get("scope", {})
-        return {"username": report["username"], "archive": slug,
+        identity = report.get('source') or {}
+        return {"username": identity.get('login_username') or report["username"], "archive": slug,
+                "journal": report['username'], "source_type": identity.get('type', 'own'),
                 "mode": "latest" if report.get("entry_limit") else scope.get("mode", "full"),
                 "entry_limit": report.get("entry_limit"), "date_from": scope.get("start"),
                 "date_to": scope.get("end"), "urls": scope.get("urls", []),
@@ -300,6 +302,9 @@ class Jobs:
                 if not isinstance(data.get("username"), str):
                     raise ExportError("Введите имя пользователя.")
                 data["username"] = username(data["username"])
+                from .sources import source
+                identity = source(data['username'], data.get('journal'), data.get('source_type'))
+                data.update(journal=identity['username'], source_type=identity['type'])
                 if not isinstance(data.get("password"), str) or not 0 < len(data["password"]) <= 1024:
                     raise ExportError("Введите пароль ЖЖ.")
                 delay = data.get("delay", 3)
@@ -314,17 +319,19 @@ class Jobs:
                     raise ExportError("Для теста задайте лимит запросов.")
                 if data["entry_limit"] is None:
                     data["mode"] = data.get("mode") or "full"
-                    scope = validate_scope(data["username"], data["mode"], data.get("date_from"), data.get("date_to"), data.get("urls"))
+                    scope = validate_scope(data["journal"], data["mode"], data.get("date_from"), data.get("date_to"), data.get("urls"))
                     data.update(mode=scope.mode, date_from=scope.start, date_to=scope.end, urls=list(scope.urls))
-                    data["archive"] = target_slug(data["username"], data.get("archive"))
+                    data["archive"] = target_slug(data["journal"], data.get("archive"))
                     data["sync_scope"] = scope.data()
                 else:
                     data["mode"] = "latest"
-                    data["archive"] = archive_slug(data["username"], data["entry_limit"])
+                    data["archive"] = archive_slug(data["journal"], data["entry_limit"])
                 for key in ("account", "messages"):
                     data.setdefault(key, False)
                     if not isinstance(data[key], bool):
                         raise ExportError("Некорректная настройка личных данных.")
+                if data['source_type'] == 'community':
+                    data['account'] = data['messages'] = False
                 data.setdefault("videos", False)
                 if not isinstance(data["videos"], bool):
                     raise ExportError("Некорректная настройка видео.")
@@ -342,7 +349,7 @@ class Jobs:
                     pass
             data['_resuming'] = resuming
             self.state = {"phase": "render" if demo else "preparing", "message": "Подготовка архива…", "entries": 0, "comments": 0,
-                          "username": "example_journal" if demo else data["username"], "slug": slug, "cancelling": False, "job_id": secrets.token_hex(8),
+                          "username": "example_journal" if demo else data["journal"], "slug": slug, "cancelling": False, "job_id": secrets.token_hex(8),
                           "operation": "resume" if resuming else "export"}
             self.activity_clock = time.monotonic()
             self.state.update(started_at=time.time(), app_version=__version__, working_seconds=0, waiting_seconds=0)
@@ -372,12 +379,12 @@ class Jobs:
                 password = data.pop("password")
                 if data.get("sync_scope"):
                     scope = data["sync_scope"]
-                    report = sync(data["username"], password, self.output, images=data["images"], videos=data.get("videos", False),
+                    report = sync(data["username"], password, self.output, journal=data['journal'], source_type=data['source_type'], images=data["images"], videos=data.get("videos", False),
                                   delay=data["delay"], cancel=self.cancel, progress=self.progress,
                                   max_requests=data["max_requests"], mode=scope["mode"], start=scope["start"],
                                   end=scope["end"], urls=scope["urls"], archive=slug, account=data.get("account", False), messages=data.get("messages", False))
                 else:
-                    report = export(data["username"], password, self.output, images=data["images"], videos=data.get("videos", False),
+                    report = export(data["username"], password, self.output, journal=data['journal'], source_type=data['source_type'], images=data["images"], videos=data.get("videos", False),
                                     delay=data["delay"], cancel=self.cancel, progress=self.progress,
                                     entry_limit=data["entry_limit"], max_requests=data["max_requests"], account=data.get("account", False), messages=data.get("messages", False))
                 password = ""
@@ -440,7 +447,7 @@ class Jobs:
                 params, state = {key: value for key, value in record["parameters"].items() if key in self.PARAMS}, record["state"]
                 slug = params["archive"]
                 self.task_path(slug)
-                row = found.setdefault(slug, {"slug": slug, "username": params["username"], "entries_saved": 0,
+                row = found.setdefault(slug, {"slug": slug, "username": params.get('journal') or params["username"], "entries_saved": 0,
                                                "comments_saved": 0, "entry_limit": params["entry_limit"]})
                 row.update(parameters=params, parameters_known=list(params), status=state["phase"], created_at=record["updated_at"],
                            resumable=state["phase"] != "complete", message=state.get("message", ""))

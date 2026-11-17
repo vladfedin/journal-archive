@@ -65,6 +65,9 @@ class Store:
                 PRIMARY KEY(kind,object_id,digest));
         """)
         with self.db:
+            if self.get('username') and not self.get('source'):
+                from .sources import stored_source
+                self.set('source', stored_source(self))
             for kind, table in (("post", "entries"), ("comment", "comments")):
                 for row in self.db.execute(f"SELECT id,payload FROM {table} WHERE id NOT IN (SELECT object_id FROM record_hashes WHERE kind=?)", (kind,)):
                     self.db.execute("INSERT INTO record_hashes VALUES (?,?,?)", (kind, row[0], hashlib.sha256(row[1].encode()).hexdigest()))

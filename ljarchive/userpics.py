@@ -1,5 +1,6 @@
 """Resolve the picture attached to each item; never substitute a comment author's current avatar."""
 from urllib.parse import urlsplit
+from .entries import author
 
 
 def picture_url(value):
@@ -34,7 +35,7 @@ def resolve(item, kind, catalog=None, media=None, owner=None):
         if kind == 'comment':
             if not item.get('posterid') or item.get('state') in ('D', 'X'):
                 result['selection'] = 'none'
-        elif catalog is not None and item.get('poster', owner) == owner:
+        elif catalog is not None and author(item, owner) == owner:
             keywords, urls = catalog.get('pickws') or [], catalog.get('pickwurls') or []
             if keyword:
                 matches = [picture_url(url) for key, url in zip(keywords, urls) if key == keyword]
