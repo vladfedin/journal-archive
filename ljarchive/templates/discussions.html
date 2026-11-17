@@ -1,11 +1,11 @@
 {% extends 'base.html' %}
 {% block title %}Обсуждения · {{ user }}{% endblock %}
-{% block head %}<script defer src="assets/discussions-data.js"></script><script defer src="assets/discussions.js"></script>{% endblock %}
+{% block head %}<script defer src="assets/discussions-data.js"></script><script defer src="assets/discussions.js"></script><script defer src="assets/statistics-live.js"></script>{% endblock %}
 {% block body %}
 <main class="main reading">
 <nav class="reading-nav"><a href="statistics.html" id="discussion-back">← Статистика</a></nav>
 <h1 id="discussion-title">Обсуждения</h1><p id="discussion-count" class="muted" role="status"></p>
-<div id="discussion-list"></div>
+<p id="stats-live" class="fine" role="status"></p><div id="discussion-list"></div>
 <div class="stats-pager"><button class="btn" id="discussion-prev">←</button><span id="discussion-page" aria-live="polite"></span><button class="btn" id="discussion-next">→</button></div>
 <noscript><p>Для списка включите JavaScript.</p></noscript>
 </main>

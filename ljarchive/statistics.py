@@ -167,14 +167,19 @@ def statistics(data):
             'returns': sorted(returns, key=lambda r: (-r['days'], r['person']))[:30]}
 
 
-def write_statistics(store, report):
-    data = statistics({'journal': {'username': store.get('username'), 'id': store.get('journal_id')},
+def statistics_source(store):
+    return {'journal': {'username': store.get('username'), 'id': store.get('journal_id')},
                        'entries': store.entries(), 'comments': store.comments(),
                        'scope': {'entry_limit': store.get('entry_limit'),
                                  'last_sync': store.get('sync_job', {}).get('scope')},
                        'coverage': {'posts_done': store.get('posts_done'),
                                     'comments_done': store.get('bodies_done'),
-                                    'discussions': store.get('entry_comments', {})}})
+                                    'discussions': store.get('entry_comments', {})}}
+
+
+def write_statistics(store, report):
+    data = statistics(statistics_source(store))
+    data['generated_at'] = datetime.now(timezone.utc).isoformat()
     write_statistics_data(store.folder, data, report)
 
 
@@ -187,7 +192,7 @@ def write_statistics_data(folder, data, report):
                  'window.ARCHIVE_STATS=' + dumps({k: v for k, v in data.items() if k != 'discussions'}).replace('<', '\\u003c') + ';')
     atomic_write(folder / 'assets' / 'discussions-data.js',
                  'window.ARCHIVE_DISCUSSIONS=' + dumps({**data.get('discussions', {}),
-                    'people': [{'id': p['id'], 'name': p['name']} for p in data['people']]}).replace('<', '\\u003c') + ';')
+                    'people': [{'id': p['id'], 'name': p['name']} for p in data['people']], 'generated_at': data.get('generated_at')}).replace('<', '\\u003c') + ';')
     from pathlib import Path
     atomic_write(folder / 'assets' / 'discussions.js', (Path(__file__).parent / 'static' / 'discussions.js').read_bytes())
     atomic_write(folder / 'discussions.html', ENV.get_template('discussions.html').render(

@@ -339,9 +339,11 @@ class SyncExporter(Exporter):
             def save_cooldown(deadline):
                 with store.db:
                     store.set("request_not_before", deadline)
+                    store.set("request_wait", self.client.budget.wait_info)
             self.client.save_cooldown = save_cooldown
             self.client.budget.save_cooldown = save_cooldown
             self.client.budget.not_before = self.client.not_before
+            self.client.budget.wait_info = store.get("request_wait", {})
             try:
                 if self.scope.mode == "full":
                     audit = verify_archive(store, progress=self.progress, check=self.client.check)

@@ -96,10 +96,11 @@ class Media:
             seconds -= portion
         return not self.cancel.is_set()
 
-    def defer(self, seconds):
+    def defer(self, seconds, **details):
         self.budget.not_before = max(self.budget.not_before, time.time() + seconds)
+        self.budget.describe_wait(self.budget.not_before, **details)
         self.budget.save_cooldown(self.budget.not_before)
-        self.budget.progress(phase="waiting", message="Сервер изображений просит подождать перед повтором…", retry_at=self.budget.not_before)
+        self.budget.announce_wait()
 
     def get(self, url: str, *, required=False, category="images") -> str | None:
         self.used_urls[category].add(url)
@@ -137,10 +138,12 @@ class Media:
                 public_url(current)
                 if self.budget.limit is not None and self.budget.used >= self.budget.limit:
                     self.budget.consume(category)
+                self.budget.announce_wait()
                 if not self.wait(max(self.budget.delay, self.budget.not_before - time.time())):
                     self.record_error(url, "cancelled", status="pending", requests_made=requests_made, checked_at=checked_at)
                     return None
                 self.budget.consume(category)
+                self.budget.event("request", category, current, attempt=attempt + 1, max_attempts=6)
                 requests_made += 1
                 if attempt:
                     self.budget.progress(phase="materials", message=f"Загрузка изображения · попытка {attempt + 1} из 6")
@@ -149,7 +152,8 @@ class Media:
                 try:
                     response = self.session.get(current, stream=True, timeout=(10, 20), allow_redirects=False)
                 except (requests.Timeout, requests.ConnectionError) as exc:
-                    self.defer(backoff(attempt))
+                    self.defer(backoff(attempt), reason="timeout" if isinstance(exc, requests.Timeout) else "connection",
+                               category=category, url=current, attempt=attempt + 1, max_attempts=6)
                     if attempt == 5:
                         self.paused_origins.add(origin)
                         raise exc
@@ -157,7 +161,9 @@ class Media:
                 with response:
                     http_status = response.status_code
                     if response.status_code in (429, 500, 502, 503, 504):
-                        self.defer(backoff(attempt, response.headers.get("Retry-After"), limited=response.status_code == 429))
+                        self.defer(backoff(attempt, response.headers.get("Retry-After"), limited=response.status_code == 429),
+                                   reason="http", category=category, url=current, http_status=response.status_code,
+                                   attempt=attempt + 1, max_attempts=6, server_delay=bool(response.headers.get("Retry-After")))
                         if attempt == 5:
                             self.paused_origins.add(origin)
                             response.raise_for_status()
@@ -183,7 +189,8 @@ class Media:
                                 raise ValueError("image over 20 MB")
                             chunks.append(chunk)
                     except (requests.Timeout, requests.ConnectionError, requests.exceptions.ChunkedEncodingError):
-                        self.defer(backoff(attempt))
+                        self.defer(backoff(attempt), reason="transfer", category=category, url=current,
+                                   attempt=attempt + 1, max_attempts=6)
                         if attempt == 5:
                             self.paused_origins.add(origin)
                             raise
@@ -196,6 +203,7 @@ class Media:
                     atomic_write(self.folder / path, b"".join(chunks))
                     self.mapping[url] = path
                     self.errors.pop(url, None)
+                    self.budget.event("success", category, current)
                     return path
             reason = "redirects"
             raise ValueError("too many redirects")

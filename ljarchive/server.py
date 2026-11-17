@@ -12,7 +12,7 @@ from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from tempfile import TemporaryFile
-from urllib.parse import unquote, urlsplit
+from urllib.parse import unquote, urlsplit, parse_qs
 
 from . import __version__
 from .client import Cancelled, ExportError, RequestBudget, username
@@ -35,6 +35,8 @@ class Jobs:
         self.tasks.mkdir(exist_ok=True, mode=0o700)
         self.lock = threading.RLock()
         self.state = {"phase": "idle"}
+        self.activity_clock = time.monotonic()
+        self.persisted_clock = 0
         self.cancel = threading.Event()
         self.thread = None
         self.stopping = False
@@ -48,6 +50,8 @@ class Jobs:
         self.preparation_lock = threading.Lock()
         self.preparations = {}
         self.preparation_threads = []
+        from .live_statistics import LiveStatistics
+        self.statistics_cache = LiveStatistics()
         from .on_demand import MaterialQueue
         self.materials = MaterialQueue(self)
         self.relocation = {"phase": "idle"}
@@ -64,6 +68,8 @@ class Jobs:
             self.state = latest.get("state", {"phase": "idle"})
             if self.state.get("phase") not in TERMINAL:
                 self.state.update(phase="cancelled", message="Загрузка прервана. Можно продолжить.", cancelling=False)
+                self.state.pop('wait', None)
+                self.state.pop('retry_at', None)
             self.current = latest["parameters"]
             self.history = latest.get('history', [])
             self.persist()
@@ -106,6 +112,7 @@ class Jobs:
             from .exporter import now
             atomic_write(self.task_path(self.current["archive"]), dumps({
                 "parameters": self.current, "state": self.state, "history": self.history[-10:], "updated_at": now()}))
+            self.persisted_clock = time.monotonic()
 
     def legacy_parameters(self, slug):
         self.task_path(slug)
@@ -179,14 +186,24 @@ class Jobs:
 
     def snapshot(self):
         with self.lock:
+            self.tick_activity()
             if (self.recovery_before is not None and time.monotonic() - self.recovery_time >= 5
                     and not (self.recovery_thread and self.recovery_thread.is_alive())):
                 self.recovery_thread = threading.Thread(target=self.refresh_recovery, daemon=True)
                 self.recovery_thread.start()
             state = dict(self.state)
+            if state.get('phase') != 'idle':
+                state.update(server_time=time.time(), worker_alive=bool(self.thread and self.thread.is_alive()))
             if self.current:
                 state["parameters"] = {key: self.current[key] for key in self.PARAMS if key in self.current}
             return state
+
+    def tick_activity(self):
+        now = time.monotonic()
+        if self.state.get('phase') not in TERMINAL:
+            key = 'waiting_seconds' if self.state.get('phase') == 'waiting' else 'working_seconds'
+            self.state[key] = self.state.get(key, 0) + max(0, now - self.activity_clock)
+        self.activity_clock = now
 
     def recovery_plan(self, slug):
         from .recovery import read_inventory, summary
@@ -224,16 +241,34 @@ class Jobs:
 
     def progress(self, **values):
         with self.lock:
+            self.tick_activity()
             previous = self.state.get("phase")
+            event = values.pop('activity', None)
+            if event:
+                self.state['last_activity'] = event
+                self.state['events'] = (self.state.get('events', []) + [event])[-30:]
+                if event['kind'] == 'success':
+                    self.state['last_success_at'] = event['at']
+                if event['kind'] == 'request':
+                    self.state['request'] = event
+                    if previous in ('waiting', 'retrying'):
+                        values.update(phase='loading', message='Запрос отправлен. Получаем данные…')
+            if values.get('phase') == 'waiting':
+                info = values.get('wait', {})
+                if info != self.state.get('wait') or previous != 'waiting':
+                    self.state['events'] = (self.state.get('events', []) + [{'kind': 'wait', 'at': time.time(), **info}])[-30:]
             if "phase" in values and values["phase"] != previous:
-                for key in ("completed", "total", "retry_at"):
+                for key in ("completed", "total", "retry_at", "wait"):
                     self.state.pop(key, None)
             # Reports may be large; the archive retains the complete report separately.
             report = values.pop("report", None)
+            if any(values.get(key, 0) > self.state.get(key, 0) for key in ('entries', 'comments')):
+                self.state['last_saved_at'] = time.time()
             self.state.update(values)
+            self.state['last_progress_at'] = time.time()
             if report:
                 self.state.update(request_limit_reached=bool(report.get("request_limit_reached")))
-            if self.state.get("phase") != previous or self.state.get("phase") in TERMINAL:
+            if self.state.get("phase") != previous or self.state.get("phase") in TERMINAL or time.monotonic() - self.persisted_clock >= 2:
                 self.persist()
 
     def start(self, data, demo=False):
@@ -309,6 +344,8 @@ class Jobs:
             self.state = {"phase": "render" if demo else "preparing", "message": "Подготовка архива…", "entries": 0, "comments": 0,
                           "username": "example_journal" if demo else data["username"], "slug": slug, "cancelling": False, "job_id": secrets.token_hex(8),
                           "operation": "resume" if resuming else "export"}
+            self.activity_clock = time.monotonic()
+            self.state.update(started_at=time.time(), app_version=__version__, working_seconds=0, waiting_seconds=0)
             self.current = None if demo else {key: data.get(key) for key in self.PARAMS}
             if not demo:
                 self.state.update(requests_used=0, request_limit=data["max_requests"], entry_limit=data["entry_limit"])
@@ -410,6 +447,32 @@ class Jobs:
             except (OSError, ValueError, KeyError, TypeError, ExportError):
                 continue
         return {"output": str(self.output), "relocation": dict(self.relocation), "archives": sorted(found.values(), key=lambda row: row.get("created_at") or "", reverse=True)}
+
+    def diagnostics(self, slug):
+        from .diagnostics import build_diagnostics
+        path = self.task_path(slug)
+        folder = (self.output / slug).resolve()
+        if not folder.is_relative_to(self.output.resolve()):
+            raise ExportError('Нет доступа к архиву.')
+        state = self.snapshot()
+        if state.get('slug') == slug:
+            params = state.get('parameters', {})
+        else:
+            try:
+                record = json.loads(path.read_text(encoding='utf-8'))
+                state, params = record['state'], record['parameters']
+                state = {**state, 'worker_alive': False, 'server_time': time.time()}
+            except (OSError, ValueError, KeyError):
+                state, params = {}, {}
+        return build_diagnostics(folder, state, params)
+
+    def statistics(self, slug):
+        self.task_path(slug)
+        folder = (self.output / slug).resolve()
+        if not folder.is_relative_to(self.output.resolve()):
+            raise ExportError('Нет доступа к архиву.')
+        state = self.snapshot()
+        return self.statistics_cache.get(folder, active=state.get('slug') == slug and state.get('phase') not in TERMINAL)
 
 
 def make_server(output: Path, port=8787):
@@ -532,6 +595,25 @@ def make_server(output: Path, port=8787):
                 return self.json(jobs.snapshot())
             if path == "/api/archives":
                 return self.json(jobs.archives())
+            if path.startswith('/api/diagnostics/'):
+                try:
+                    return self.json(jobs.diagnostics(path.removeprefix('/api/diagnostics/')))
+                except ExportError as exc:
+                    return self.json({'error': str(exc)}, 400)
+            if path.startswith('/api/statistics/'):
+                try:
+                    from .live_statistics import public_statistics, discussion_statistics
+                    parts = path.removeprefix('/api/statistics/').split('/')
+                    if len(parts) > 2 or len(parts) == 2 and parts[1] != 'discussions':
+                        raise ExportError('Некорректный адрес статистики.')
+                    result = jobs.statistics(parts[0])
+                    query = parse_qs(urlsplit(self.path).query)
+                    data = result.pop('data')
+                    if data is not None and query.get('version', [''])[0] != result['version']:
+                        result['data'] = discussion_statistics(data) if len(parts) == 2 else public_statistics(data)
+                    return self.json(result)
+                except ExportError as exc:
+                    return self.json({'error': str(exc)}, 400)
             if path.startswith('/api/material/'):
                 try: return self.json(jobs.materials.status(path.removeprefix('/api/material/')))
                 except ExportError as exc: return self.json({'error': str(exc)}, 404)
@@ -590,6 +672,37 @@ def make_server(output: Path, port=8787):
                         return self.json({"error": "Не удалось обновить оформление архива. Проверьте папку и свободное место."}, 409)
                 snapshot = jobs.snapshot()
                 active = snapshot.get("slug") == relative.parts[0] and snapshot.get("phase") not in TERMINAL
+                if relative.parts[0] != '_demo' and relative.parts[1:] in {
+                    ('statistics.html',), ('discussions.html',), ('assets', 'statistics-data.js'),
+                    ('assets', 'discussions-data.js'), ('data', 'statistics.json')}:
+                    from .statistics import statistics
+                    from .live_statistics import public_statistics, discussion_statistics
+                    from .storage import dumps
+                    from .render import ENV
+                    try:
+                        result = jobs.statistics(relative.parts[0])
+                    except ExportError as exc:
+                        return self.json({'error': str(exc)}, 400)
+                    data = result['data'] or statistics({})
+                    if target.name == 'statistics.json':
+                        if result['data'] is None:
+                            return self.json({'error': 'Статистика пересчитывается.'}, 503)
+                        return self.json(data)
+                    if target.suffix == '.js':
+                        name = 'ARCHIVE_STATS' if target.name == 'statistics-data.js' else 'ARCHIVE_DISCUSSIONS'
+                        payload = public_statistics(data) if name == 'ARCHIVE_STATS' else discussion_statistics(data)
+                        body = ('window.' + name + '=' + dumps(payload).replace('<', '\\u003c') + ';').encode('utf-8')
+                        mime = 'text/javascript'
+                    else:
+                        body = ENV.get_template(target.name).render(user=data.get('journal', {}).get('username') or relative.parts[0],
+                            report={'status': 'partial', 'created_at': data.get('generated_at', '')}, stats=data).encode('utf-8')
+                        body = body.replace(b'<body>', b'<body data-library-url="/">', 1)
+                        mime = 'text/html'
+                    self.response_headers(200, mime + '; charset=utf-8', len(body))
+                    self.wfile.write(body)
+                    return
+                if len(relative.parts) == 3 and relative.parts[1] == 'assets' and relative.parts[2] in {'statistics.js', 'statistics-live.js', 'discussions.js'}:
+                    return self.file(ROOT / 'static' / relative.parts[2])
                 if len(relative.parts) == 3 and relative.parts[1] == "assets" and relative.parts[2] in {"archive.css", "archive.js", "theme.js", "common.js", "timeline.js", "calendar.js", "calendar.css", "material-actions.js", "favicon.svg", "favicon.ico"}:
                     if active or not target.exists():
                         return self.file(ROOT / "static" / relative.parts[2])

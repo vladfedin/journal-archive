@@ -127,9 +127,23 @@ def main():
                 page.locator('#settings-close').click()
                 # A resume shows closed and remaining gaps without collapsing open reasons on polling.
                 state.update(operation='resume', phase='waiting', retry_at=4102444800, recovery=recovery,
+                             started_at=100, working_seconds=125, waiting_seconds=61, last_success_at=4102444600, server_time=4102444700,
+                             wait={'reason':'timeout','host':'images.example','attempt':2,'max_attempts':6},
                              message='Загрузка изображения · попытка 2 из 6')
                 page.evaluate('s => showStatus(s)', state)
                 expect(page.locator('#job-stage')).to_contain_text('Пауза до')
+                expect(page.locator('#job-activity')).to_contain_text('Попытка 2 / 6')
+                expect(page.locator('#job-activity')).to_contain_text('Повтор через 1 мин 40 с')
+                page.locator('#job-diagnostics').click()
+                expect(page.locator('#diagnostics-download')).to_be_visible()
+                page.locator('#diagnostics-dialog summary').click()
+                expect(page.locator('#diagnostics-content')).to_contain_text('schema_version')
+                with page.expect_download() as downloaded_report:
+                    page.locator('#diagnostics-download').click()
+                diagnostic = Path(downloaded_report.value.path()).read_text(encoding='utf-8')
+                assert 'browser-test-secret' not in diagnostic and 'https://' not in diagnostic
+                assert json.loads(diagnostic)['schema_version'] == 1
+                page.locator('#diagnostics-close').click()
                 expect(page.locator('#job-recovery [data-recovery-kind=images] td')).to_have_text(['12', '0', '12'])
                 page.locator('#job-recovery .recovery-reasons summary').click()
                 recovery['rows'][0].update(resolved=10, remaining=2)
@@ -356,6 +370,35 @@ def main():
                 page.locator('.timeline-bar').click()
                 expect(page.locator('.post h1')).to_have_text('Во время загрузки')
                 expect(page.locator('.prose').first).to_contain_text('Уже сохранено')
+                server.jobs.statistics_cache.interval = 0
+                page.goto(base + '/archive/live_fixture/statistics.html')
+                expect(page.locator('#stats-live')).to_contain_text('Снимок', timeout=10000)
+                page.locator('#stats-year').select_option('2001')
+                page.locator('#stats-owner').uncheck()
+                page.locator('#stats-metric').select_option('share')
+                page.locator('#stats-search').fill('alice')
+                with live.db:
+                    live.db.execute("INSERT INTO users(id,name) VALUES (7,'alice')")
+                    live.save_entry({'itemid':2,'subject':'Новый год','eventtime':'2022-01-01 10:00:00'})
+                    live.save_comment({'id':10,'jitemid':1,'date':'2001-01-02','posterid':7,'body':'Первый ответ'})
+                    live.save_comment({'id':11,'jitemid':2,'date':'2022-01-02','posterid':7,'body':'Второй ответ'})
+                expect(page.locator('#stats-year option[value="2022"]')).to_have_count(1, timeout=10000)
+                expect(page.locator('#stats-search')).to_be_focused()
+                expect(page.locator('#stats-search')).to_have_value('alice')
+                expect(page.locator('#stats-year')).to_have_value('2001')
+                expect(page.locator('#stats-metric')).to_have_value('share')
+                expect(page.locator('#stats-owner')).not_to_be_checked()
+                expect(page.locator('#stats-people .stats-participants')).to_contain_text('alice')
+                expect(page.locator('#stats-summary')).to_contain_text('Комментариев: 2')
+                expect(page.locator('#stats-graph')).not_to_be_visible()
+                expect(page.locator('.footer')).not_to_contain_text('Дата неизвестна')
+                page.screenshot(path=str(Path(tempfile.gettempdir()) / 'ljarchive-live-statistics.png'), full_page=True)
+                page.locator('#stats-people a.heat').first.click()
+                expect(page.locator('#discussion-count')).to_contain_text('комментариев: 1')
+                with live.db:
+                    live.save_comment({'id':12,'jitemid':1,'date':'2001-01-03','posterid':7,'body':'Третий ответ'})
+                expect(page.locator('#discussion-count')).to_contain_text('комментариев: 2', timeout=10000)
+                server.jobs.statistics_cache.interval = 30
                 server.jobs.state = old_state
                 live.close()
                 page.goto(base + '/archive/example_journal/timeline.html')

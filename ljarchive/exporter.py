@@ -90,10 +90,13 @@ class Exporter:
                 if attempt == 2:
                     raise
                 deadline = max(time.time() + 30 * 2 ** attempt, getattr(self.client, "not_before", 0))
+                wait_info = {"reason": "incomplete", "category": "livejournal", "retry_at": deadline,
+                             "attempt": attempt + 1, "max_attempts": 3}
                 with self.store.db:
                     self.store.set("request_not_before", deadline)
+                    self.store.set("request_wait", wait_info)
                     self.store.set("repair", {"stage": label, "pass": attempt + 2, "retry_at": deadline})
-                self.update("waiting", f"Докачка: {label} · следующий проход {attempt + 2} из 3", retry_at=deadline)
+                self.update("waiting", f"Докачка: {label} · следующий проход {attempt + 2} из 3", retry_at=deadline, wait=wait_info)
                 if hasattr(self.client, "_wait"):
                     self.client._wait(deadline - time.time())
                 elif self.client.cancel.wait(max(0, deadline - time.time())):
@@ -574,9 +577,11 @@ class Exporter:
                 def save_cooldown(deadline):
                     with store.db:
                         store.set("request_not_before", deadline)
+                        store.set("request_wait", self.client.budget.wait_info)
                 self.client.save_cooldown = save_cooldown
                 self.client.budget.save_cooldown = save_cooldown
                 self.client.budget.not_before = self.client.not_before
+                self.client.budget.wait_info = store.get("request_wait", {})
             self.update("login", "Входим в ЖЖ и получаем сессию владельца…")
             self.client.login()
             old_user = store.get("username")

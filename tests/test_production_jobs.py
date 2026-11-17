@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 import requests
 
+from ljarchive import __version__
 from ljarchive.client import ExportError, RequestBudget
 from ljarchive.data import snapshot
 from ljarchive.demo import create_demo
@@ -100,7 +101,7 @@ def test_old_archive_format_migration_preserves_source_and_never_requests_networ
     finally: store.close()
     assert 'old layout' not in (folder/'index.html').read_text(encoding='utf-8')
     assert (folder/'help.html').is_file() and (folder/'assets/common.js').is_file()
-    assert json.loads((folder/'export-report.json').read_text(encoding='utf-8'))['format_version']=='0.7.8'
+    assert json.loads((folder/'export-report.json').read_text(encoding='utf-8'))['format_version']==__version__
 
 
 def test_help_works_from_local_application_and_offline_archive(local_server):

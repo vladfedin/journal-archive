@@ -77,10 +77,18 @@ function openDialog(kind,archive=null){
   else{$('request-limit').required=false;$('entry-urls').required=false;$('entry-urls').disabled=true;$('resume-note').textContent=archive.username+' · '+(scopes[archive.parameters?.mode]||'загрузка');}
   $('export-dialog').showModal();(isNew?$('username'):$('password')).focus();
 }
+function duration(seconds){const n=Math.max(0,Math.ceil(seconds||0));return n<60?n+' с':n<3600?Math.floor(n/60)+' мин '+n%60+' с':Math.floor(n/3600)+' ч '+Math.floor(n%3600/60)+' мин';}
 function showStatus(s){lastState=s;if(!s.phase||s.phase==='idle'||s.job_id&&s.job_id===dismissedJob)return;$('job').hidden=false;$('job-title').textContent=s.username||'';
   let phase=s.request_limit_reached?'Лимит запросов':labels[s.phase]||'Загрузка';
-  if(s.phase==='waiting'&&s.retry_at)phase=s.retry_at*1000>Date.now()?'Пауза до '+new Date(s.retry_at*1000).toLocaleTimeString('ru-RU'):'Повтор запроса';
+  if(s.phase==='waiting'&&s.retry_at)phase=s.retry_at>(s.server_time||Date.now()/1000)?'Пауза до '+new Date(s.retry_at*1000).toLocaleTimeString('ru-RU'):'Срок паузы истёк';
   $('job-stage').textContent=s.cancelling?'Остановка…':phase;
+  const details=[],wait=s.phase==='waiting'?s.wait:null,clock=s.server_time||Date.now()/1000;
+  if(wait){if(wait.host)details.push(wait.host);if(wait.attempt)details.push('Попытка '+wait.attempt+' / '+wait.max_attempts);if(s.retry_at>clock)details.push('Повтор через '+duration(s.retry_at-clock));if(wait.server_delay)details.push('Срок задан сервером');}
+  if(s.started_at){details.push('Работа '+duration(s.working_seconds));details.push('Ожидание '+duration(s.waiting_seconds));}
+  if(s.last_saved_at)details.push('Последнее сохранение '+duration(clock-s.last_saved_at)+' назад');
+  else if(s.last_success_at)details.push('Последний ответ '+duration(clock-s.last_success_at)+' назад');
+  if(!terminal.has(s.phase)&&s.worker_alive===false)details.push('Процесс не работает');
+  $('job-activity').hidden=!details.length;$('job-activity').textContent=details.join(' · ');
   $('job-stage').classList.toggle('paused-message',['error','partial'].includes(s.phase));
   $('posts-count').textContent=mapSlug===s.slug&&mapView?.data?.expected?`${mapView.data.known} / ${mapView.data.expected}`:s.entries||0;$('comments-count').textContent=s.comments||0;
   $('requests-count').textContent=`${s.requests_used||0}${s.request_limit?' / '+s.request_limit:''} запросов`;
@@ -89,6 +97,7 @@ function showStatus(s){lastState=s;if(!s.phase||s.phase==='idle'||s.job_id&&s.jo
   $('job-statistics').hidden=!s.archive_url;if(s.archive_url)$('job-statistics').href=s.archive_url.replace(/index\.html$/,'statistics.html');
   $('job-report').hidden=!s.archive_url;if(s.archive_url)$('job-report').href=s.archive_url.replace(/index\.html$/,'report.html');
   $('job-settings').hidden=!s.parameters;
+  $('job-diagnostics').hidden=!s.slug||s.slug==='_demo';
   $('job-message').textContent=s.message||'';$('job-message').hidden=!s.message||['complete','demo'].includes(s.phase)||!!s.request_limit_reached;
   $('job-recovery').hidden=!s.recovery;
   const recoveryKey=JSON.stringify([s.job_id,s.operation,s.recovery]);if($('job-recovery').dataset.key!==recoveryKey){const reasonsOpen=$('job-recovery-content').querySelector('.recovery-reasons')?.open;$('job-recovery').dataset.key=recoveryKey;$('job-recovery-content').replaceChildren(recoveryView(s.recovery,s.operation==='resume'));const reasons=$('job-recovery-content').querySelector('.recovery-reasons');if(reasons)reasons.open=!!reasonsOpen;}
@@ -108,6 +117,7 @@ async function library(){const data=await api('/api/archives');storageStatus(dat
     const cell=el('td'),actions=el('div','row-actions');if(archive.url){const open=el('a','btn','Открыть');open.href=archive.url;actions.append(open);}
     const more=el('details','more'),summary=el('summary','','⋯');summary.setAttribute('aria-label','Действия с архивом '+archive.username);const menu=el('div','menu');
     const settings=el('button','','Параметры');settings.type='button';settings.onclick=()=>showParameters(archive);menu.append(settings);
+    const diagnostics=el('button','','Диагностика');diagnostics.type='button';diagnostics.onclick=()=>showDiagnostics(archive.slug);menu.append(diagnostics);
     if(archive.resumable){const resume=el('button','',resumeLabel(archive));resume.type='button';resume.dataset.resume='';resume.onclick=()=>openDialog('resume',archive);menu.append(resume);}
     const update=el('button','','Обновить');update.type='button';update.dataset.update='';update.onclick=()=>openDialog('update',archive);menu.append(update);
     if(archive.url){menu.append(el('hr'));for(const [text,url] of [['Скачать JSON',archive.activitystreams_url],['Исходный JSON',archive.json_url],['Скачать ZIP',archive.zip_url],['Статистика',archive.url.replace('index.html','statistics.html')],['Календарь',archive.url.replace('index.html','calendar.html')],['Хронология',archive.url.replace('index.html','timeline.html')],['Профиль',archive.url.replace('index.html','account.html')],['Переписка',archive.url.replace('index.html','messages.html')],['Состояние архива',archive.report_url]]){const a=el('a','',text);a.href=url;menu.append(a);}}
@@ -127,7 +137,7 @@ async function refreshMap(state){
   $('job-timeline').hidden=!data.expected;mapView.set(data,data.active);
   if(data.expected){$('progress').hidden=terminal.has(state.phase)||!localProgress(state.phase);$('posts-count').textContent=`${data.known} / ${data.expected}`;}
 }
-let previousKey='';async function poll(){if(closed)return;try{const state=await api('/api/status');showStatus(state);await refreshMap(state);error('');const key=JSON.stringify([state.phase,state.slug,state.archive_url]);if(key!==previousKey||!busy){await library();previousKey=key;}}catch(e){error('Приложение недоступно. Запустите его снова.');}finally{if(!closed)pollTimer=setTimeout(poll,busy?1200:5000);}}
+let previousKey='';async function poll(){if(closed)return;let received=false;try{const state=await api('/api/status');received=true;showStatus(state);await refreshMap(state);error('');const key=JSON.stringify([state.phase,state.slug,state.archive_url]);if(key!==previousKey||!busy){await library();previousKey=key;}}catch(e){if(!received){$('job-stage').textContent='Нет связи';error('Нет связи с приложением. Показан последний полученный статус.');}else error(e.message);}finally{if(!closed)pollTimer=setTimeout(poll,busy?1200:5000);}}
 document.querySelectorAll('[data-new]').forEach(b=>b.onclick=()=>openDialog('new'));
 document.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>$('export-dialog').close());
 document.querySelectorAll('[data-scope]').forEach(b=>b.onclick=()=>setScope(b.dataset.scope));
@@ -145,6 +155,18 @@ $('export-form').onsubmit=async e=>{e.preventDefault();if(busy||submitting||prep
 $('job-action').onclick=async()=>{try{if(busy){$('job-action').disabled=true;showStatus(await api('/api/cancel',{}));}else if(['complete','demo'].includes(lastState.phase)){$('job').hidden=true;dismissedJob=lastState.job_id;}else{await library();const archive=archives.find(a=>a.slug===lastState.slug);if(archive)openDialog('resume',archive);else error('Сохранённая задача не найдена.');}}catch(e){error(e.message);$('job-action').disabled=false;}};
 $('job-settings').onclick=()=>showParameters(lastState);
 $('settings-close').onclick=()=>$('settings-dialog').close();
+let diagnosticURL='';
+async function showDiagnostics(slug){
+  $('diagnostics-content').textContent='Подготовка отчёта…';$('diagnostics-download').hidden=true;$('diagnostics-dialog').showModal();
+  try{const report=await api('/api/diagnostics/'+encodeURIComponent(slug)),text=JSON.stringify(report,null,2);
+    $('diagnostics-content').textContent=text;
+    if(diagnosticURL)URL.revokeObjectURL(diagnosticURL);
+    diagnosticURL=URL.createObjectURL(new Blob([text],{type:'application/json'}));
+    $('diagnostics-download').href=diagnosticURL;$('diagnostics-download').hidden=false;
+  }catch(e){$('diagnostics-content').textContent=e.message;}
+}
+$('job-diagnostics').onclick=()=>showDiagnostics(lastState.slug);
+$('diagnostics-close').onclick=()=>$('diagnostics-dialog').close();
 $('quit').onclick=async()=>{try{await api('/api/quit',{});closed=true;clearTimeout(pollTimer);setBusy(false);$('quit').disabled=true;$('job').hidden=true;error('Приложение закрыто.');}catch(e){error(e.message);}};
 poll();
 

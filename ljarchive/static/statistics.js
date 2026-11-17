@@ -1,9 +1,9 @@
 (() => {
   'use strict';
-  const data = window.ARCHIVE_STATS;
+  let data = window.ARCHIVE_STATS;
   if (!data) return;
   const $ = id => document.getElementById(id);
-  const people = new Map(data.people.map(p => [p.id, p]));
+  let people = new Map(data.people.map(p => [p.id, p]));
   const number = n => new Intl.NumberFormat('ru').format(n);
   const node = (tag, text, cls) => {
     const n = document.createElement(tag);
@@ -126,8 +126,8 @@
       return n;
     };
     svg.replaceChildren(element('title', {}, 'Кто кому отвечал'));
-    if (!edges.length) { svg.hidden = true; return; }
-    svg.hidden = false;
+    svg.toggleAttribute('hidden', !edges.length);
+    if (!edges.length) return;
     const chosen = [], ids = new Set();
     for (const e of edges) {
       const extra = Number(!ids.has(e.source)) + Number(!ids.has(e.target));
@@ -164,6 +164,7 @@
     const years = days => (days / 365.2425).toLocaleString('ru', {maximumFractionDigits:1});
     for (const [target, rows, returns] of [['stats-revivals', data.revivals, false], ['stats-returns', data.returns, true]]) {
       const container = $(target);
+      container.replaceChildren();
       if (!rows.length) { container.append(node('p', 'Пока нет таких пауз в сохранённых данных', 'muted')); continue; }
       for (const row of rows) {
         const card = node('article', undefined, 'stats-finding');
@@ -185,5 +186,26 @@
   $('stats-prev').addEventListener('click', () => {page--; render();});
   $('stats-next').addEventListener('click', () => {page++; render();});
   $('stats-more-edges').addEventListener('click', () => {edgeLimit+=40; render();});
+  let hydrated = !!data.generated_at;
+  window.addEventListener('archive-statistics', event => {
+    const year = $('stats-year').value || (!hydrated ? initial.get('year') : ''), focus = document.activeElement;
+    const href = focus?.getAttribute('href'), scroll = [window.scrollX, window.scrollY];
+    const scrolls = [...document.querySelectorAll('.stats-scroll')].map(el => [el, el.scrollLeft]);
+    data = event.detail; people = new Map(data.people.map(p => [p.id, p]));
+    if (!hydrated && !$('stats-search').value && people.has(initial.get('person'))) $('stats-search').value = people.get(initial.get('person')).name;
+    hydrated = true;
+    const years = ['', ...data.years];
+    if (JSON.stringify([...$('stats-year').options].map(o => o.value)) !== JSON.stringify(years)) {
+      $('stats-year').replaceChildren(...years.map(y => new Option(y || 'Все годы', y)));
+      $('stats-year').value = years.includes(year) ? year : '';
+    }
+    if ($('stats-summary')) $('stats-summary').textContent = `Участников: ${number(data.totals.people)} · Комментариев: ${number(data.totals.comments)}` + (data.years.length ? ` · ${data.years[0]}–${data.years.at(-1)}` : '');
+    if ($('stats-coverage')) $('stats-coverage').hidden = data.coverage.discussions_complete && data.coverage.posts_complete;
+    if ($('stats-count-notes')) $('stats-count-notes').textContent = `Без известной даты: ${data.totals.unknown_dates}. Без известного автора: ${data.totals.anonymous}. Удалённых: ${data.totals.deleted}. Отсутствующих родителей: ${data.totals.missing_parents}.`;
+    render(); findings();
+    if (href && !focus.isConnected) [...document.querySelectorAll('a')].find(a => a.getAttribute('href') === href)?.focus({preventScroll:true});
+    for (const [el, left] of scrolls) el.scrollLeft = left;
+    window.scrollTo(...scroll);
+  });
   render(); findings();
 })();

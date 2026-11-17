@@ -3,17 +3,18 @@
 <main class="main">
 <div class="heading"><h1>Архивы</h1><button class="btn primary" data-new><span data-icon="plus"></span>Новый архив</button></div>
 <section class="job" id="job" hidden aria-live="polite">
-<div class="job-top"><div><strong id="job-title"></strong><span class="job-stage" id="job-stage"></span></div><div class="job-links"><button type="button" class="btn text" id="job-settings" hidden>Параметры</button><a class="small" id="job-statistics" hidden>Статистика</a><a class="small muted" id="job-report" hidden>Подробности</a></div></div>
+<div class="job-top"><div><strong id="job-title"></strong><span class="job-stage" id="job-stage"></span></div><div class="job-links"><button type="button" class="btn text" id="job-diagnostics">Диагностика</button><button type="button" class="btn text" id="job-settings" hidden>Параметры</button><a class="small" id="job-statistics" hidden>Статистика</a><a class="small muted" id="job-report" hidden>Подробности</a></div></div>
 <div id="job-timeline" class="timeline" hidden></div>
 <progress id="progress" aria-label="Ход загрузки"></progress>
 <div class="job-bottom"><div class="job-counts mono"><span><b id="posts-count">0</b> записей</span><span><b id="comments-count">0</b> комментариев</span><span id="requests-count">0 запросов</span></div><div class="job-buttons"><a class="btn" id="open-result" hidden>Открыть</a><button class="btn" id="job-action">Остановить</button></div></div>
 <p id="job-message" class="job-note" hidden></p><a id="job-entry" class="small" hidden></a>
+<p id="job-activity" class="fine" hidden></p>
 <details id="job-recovery" class="recovery-panel" open hidden><summary id="job-recovery-title">Докачка пропусков</summary><div id="job-recovery-content"></div></details></section>
 <p id="app-error" class="notice" role="alert" hidden></p>
 <div id="empty" class="empty" hidden><p>Архивов пока нет</p><button class="btn" data-new><span data-icon="plus"></span>Новый архив</button></div>
 <table class="library" id="library" hidden><thead><tr><th scope="col">Журнал</th><th scope="col">Записи</th><th scope="col">Комментарии</th><th scope="col">Обновлён</th><th scope="col">Статус</th><th scope="col"><span class="sr-only">Действия</span></th></tr></thead><tbody id="archives"></tbody></table>
 <p class="storage"><span data-icon="folder"></span><code id="output-path"></code><button type="button" class="btn text" id="move-storage">Переместить</button></p>
-</main><footer class="footer"><span>Архив ЖЖ · 0.7.8</span><button class="btn text" type="button" id="quit">Завершить приложение</button></footer>
+</main><footer class="footer"><span>Архив ЖЖ · 0.7.9</span><button class="btn text" type="button" id="quit">Завершить приложение</button></footer>
 <dialog id="storage-dialog" class="dialog" aria-labelledby="storage-title"><form id="storage-form"><div class="dialog-head"><h2 id="storage-title">Переместить архивы</h2><button type="button" class="btn text" id="storage-close">Закрыть</button></div><div class="dialog-body"><div class="field"><label for="storage-path">Новая папка</label><input id="storage-path" class="input" required spellcheck="false" autocomplete="off"></div><p class="fine">Все архивы, файлы и прогресс загрузки.</p><p id="storage-status" role="status"></p><button id="storage-submit" class="btn primary">Переместить</button></div></form></dialog>
 <dialog id="export-dialog" class="dialog" aria-labelledby="dialog-title"><form id="export-form">
 <div class="dialog-head"><h2 id="dialog-title">Новый архив</h2><button class="icon" type="button" data-close aria-label="Закрыть"><span data-icon="x"></span></button></div>
@@ -32,4 +33,5 @@
 <p id="form-error" class="notice" role="alert" hidden></p><div class="dialog-actions"><a href="/help#limits" target="_blank" rel="noopener" class="limit-caption">Помощь</a><div class="dialog-buttons"><button class="btn" type="button" data-close>Отмена</button><button class="btn primary" type="submit" id="submit-export">Создать</button></div></div>
 </form></dialog>
 <dialog id="settings-dialog" class="dialog" aria-labelledby="settings-title"><form method="dialog"><div class="dialog-head"><h2 id="settings-title">Параметры</h2><button type="button" class="btn text" id="settings-close">Закрыть</button></div><div id="settings-content"></div></form></dialog>
+<dialog id="diagnostics-dialog" class="dialog" aria-labelledby="diagnostics-title"><div class="dialog-head"><h2 id="diagnostics-title">Диагностика</h2><button type="button" class="btn text" id="diagnostics-close">Закрыть</button></div><div class="dialog-body"><p class="fine">Версия, параметры, этапы и ошибки файлов. Без текстов, имён, адресов и паролей.</p><details><summary>Состав отчёта</summary><pre id="diagnostics-content" class="diagnostics-content"></pre></details><a class="btn primary" id="diagnostics-download" download="journal-archive-diagnostics.json" hidden>Сохранить JSON</a></div></dialog>
 <div id="toast" class="toast" role="status" hidden></div></body></html>

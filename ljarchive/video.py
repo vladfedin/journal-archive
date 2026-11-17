@@ -241,22 +241,28 @@ class VideoArchive:
             self.check(); public_url(current)
             if budget.limit is not None and budget.used >= budget.limit:
                 budget.consume('videos')
+            budget.announce_wait()
             self.wait(max(budget.delay, budget.not_before - time.time()))
             budget.consume('videos')
+            budget.event('request', 'videos', current, attempt=attempt + 1, max_attempts=6)
             try:
                 r = self.session.request(method, current, data=data, headers=dict(request.headers),
                                          stream=True, timeout=(10, 20), allow_redirects=False)
             except requests.RequestException as exc:
                 if attempt == 5: raise TransportError('Video connection failed', cause=exc) from exc
                 budget.not_before = time.time() + backoff(attempt)
+                budget.describe_wait(budget.not_before, 'connection', 'videos', current, attempt=attempt + 1, max_attempts=6)
                 budget.save_cooldown(budget.not_before)
+                budget.announce_wait()
                 continue
             self.last_http = r.status_code
             if r.status_code in (429, 500, 502, 503, 504):
                 budget.not_before = time.time() + backoff(attempt, r.headers.get('Retry-After'), limited=r.status_code == 429)
+                budget.describe_wait(budget.not_before, 'http', 'videos', current, http_status=r.status_code,
+                                     attempt=attempt + 1, max_attempts=6, server_delay=bool(r.headers.get('Retry-After')))
                 budget.save_cooldown(budget.not_before)
                 if attempt < 5:
-                    r.close(); self.progress(phase='waiting', message='Пауза перед повтором загрузки видео', retry_at=budget.not_before)
+                    r.close(); budget.announce_wait()
                     continue
             if 300 <= r.status_code < 400:
                 current = urljoin(current, r.headers.get('Location', ''))
@@ -265,6 +271,7 @@ class VideoArchive:
                 r.close(); continue
             response = Response(Stream(r), current, r.headers, r.status_code, r.reason)
             if r.status_code >= 400: raise HTTPError(response)
+            budget.event('success', 'videos', current)
             return response
         raise TransportError('Too many video redirects')
 
@@ -275,6 +282,7 @@ class VideoArchive:
             return
         if url in self.attempted: return
         self.attempted.add(url)
+        requests_before = self.client.budget.categories.get('videos', 0)
         record.update(status='pending', checked_at=datetime.now(timezone.utc).isoformat(timespec='seconds'))
         self.save()
         import yt_dlp
@@ -333,6 +341,7 @@ class VideoArchive:
             record.update(status='failed', error={'reason': reason, 'http_status': self.last_http if reason == 'http' else None,
                                                   'type': type(exc).__name__, 'detail': re.sub(r'https?://[^\s]+', '[URL]', str(exc))[:500]})
         finally:
+            record['requests'] = self.client.budget.categories.get('videos', 0) - requests_before
             self.save()
 
     def capture(self, entry, enabled):

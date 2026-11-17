@@ -61,8 +61,11 @@ def download_one(store, data, cancel, update):
                                delay=data.get('delay', 3), cancel=cancel, budget=budget, progress=update)
     client.session.trust_env = False
     budget.not_before = client.not_before = store.get('request_not_before', 0)
+    budget.wait_info = store.get('request_wait', {})
     def cooldown(deadline):
-        with store.db: store.set('request_not_before', deadline)
+        with store.db:
+            store.set('request_not_before', deadline)
+            store.set('request_wait', budget.wait_info)
     client.save_cooldown = budget.save_cooldown = cooldown
     manager, media = None, None
     try:
@@ -214,7 +217,14 @@ class MaterialQueue:
                 continue
             def update(**values):
                 if values.get('phase') in ('videos', 'login'): values['phase'] = 'running'
-                with self.jobs.lock: self.states[task_id].update(values)
+                with self.jobs.lock:
+                    event = values.pop('activity', None)
+                    if event and event.get('kind') == 'request' and self.states[task_id].get('phase') == 'waiting':
+                        values.update(phase='running', message='Получаем данные…')
+                    if values.get('phase') and values['phase'] != 'waiting':
+                        self.states[task_id].pop('retry_at', None)
+                        self.states[task_id].pop('wait', None)
+                    self.states[task_id].update(values)
             store = None
             def refresh():
                 path = store.folder / 'export-report.json'

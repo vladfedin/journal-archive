@@ -63,7 +63,34 @@ class RequestBudget:
         self.lock = threading.Lock()
         self.delay = 2.0
         self.not_before = 0.0
+        self.wait_info = {}
         self.save_cooldown = lambda deadline: None
+
+    def event(self, kind, category, url="", **values):
+        from urllib.parse import urlsplit
+        self.progress(activity={"kind": kind, "category": category,
+                                "host": urlsplit(url).hostname or "", "at": time.time(), **values})
+
+    def describe_wait(self, deadline, reason, category, url="", **values):
+        from urllib.parse import urlsplit
+        self.wait_info = {"reason": reason, "category": category,
+                          "host": urlsplit(url).hostname or "", "retry_at": deadline, **values}
+
+    def announce_wait(self, progress=None):
+        if self.not_before <= time.time():
+            return
+        info = self.wait_info or {"reason": "restored", "retry_at": self.not_before}
+        reason = info.get("reason")
+        message = {"timeout": "Сервер не ответил вовремя. Повторим запрос.",
+                   "connection": "Не удалось соединиться. Повторим запрос.",
+                   "transfer": "Передача прервалась. Повторим запрос.",
+                   "api_limit": "ЖЖ ограничил частоту запросов (402).",
+                   "incomplete": "Получены не все данные. Повторим загрузку.",
+                   "restored": "Ожидание перед продолжением загрузки."}.get(reason)
+        if reason == "http":
+            message = f"Сервер вернул HTTP {info.get('http_status')}. Повторим запрос."
+        (progress or self.progress)(phase="waiting", message=message or "Ожидание повтора.",
+                                   wait=info, retry_at=self.not_before)
 
     def consume(self, category):
         with self.lock:
@@ -171,11 +198,12 @@ class LiveJournalClient:
             if self.cancel.wait(min(30, deadline - time.monotonic())):
                 self.check()
 
-    def _defer(self, seconds, message):
+    def _defer(self, seconds, **details):
         self.not_before = max(self.not_before, time.time() + seconds)
         self.budget.not_before = self.not_before
+        self.budget.describe_wait(self.not_before, **details)
         self.save_cooldown(self.not_before)
-        self.progress(phase="waiting", message=message, retry_at=self.not_before)
+        self.budget.announce_wait(self.progress)
 
     def _request(self, method: str, path: str, *, base_url=BASE_URL, category="livejournal", **kwargs) -> bytes:
         if base_url not in (BASE_URL, LIKES_URL, f"https://{self.user.replace('_', '-')}.livejournal.com"):
@@ -184,18 +212,25 @@ class LiveJournalClient:
             self.check()
             if self.budget.limit is not None and self.budget.used >= self.budget.limit:
                 self.budget.consume(category)  # Raise before waiting for a request that cannot be sent.
-            self._wait(max(self.not_before, self.budget.not_before) - time.time())
+            self.budget.not_before = max(self.not_before, self.budget.not_before)
+            self.budget.announce_wait(self.progress)
+            self._wait(self.budget.not_before - time.time())
             self._wait(self.delay - (time.monotonic() - self._last_request))
             if attempt:
                 self.progress(phase="retrying", message=f"Повтор запроса к ЖЖ · попытка {attempt + 1} из {self.max_attempts}")
             self.budget.consume(category)
+            self.budget.event("request", category, base_url, attempt=attempt + 1, max_attempts=self.max_attempts)
             self._last_request = time.monotonic()
             try:
                 with self.session.request(method, base_url + path, timeout=(15, 60),
                                           allow_redirects=False, stream=True, **kwargs) as response:
+                    if response.status_code >= 400:
+                        self.budget.event('failure', category, base_url, reason='http', http_status=response.status_code)
                     if response.status_code in (429, 500, 502, 503, 504):
                         self._defer(backoff(attempt, response.headers.get("Retry-After"), limited=response.status_code == 429),
-                                    f"ЖЖ вернул HTTP {response.status_code}. Ждём перед повтором ({attempt + 1}/{self.max_attempts})…")
+                                    reason="http", category=category, url=base_url, http_status=response.status_code,
+                                    attempt=attempt + 1, max_attempts=self.max_attempts,
+                                    server_delay=bool(response.headers.get("Retry-After")))
                         if attempt == self.max_attempts - 1:
                             raise ExportError("ЖЖ временно ограничивает запросы или недоступен. Данные сохранены, продолжите позже.")
                         continue
@@ -212,13 +247,16 @@ class LiveJournalClient:
                         if size > 64 * 1024 * 1024:
                             raise ExportError("Ответ ЖЖ превышает 64 МБ. Выгрузка остановлена без потери прогресса.")
                         chunks.append(chunk)
+                    self.budget.event("success", category, base_url)
                     if attempt:
                         self.progress(phase="loading", message="Ответ ЖЖ получен. Продолжаем загрузку.")
                     return b"".join(chunks)
             except requests.exceptions.SSLError as exc:
+                self.budget.event('failure', category, base_url, reason='tls')
                 raise ExportError("Не удалось проверить TLS-сертификат ЖЖ. Проверьте часы и сертификаты системы; проверка HTTPS не отключалась.") from exc
             except (requests.Timeout, requests.ConnectionError, requests.exceptions.ChunkedEncodingError) as exc:
-                self._defer(backoff(attempt), f"Соединение прервалось. Пауза перед повтором ({attempt + 1}/{self.max_attempts})…")
+                self._defer(backoff(attempt), reason="timeout" if isinstance(exc, requests.Timeout) else "connection",
+                            category=category, url=base_url, attempt=attempt + 1, max_attempts=self.max_attempts)
                 if attempt == self.max_attempts - 1:
                     raise ExportError("Не удалось связаться с ЖЖ. Проверьте соединение и продолжите выгрузку.") from exc
         raise ExportError("Не удалось получить ответ ЖЖ.")
@@ -253,7 +291,8 @@ class LiveJournalClient:
                 return self._rpc(method, {"username": self.user, "ver": 1, "auth_method": "challenge",
                                           "auth_challenge": challenge, "auth_response": response, **params})
             except APIRateLimited:
-                self._defer(backoff(attempt, limited=True), "ЖЖ просит снизить частоту XML-RPC. Ждём и повторим с новым challenge…")
+                self._defer(backoff(attempt, limited=True), reason="api_limit", category="livejournal",
+                            url=BASE_URL, attempt=attempt + 1, max_attempts=self.max_attempts)
                 if attempt == self.max_attempts - 1:
                     raise
 
