@@ -19,7 +19,7 @@
   if (initial.has('year')) $('stats-year').value = initial.get('year');
   if (people.has(initial.get('person'))) {
     const person = people.get(initial.get('person'));
-    $('stats-search').value = person.name; $('stats-owner').checked = person.owner;
+    $('stats-search').value = person.name;
   }
   let page = 0, edgeLimit = 40;
   function metric(person, year) {

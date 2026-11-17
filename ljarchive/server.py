@@ -130,7 +130,8 @@ class Jobs:
                 return dict(self.preparations[slug])
             if not path.is_file() or not (folder / 'archive.sqlite3').is_file():
                 return None
-            if json.loads(path.read_text(encoding='utf-8')).get('format_version') == __version__:
+            saved_report = json.loads(path.read_text(encoding='utf-8'))
+            if saved_report.get('format_version') == __version__ and saved_report.get('calendar_version') == 2:
                 return None
             self.preparations[slug] = {'phase': 'preparing', 'message': 'Чтение архива', 'completed': 0, 'total': 0}
             def update(**values):
@@ -166,7 +167,7 @@ class Jobs:
             if not path.is_file() or not (folder / "archive.sqlite3").is_file():
                 return
             report = json.loads(path.read_text(encoding="utf-8"))
-            if report.get("format_version") == __version__:
+            if report.get("format_version") == __version__ and report.get("calendar_version") == 2:
                 return
             from .storage import Store
             from .render import build_archive
@@ -589,7 +590,7 @@ def make_server(output: Path, port=8787):
                         return self.json({"error": "Не удалось обновить оформление архива. Проверьте папку и свободное место."}, 409)
                 snapshot = jobs.snapshot()
                 active = snapshot.get("slug") == relative.parts[0] and snapshot.get("phase") not in TERMINAL
-                if len(relative.parts) == 3 and relative.parts[1] == "assets" and relative.parts[2] in {"archive.css", "archive.js", "theme.js", "common.js", "timeline.js", "calendar.js", "material-actions.js", "favicon.svg", "favicon.ico"}:
+                if len(relative.parts) == 3 and relative.parts[1] == "assets" and relative.parts[2] in {"archive.css", "archive.js", "theme.js", "common.js", "timeline.js", "calendar.js", "calendar.css", "material-actions.js", "favicon.svg", "favicon.ico"}:
                     if active or not target.exists():
                         return self.file(ROOT / "static" / relative.parts[2])
                 live_data = len(relative.parts) == 3 and relative.parts[1] == 'assets' and target.name in ('search-data.js', 'calendar-data.js')
@@ -610,8 +611,8 @@ def make_server(output: Path, port=8787):
                                 if target.name == 'search-data.js':
                                     html = preview_search(store)
                                 else:
-                                    from .calendar import calendar_data
-                                    html = 'window.CALENDAR=' + json.dumps(calendar_data(store)) + ';'
+                                    from .calendar import calendar_script
+                                    html = calendar_script(store)
                             elif relative.parts[1] == "entries":
                                 html = preview_entry(store, int(target.stem))
                             elif target.name == 'index.html':

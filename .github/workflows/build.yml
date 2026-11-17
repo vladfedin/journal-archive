@@ -75,13 +75,14 @@ jobs:
         run: |
           import subprocess
           import sys
-          result = subprocess.run([sys.executable, 'tests/browser_smoke.py'],
-                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                  encoding='utf-8', errors='replace')
-          print(result.stdout)
-          if result.returncode:
-              print('::error::' + result.stdout.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A'))
-          sys.exit(result.returncode)
+          for script in ('tests/browser_smoke.py', 'tests/browser_calendar.py'):
+              result = subprocess.run([sys.executable, script],
+                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                      encoding='utf-8', errors='replace')
+              print(result.stdout)
+              if result.returncode:
+                  print('::error::' + result.stdout.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A'))
+                  sys.exit(result.returncode)
       - run: python -m build
       - run: python packaging/build.py
       - name: Check native application

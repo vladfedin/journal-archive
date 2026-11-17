@@ -84,3 +84,71 @@ def test_first_export_can_show_a_feed_before_any_html_is_built(local_server):
         assert not (folder / 'index.html').exists()
     finally:
         writer.close()
+
+
+def test_calendar_keeps_known_gaps_separate_from_saved_posts(tmp_path):
+    from ljarchive.calendar import calendar_script
+    store = Store(tmp_path)
+    try:
+        with store.db:
+            store.set('days_loaded', True)
+            store.set('bodies_done', True)
+            store.set('entry_comments', {'1': {'done': True}, '2': {'done': False, 'error': 'page missing'}})
+            store.set('entry_materials', {'1': {'requested': 2, 'saved': 1}})
+            store.save_entry({'itemid': 1, 'eventtime': '2024-02-29 23:59:00',
+                              'subject': '<b>Дневник</b>', 'event': 'PRIVATE BODY', 'reply_count': 3})
+            store.save_entry({'itemid': 2, 'eventtime': '2024-03-01 01:00:00', 'reply_count': 10})
+            store.save_entry({'itemid': 3, 'eventtime': '2024-03-02', 'repost': 1, 'reply_count': 90})
+            store.save_entry({'itemid': 4, 'eventtime': 'not-a-date'})
+            for cid, state in [(1, 'A'), (2, 'S'), (3, 'D')]:
+                store.save_comment({'id': cid, 'jitemid': 1, 'state': state,
+                                    **({'body': 'PRIVATE COMMENT'} if state != 'D' else {})})
+            store.save_comment({'id': 4, 'jitemid': 2, 'body': 'saved'})
+            store.db.executemany('INSERT INTO days(day,expected,done) VALUES (?,?,?)',
+                                 [('2024-02-29', 2, 0), ('2025-01-02', 3, 0)])
+        before = store.db.total_changes
+        data = calendar_data(store)
+        assert store.db.total_changes == before
+        assert data['total'] == 4 and data['undated'] == 1
+        assert data['days'] == {'2024-02-29': 1, '2024-03-01': 1, '2024-03-02': 1}
+        assert data['missing'] == {'2024-02-29': 1, '2025-01-02': 3}
+        assert data['years'] == {'2024': 3, '2025': 0}
+        entries = {e['id']: e for e in data['entries']}
+        assert entries[1]['title'] == 'Дневник'
+        assert entries[1]['comments'] == 3 and entries[1]['comments_complete']
+        assert entries[1]['state'] == 'partial'  # Images, not the deleted/screened comments.
+        assert entries[2]['comments'] == 1 and not entries[2]['comments_complete']
+        assert entries[2]['expected_comments'] == 10
+        assert entries[3]['repost'] and entries[3]['comments'] == 0 and entries[3]['comments_complete']
+        assert 'PRIVATE' not in calendar_script(store)
+        assert data['partial'] and data['discovery_complete']
+    finally:
+        store.close()
+
+
+def test_calendar_serialization_and_same_version_format_upgrade(local_server):
+    from ljarchive.calendar import calendar_script
+    from ljarchive import __version__
+    server, _ = local_server
+    folder = server.jobs.output / 'fixture'
+    report = create_demo(folder)
+    writer = Store(folder)
+    try:
+        with writer.db:
+            writer.save_entry({'itemid': 100, 'eventtime': '2024-01-01',
+                               'subject': '&lt;script&gt;alert(1)&lt;/script&gt;'})
+        script = calendar_script(writer)
+        assert '<script>' not in script and '\\u003cscript' in script
+    finally:
+        writer.close()
+    report.pop('calendar_version', None)
+    assert report['format_version'] == __version__
+    (folder / 'export-report.json').write_text(json.dumps(report))
+    assert server.jobs.prepare_format('fixture')['phase'] == 'preparing'
+    for thread in server.jobs.preparation_threads:
+        thread.join(20)
+    assert server.jobs.preparation('fixture')['phase'] == 'complete'
+    assert json.loads((folder / 'export-report.json').read_text())['calendar_version'] == 2
+    assert (folder / 'assets/calendar.css').is_file()
+    assert 'id="years"' in (folder / 'calendar.html').read_text()
+    assert server.jobs.prepare_format('fixture') is None

@@ -151,7 +151,7 @@ document.addEventListener("DOMContentLoaded", () => {
       if (!rows.length) { const empty = el("div", "empty-state"); empty.append(el("p", "", "Ничего не найдено")); list.append(empty); }
       let lastYear;
       for (const {e, d} of rows.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)) {
-        if(e.year && e.year!==lastYear){list.append(el("div","year-mark",e.year));lastYear=e.year;}
+        if(e.year && e.year!==lastYear){const mark=el("a","year-mark",e.year);mark.href="calendar.html?year="+encodeURIComponent(e.year);mark.setAttribute("aria-label","Календарь за "+e.year);list.append(mark);lastYear=e.year;}
         const card = el("article", "entry-row entry-card"), meta = el("div", "entry-meta"), title = el("h2"), link = el("a", "", e.title);
         card.dataset.entryId=e.id;
         const time = el("time", "", ruDate(e.date)); if (e.date) time.dateTime = e.date;
