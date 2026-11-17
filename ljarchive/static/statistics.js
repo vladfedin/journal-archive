@@ -15,6 +15,7 @@
     const n = node('a', text); n.href = url; return n;
   };
   const discussionURL = (person, year) => 'discussions.html?' + new URLSearchParams({person, ...(year ? {year} : {})});
+  $('stats-year').replaceChildren(new Option('Все годы', ''), ...data.years.map(y => new Option(y, y)));
   const initial = new URLSearchParams(location.search);
   if (initial.has('year')) $('stats-year').value = initial.get('year');
   if (people.has(initial.get('person'))) {

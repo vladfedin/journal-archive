@@ -371,9 +371,9 @@ def main():
                 expect(page.locator('.post h1')).to_have_text('Во время загрузки')
                 expect(page.locator('.prose').first).to_contain_text('Уже сохранено')
                 server.jobs.statistics_cache.interval = 0
-                page.goto(base + '/archive/live_fixture/statistics.html')
+                page.goto(base + '/archive/live_fixture/statistics.html?year=2001')
                 expect(page.locator('#stats-live')).to_contain_text('Снимок', timeout=10000)
-                page.locator('#stats-year').select_option('2001')
+                expect(page.locator('#stats-year')).to_have_value('2001')
                 page.locator('#stats-owner').uncheck()
                 page.locator('#stats-metric').select_option('share')
                 page.locator('#stats-search').fill('alice')
