@@ -1,0 +1,36 @@
+name: Refresh archived README
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/archive-readme.yml']
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: archived-readme
+  cancel-in-progress: false
+jobs:
+  refresh:
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - tag: v0.7.7
+            old_hash: '4abd62040e9a4e774bff446c95489a304bde73d338f41707b630e8350a70a4d0'
+            new_hash: '1ff26f9ec7babc1ea02e24b732b77e6e7d9d64ed167943fe7135a89532e90598'
+            executable_hash: '5bddea318847440018f7ac48fff66529cf23089e35bf01bd3c91db5d672de3de'
+          - tag: v0.7.8
+            old_hash: '4244c78312a1b73edb90048c958e4d7051f97e4c6d83c19e8b0b8821772b0752'
+            new_hash: '7902aacecf18fa87cb761f86b344944a1d12b473fa1337401c704d4f3f3efdec'
+            executable_hash: 'a065da68565d923f2fc33bb89f5c052108c7c653dd019932edb97b81b9976deb'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify and refresh README
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ matrix.tag }}
+          OLD_HASH: ${{ matrix.old_hash }}
+          NEW_HASH: ${{ matrix.new_hash }}
+          EXECUTABLE_HASH: ${{ matrix.executable_hash }}
+        run: python3 packaging/refresh_archive_readme.py --tag "$RELEASE_TAG" --old-hash "$OLD_HASH" --new-hash "$NEW_HASH" --executable-hash "$EXECUTABLE_HASH"
