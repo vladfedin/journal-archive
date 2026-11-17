@@ -1,8 +1,5 @@
 name: Refresh archived README
 on:
-  push:
-    branches: [main]
-    paths: ['.github/workflows/archive-readme.yml']
   workflow_dispatch:
 permissions:
   contents: write
