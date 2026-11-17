@@ -42,6 +42,8 @@ class Jobs:
         self.preparation_lock = threading.Lock()
         self.preparations = {}
         self.preparation_threads = []
+        from .on_demand import MaterialQueue
+        self.materials = MaterialQueue(self)
         self.relocation = {"phase": "idle"}
         records = []
         for file in self.tasks.glob("*.json"):
@@ -62,7 +64,7 @@ class Jobs:
     def move(self, value):
         from .relocation import target_path, relocate
         with self.lock:
-            if self.stopping or (self.thread and self.thread.is_alive()):
+            if self.stopping or (self.thread and self.thread.is_alive()) or self.materials.running or self.materials.queue:
                 raise ExportError("Перенос доступен после завершения загрузки.")
             if self.move_thread and self.move_thread.is_alive():
                 raise ExportError("Перенос уже выполняется.")
@@ -112,7 +114,7 @@ class Jobs:
     def prepare_format(self, slug):
         """Return immediately; a separate status endpoint stays responsive during rendering."""
         self.task_path(slug)
-        if self.stopping or self.relocation['phase'] == 'copying' or (self.thread and self.thread.is_alive()):
+        if self.stopping or self.relocation['phase'] == 'copying' or (self.thread and self.thread.is_alive()) or self.materials.running:
             return None
         folder = self.output / slug
         path = folder / 'export-report.json'
@@ -151,7 +153,7 @@ class Jobs:
         self.task_path(slug)
         folder = self.output / slug
         with self.lock:
-            if self.relocation["phase"] == "copying" or (self.thread and self.thread.is_alive()):
+            if self.relocation["phase"] == "copying" or (self.thread and self.thread.is_alive()) or self.materials.running:
                 return
             path = folder / "export-report.json"
             if not path.is_file() or not (folder / "archive.sqlite3").is_file():
@@ -193,6 +195,8 @@ class Jobs:
                 raise ExportError("Приложение завершается. Откройте новую версию.")
             if self.thread and self.thread.is_alive():
                 raise ExportError("Другая загрузка ещё выполняется.")
+            if self.materials.running:
+                raise ExportError('Сейчас сохраняется материал из записи. Дождитесь завершения или отмените его загрузку.')
             if not demo:
                 if data.get("resume"):
                     try:
@@ -354,7 +358,7 @@ def make_server(output: Path, port=8787):
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("Referrer-Policy", "no-referrer")
             self.send_header("X-Frame-Options", "DENY")
-            self.send_header("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
+            self.send_header("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src 'self'; frame-src https://music.yandex.ru; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
             if cookie:
                 self.send_header("Set-Cookie", f"ljarchive_session={token}; HttpOnly; SameSite=Strict; Path=/")
             if download:
@@ -442,6 +446,9 @@ def make_server(output: Path, port=8787):
                 return self.json(jobs.snapshot())
             if path == "/api/archives":
                 return self.json(jobs.archives())
+            if path.startswith('/api/material/'):
+                try: return self.json(jobs.materials.status(path.removeprefix('/api/material/')))
+                except ExportError as exc: return self.json({'error': str(exc)}, 404)
             if path.startswith('/api/preparation/'):
                 try:
                     return self.json(jobs.preparation(path.removeprefix('/api/preparation/')))
@@ -492,7 +499,7 @@ def make_server(output: Path, port=8787):
                         return self.json({"error": "Не удалось обновить оформление архива. Проверьте папку и свободное место."}, 409)
                 snapshot = jobs.snapshot()
                 active = snapshot.get("slug") == relative.parts[0] and snapshot.get("phase") not in TERMINAL
-                if len(relative.parts) == 3 and relative.parts[1] == "assets" and relative.parts[2] in {"archive.css", "archive.js", "theme.js", "common.js", "timeline.js", "calendar.js", "favicon.svg", "favicon.ico"}:
+                if len(relative.parts) == 3 and relative.parts[1] == "assets" and relative.parts[2] in {"archive.css", "archive.js", "theme.js", "common.js", "timeline.js", "calendar.js", "material-actions.js", "favicon.svg", "favicon.ico"}:
                     if active or not target.exists():
                         return self.file(ROOT / "static" / relative.parts[2])
                 live_data = len(relative.parts) == 3 and relative.parts[1] == 'assets' and target.name in ('search-data.js', 'calendar-data.js')
@@ -547,7 +554,7 @@ def make_server(output: Path, port=8787):
                     activity = extension == ".activitystreams.json"
                     filename = "activitystreams.json" if activity else "archive.json"
                     with jobs.lock:
-                        if jobs.relocation["phase"] == "copying" or (jobs.thread and jobs.thread.is_alive()):
+                        if jobs.relocation["phase"] == "copying" or (jobs.thread and jobs.thread.is_alive()) or jobs.materials.running:
                             return self.json({"error": "Дождитесь окончания выгрузки перед скачиванием JSON."}, 409)
                         if not (folder / "archive.sqlite3").is_file():
                             target = folder / "data" / filename
@@ -576,7 +583,7 @@ def make_server(output: Path, port=8787):
                         return self.file(target, download=slug + ".json")
                 # Hold the job lock through ZIP construction to avoid mixing snapshots.
                 with jobs.lock:
-                    if jobs.relocation["phase"] == "copying" or (jobs.thread and jobs.thread.is_alive()):
+                    if jobs.relocation["phase"] == "copying" or (jobs.thread and jobs.thread.is_alive()) or jobs.materials.running:
                         return self.json({"error": "Дождитесь окончания выгрузки перед скачиванием ZIP."}, 409)
                     try:
                         jobs.refresh_format(slug)
@@ -612,6 +619,10 @@ def make_server(output: Path, port=8787):
             except (ValueError, UnicodeDecodeError):
                 return self.json({"error": "Некорректный JSON."}, 400)
             try:
+                if self.path == '/api/material':
+                    return self.json(jobs.materials.start(data), 202)
+                if self.path == '/api/material/cancel':
+                    return self.json(jobs.materials.stop(data.get('id')))
                 if self.path == "/api/storage/move":
                     return self.json(jobs.move(data.get("path")), 202)
                 if self.path == "/api/export":
@@ -630,6 +641,7 @@ def make_server(output: Path, port=8787):
                             return self.json({"message": "Приложение завершается."})
                         jobs.stopping = True
                         jobs.cancel.set()
+                        jobs.materials.shutdown()
                     def shutdown():
                         if jobs.thread and jobs.thread.is_alive():
                             jobs.thread.join()
@@ -637,6 +649,7 @@ def make_server(output: Path, port=8787):
                             jobs.move_thread.join()
                         for thread in jobs.preparation_threads:
                             thread.join()
+                        if jobs.materials.thread: jobs.materials.thread.join()
                         self.server.shutdown()
                     self.json({"message": "Сохраняем прогресс и завершаем приложение."})
                     self.wfile.flush()
@@ -667,6 +680,8 @@ def run_server(server, open_browser=True):
         server.serve_forever()
     except KeyboardInterrupt:
         server.jobs.cancel.set()
+        server.jobs.stopping = True
+        server.jobs.materials.shutdown()
         if server.jobs.thread and server.jobs.thread.is_alive():
             print("Сохраняем прогресс…", flush=True)
             server.jobs.thread.join(timeout=65)
@@ -675,4 +690,5 @@ def run_server(server, open_browser=True):
             server.jobs.move_thread.join()
         for thread in server.jobs.preparation_threads:
             thread.join()
+        if server.jobs.materials.thread: server.jobs.materials.thread.join()
         server.server_close()

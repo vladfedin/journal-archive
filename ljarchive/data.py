@@ -25,6 +25,7 @@ def snapshot(store):
         "media_errors": store.get("media_errors", {}),
         "videos": store.get("videos", {}),
         "video_embeds": store.get("video_embeds", {}),
+        "external_embeds": store.get("external_embeds", {}),
         "userpics": describe(store),
         "versions": [{"kind": r[0], "id": r[1], "saved_at": r[2], "record": json.loads(r[3])}
                      for r in store.db.execute("SELECT kind,object_id,saved_at,payload FROM versions ORDER BY saved_at,kind,object_id,digest")],

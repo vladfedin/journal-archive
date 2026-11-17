@@ -163,6 +163,7 @@ def preview_entry(store, eid):
     media = Media(store.folder, False, threading.Event())
     media.mapping = store.get('media', {})
     media.videos, media.video_embeds = store.get('videos', {}), store.get('video_embeds', {})
+    media.external_embeds = store.get('external_embeds', {})
     url = original_url(user, entry)
     try:
         names = {c['id']: c.get('user') or 'Аноним' for c in comments}

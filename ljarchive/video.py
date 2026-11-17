@@ -59,10 +59,26 @@ def embed_key(base, module):
     return base.split('#')[0] + '#lj-embed-' + str(module)
 
 
+def external_embed(value, base=''):
+    """Recognize a service widget without claiming that its audio was archived."""
+    try:
+        p = urlsplit(urljoin(base, html.unescape(value or '')))
+        if p.scheme != 'https' or p.hostname != 'music.yandex.ru' or p.username or p.password or p.port not in (None, 443):
+            return None
+        if re.fullmatch(r'/iframe/(?:album/\d+(?:/track/\d+)?|track/\d+)', p.path):
+            return {'provider': 'Яндекс Музыка', 'kind': 'audio_service', 'status': 'online_only',
+                    'url': 'https://music.yandex.ru' + p.path.removeprefix('/iframe'),
+                    'embed_url': 'https://music.yandex.ru' + p.path}
+    except ValueError:
+        pass
+    return None
+
+
 class VideoRefs(HTMLParser):
     def __init__(self, base):
         super().__init__()
         self.base, self.urls, self.modules, self.resolved = base, set(), set(), {}
+        self.wrappers, self.external = {}, []
 
     def handle_starttag(self, tag, attrs):
         a = dict(attrs)
@@ -70,6 +86,17 @@ class VideoRefs(HTMLParser):
             self.modules.add(a['id'])
         if tag in ('iframe', 'embed', 'video', 'source', 'object', 'a'):
             value = a.get('src') or a.get('data') or a.get('href')
+            if value and tag == 'iframe':
+                widget = external_embed(value, self.base)
+                if widget: self.external.append(widget)
+                try:
+                    p = urlsplit(urljoin(self.base, html.unescape(value)))
+                    q = parse_qs(p.query)
+                    module = q.get('moduleid', [''])[0]
+                    if p.scheme == 'https' and p.hostname == 'l.lj-toys.com' and not p.username and not p.password and module.isdigit():
+                        self.wrappers[module] = urljoin(self.base, html.unescape(value))
+                except ValueError:
+                    pass
             url = canonical_video(value, self.base) if value else None
             if url:
                 self.urls.add(url)
@@ -98,7 +125,7 @@ def video_markup(source, base, media):
                 if url:
                     self.out.append('<video src="' + html.escape(url, quote=True) + '"></video>')
                 else:
-                    self.out.append('<p><a href="' + html.escape(base, quote=True) + '">Видео в оригинале ↗</a></p>')
+                    self.out.append('<video data-lj-module="' + html.escape(str(a.get('id', '')), quote=True) + '" src="' + html.escape(base, quote=True) + '"></video>')
             elif tag in ('iframe', 'video', 'object'):
                 self.capture, self.attrs = tag, a
             elif tag == 'embed':
@@ -147,6 +174,7 @@ class VideoArchive:
     def __init__(self, store, client, progress):
         self.store, self.client, self.progress = store, client, progress
         self.records, self.embeds = store.get('videos', {}), store.get('video_embeds', {})
+        self.external = store.get('external_embeds', {})
         self.attempted, self.pages = set(), set()
         self.session = requests.Session(); self.session.trust_env = False
         self.last_http = None
@@ -155,6 +183,35 @@ class VideoArchive:
         with self.store.db:
             self.store.set('videos', self.records)
             self.store.set('video_embeds', self.embeds)
+            self.store.set('external_embeds', self.external)
+
+    def resolve(self, entry, modules):
+        from .render import original_url
+        base = original_url(self.client.user, entry)
+        p = urlsplit(base)
+        expected = self.client.user.replace('_', '-') + '.livejournal.com'
+        if p.hostname != expected or not re.fullmatch(r'/\d+\.html', p.path):
+            raise ExportError('Не удалось определить страницу вставки')
+        headers = {'Cookie': 'ljsession=' + self.client._cookie} if getattr(self.client, '_cookie', None) else {}
+        content = self.client._request('GET', p.path, base_url='https://' + expected, headers=headers)
+        page = VideoRefs(base); page.feed(content.decode('utf-8', 'replace')); page.close()
+        for module in modules:
+            key = embed_key(base, module)
+            if module in page.resolved:
+                self.embeds[key] = page.resolved[module]
+            elif module in page.wrappers:
+                with self.open(page.wrappers[module]) as response:
+                    body = response.read(2 * 1024 * 1024 + 1)
+                if len(body) > 2 * 1024 * 1024:
+                    raise ExportError('Слишком большая страница вставки')
+                child = VideoRefs(base); child.feed(body.decode('utf-8', 'replace')); child.close()
+                if len(child.urls) == 1:
+                    self.embeds[key] = next(iter(child.urls))
+                elif len(child.external) == 1:
+                    self.external[key] = {**child.external[0], 'entries': [int(entry['itemid'])]}
+            if key in self.embeds or key in self.external:
+                self.records.pop(key, None)
+        self.save()
 
     def check(self):
         if self.client.cancel.is_set():
@@ -285,26 +342,20 @@ class VideoArchive:
         for record in [entry, *self.store.comments(eid)]:
             refs.feed(text_value(record.get('event', record.get('body'))))
         refs.close()
-        missing = [module for module in refs.modules if embed_key(base, module) not in self.embeds]
+        missing = [module for module in refs.modules if embed_key(base, module) not in self.embeds and embed_key(base, module) not in self.external]
         if enabled and missing and base not in self.pages:
             self.pages.add(base)
-            p = urlsplit(base)
-            expected = self.client.user.replace('_', '-') + '.livejournal.com'
             try:
-                if p.hostname != expected or not re.fullmatch(r'/\d+\.html', p.path):
-                    raise ExportError('Не удалось определить страницу видео')
-                headers = {'Cookie': 'ljsession=' + self.client._cookie} if getattr(self.client, '_cookie', None) else {}
-                content = self.client._request('GET', p.path, base_url='https://' + expected, headers=headers)
-                page = VideoRefs(base); page.feed(content.decode('utf-8', 'replace')); page.close()
-                for module in missing:
-                    if module in page.resolved:
-                        self.embeds[embed_key(base, module)] = page.resolved[module]
-            except (ExportError, OSError):
+                self.resolve(entry, missing)
+            except (ExportError, OSError, VideoStop):
+                pass
+            except Exception:
+                # One failed widget must not abort the remaining journal export.
                 pass
         for module in refs.modules:
             key = embed_key(base, module)
             if key in self.embeds: refs.urls.add(self.embeds[key])
-            else:
+            elif key not in self.external:
                 record = self.records.setdefault(key, {'url': base, 'entries': [eid], 'status': 'not_requested'})
                 if enabled:
                     reason = 'request_limit' if self.client.budget.exhausted else 'cancelled' if self.client.cancel.is_set() else 'embed_unresolved'

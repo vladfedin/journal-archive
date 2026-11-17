@@ -153,6 +153,7 @@ document.addEventListener("DOMContentLoaded", () => {
       for (const {e, d} of rows.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)) {
         if(e.year && e.year!==lastYear){list.append(el("div","year-mark",e.year));lastYear=e.year;}
         const card = el("article", "entry-row entry-card"), meta = el("div", "entry-meta"), title = el("h2"), link = el("a", "", e.title);
+        card.dataset.entryId=e.id;
         const time = el("time", "", ruDate(e.date)); if (e.date) time.dateTime = e.date;
         link.href = d?.url || e.url; title.append(link); meta.append(time);
         if (e.repost) meta.append(el("span", "state repost-label", "Перепост"));

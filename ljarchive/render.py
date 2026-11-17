@@ -24,7 +24,7 @@ from .storage import Store, atomic_write, dumps
 ROOT = Path(__file__).parent
 ENV = Environment(loader=FileSystemLoader(ROOT / "templates"), autoescape=select_autoescape(["html"]))
 TAGS = frozenset("p br div span a b strong i em u s del blockquote pre code ul ol li h1 h2 h3 h4 h5 h6 hr img video table thead tbody tr td th caption dl dt dd sub sup details summary figure figcaption".split())
-ATTRS = {"a": ["href", "title"], "video": ["src"], "img": ["src", "alt", "title", "width", "height"],
+ATTRS = {"a": ["href", "title"], "video": ["src", "data-lj-module"], "img": ["src", "alt", "title", "width", "height"],
          "details": ["class", "open"], "summary": ["class"],
          "td": ["colspan", "rowspan"], "th": ["colspan", "rowspan"]}
 BLOCK_MARKUP = re.compile(r"<(?:p|div|blockquote|ul|ol|li|table|h[1-6]|pre|figure|figcaption)\b", re.I)
@@ -187,7 +187,15 @@ class Content(HTMLParser):
             self.preserve_depth += 1
         attrs = dict(attrs)
         if tag == 'video':
-            from .video import canonical_video
+            from .video import canonical_video, embed_key, external_embed
+            module = attrs.get('data-lj-module', '')
+            if module.isdigit():
+                widget = self.media.external_embeds.get(embed_key(self.base, module))
+                if widget and external_embed(widget.get('embed_url')):
+                    self.out.append('<span class="external-widget" data-widget-url="' + html.escape(widget['embed_url'], quote=True) + '"><a href="' + html.escape(widget['url'], quote=True) + '" target="_blank" rel="noreferrer noopener">Яндекс Музыка ↗</a><small>Онлайн · аудиофайл не сохранён</small></span>')
+                else:
+                    self.out.append(self.material_slot('embed', module, self.base, 'Встроенный материал ↗'))
+                return
             url = canonical_video(attrs.get('src'), self.base)
             record = self.media.videos.get(url, {})
             path = record.get('path')
@@ -195,6 +203,9 @@ class Content(HTMLParser):
             if (record.get('status') == 'saved' and local and local.is_file()
                     and local.resolve().is_relative_to(self.media.folder.resolve())):
                 self.out.append('<video controls preload="none" src="../' + html.escape(path, quote=True) + '"></video>')
+            elif url:
+                self.out.append(self.material_slot('video', url, url, 'Видео в оригинале ↗'))
+                return
             if url:
                 self.out.append('<a class="video-original" href="' + html.escape(url, quote=True) +
                                 '" target="_blank" rel="noreferrer noopener">Видео в оригинале ↗</a>')
@@ -205,12 +216,27 @@ class Content(HTMLParser):
             if local:
                 self.out.append(f'<img src="../{html.escape(local, quote=True)}" alt="{html.escape(attrs.get("alt", ""), quote=True)}" loading="lazy">')
             else:
-                self.out.append('<a class="media-link" href="' + html.escape(self.local_link(src), quote=True) + '">↗ ' + html.escape(attrs.get("alt") or "Изображение в оригинале") + '</a>')
+                self.out.append(self.material_slot('image', src, self.local_link(src), attrs.get('alt') or 'Изображение в оригинале ↗'))
             return
         if tag == "a":
+            from .video import canonical_video
+            video_url = canonical_video(attrs.get('href'), self.base)
             attrs["href"] = self.local_link(attrs.get("href", ""))
             attrs["rel"] = "noreferrer noopener"
+            if video_url:
+                # Keep authored link text; the local UI adds a download control beside it.
+                attrs['data-video-url'] = video_url
+                record = self.media.videos.get(video_url, {})
+                path = record.get('path')
+                if record.get('status') == 'saved' and path and (self.media.folder / path).is_file() and (self.media.folder / path).resolve().is_relative_to(self.media.folder.resolve()):
+                    attrs['data-video-path'] = '../' + path
         self.out.append("<" + tag + "".join(f' {k}="{html.escape(v or "", quote=True)}"' for k, v in attrs.items()) + ">")
+
+    def material_slot(self, kind, value, original, label):
+        esc = lambda s: html.escape(str(s), quote=True)
+        return ('<span class="material-slot" data-material-kind="' + kind + '" data-material-value="' + esc(value) +
+                '"><a class="media-link" href="' + esc(original) + '" target="_blank" rel="noreferrer noopener">' +
+                html.escape(label) + '</a></span>')
 
     def handle_startendtag(self, tag, attrs):
         self.handle_starttag(tag, attrs)
@@ -302,7 +328,7 @@ def render_feed(entry, user, links, media, comment_ids):
         content=safe_content(entry.get('event'), original_url(user, entry), links, media, comment_ids),
         current=current, post_autoformat=needs_autoformat(entry.get('event'), props))
     feed = re.sub(r'href="([0-9]+\.html(?:#[^"\s]*)?)"', r'href="entries/\1"', feed)
-    return feed.replace('src="../media/', 'src="media/')
+    return feed.replace('src="../media/', 'src="media/').replace('data-video-path="../media/', 'data-video-path="media/')
 
 
 def build_archive(store: Store, report: dict, *, images=False, userpics=False, client_cancel=None, progress=None, budget=None, media=None):
@@ -360,7 +386,7 @@ def build_archive(store: Store, report: dict, *, images=False, userpics=False, c
             links[(url.hostname, url.path)] = str(entry["itemid"]) + ".html"
     comment_ids = {int(c["id"]) for c in comments}
     (folder / "assets").mkdir(exist_ok=True)
-    for asset in ("archive.css", "archive.js", "theme.js", "common.js", "favicon.svg", "favicon.ico", "timeline.js", "statistics.js", "calendar.js"):
+    for asset in ("archive.css", "archive.js", "theme.js", "common.js", "favicon.svg", "favicon.ico", "timeline.js", "statistics.js", "calendar.js", "material-actions.js"):
         shutil.copyfile(ROOT / "static" / asset, folder / "assets" / asset)
     search, summaries = [], []
     from .comment_state import comment_view
