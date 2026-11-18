@@ -3,6 +3,7 @@ import threading
 import pytest
 import requests
 
+from ljarchive import __version__
 from ljarchive.demo import create_demo
 from ljarchive.storage import atomic_write, dumps
 from test_render_server import local_server
@@ -29,6 +30,9 @@ def test_open_old_archive_returns_progress_and_does_not_duplicate_rebuild(local_
             session.get(base)
             response = session.get(base + '/archive/fixture/index.html', timeout=3)
             assert response.status_code == 200 and 'data-preparing="fixture"' in response.text
+            for page in (response, session.get(base), session.get(base + '/help')):
+                assert page.headers['X-LJArchive-Version'] == __version__
+                assert f'Архив ЖЖ · {__version__}</span>' in page.text
             assert entered.wait(2)
             state = session.get(base + '/api/preparation/fixture', timeout=2).json()
             assert state['completed'] == 2 and state['total'] == 6

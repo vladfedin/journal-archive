@@ -18,7 +18,7 @@ from . import __version__
 from .client import Cancelled, ExportError, RequestBudget, username
 from .demo import create_demo
 from .exporter import archive_slug, export, validate_entry_limit
-from .render import ROOT, plural
+from .render import ARCHIVE_FORMAT_VERSION, ROOT, plural
 from .sync import sync, validate_scope, target_slug
 
 TERMINAL = {"complete", "partial", "cancelled", "error", "demo", "idle"}
@@ -176,7 +176,7 @@ class Jobs:
             if not path.is_file() or not (folder / 'archive.sqlite3').is_file():
                 return None
             saved_report = json.loads(path.read_text(encoding='utf-8'))
-            if saved_report.get('format_version') == __version__ and saved_report.get('calendar_version') == 2 and saved_report.get('gallery_version') == 4:
+            if saved_report.get('format_version') == ARCHIVE_FORMAT_VERSION and saved_report.get('calendar_version') == 2 and saved_report.get('gallery_version') == 4:
                 return None
             self.preparations[slug] = {'phase': 'preparing', 'message': 'Чтение архива', 'completed': 0, 'total': 0}
             self.formatting.add(slug)
@@ -217,7 +217,7 @@ class Jobs:
             if not path.is_file() or not (folder / "archive.sqlite3").is_file():
                 return
             report = json.loads(path.read_text(encoding="utf-8"))
-            if report.get("format_version") == __version__ and report.get("calendar_version") == 2 and report.get("gallery_version") == 4:
+            if report.get("format_version") == ARCHIVE_FORMAT_VERSION and report.get("calendar_version") == 2 and report.get("gallery_version") == 4:
                 return
             from .storage import Store
             from .render import build_archive
@@ -700,7 +700,7 @@ def make_server(output: Path, port=8787):
             path = unquote(urlsplit(self.path).path)
             if path == "/":
                 from .render import ENV
-                body = ENV.get_template("app.html").render(version=__version__).encode("utf-8")
+                body = ENV.get_template("app.html").render().encode("utf-8")
                 self.response_headers(200, "text/html; charset=utf-8", len(body), cookie=True)
                 return self.wfile.write(body)
             if path == "/favicon.ico":

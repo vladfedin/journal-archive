@@ -128,7 +128,7 @@ def test_calendar_keeps_known_gaps_separate_from_saved_posts(tmp_path):
 
 def test_calendar_serialization_and_same_version_format_upgrade(local_server):
     from ljarchive.calendar import calendar_script
-    from ljarchive import __version__
+    from ljarchive.render import ARCHIVE_FORMAT_VERSION
     server, _ = local_server
     folder = server.jobs.output / 'fixture'
     report = create_demo(folder)
@@ -142,7 +142,7 @@ def test_calendar_serialization_and_same_version_format_upgrade(local_server):
     finally:
         writer.close()
     report.pop('calendar_version', None)
-    assert report['format_version'] == __version__
+    assert report['format_version'] == ARCHIVE_FORMAT_VERSION
     (folder / 'export-report.json').write_text(json.dumps(report))
     assert server.jobs.prepare_format('fixture')['phase'] == 'preparing'
     for thread in server.jobs.preparation_threads:

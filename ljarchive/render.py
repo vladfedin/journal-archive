@@ -22,6 +22,8 @@ from .userpics import describe, coverage
 from .gaps import closed
 from .storage import Store, atomic_write, dumps
 
+# Bump when previously generated offline pages or assets need rebuilding.
+ARCHIVE_FORMAT_VERSION = "0.8.11"
 ROOT = Path(__file__).parent
 ENV = Environment(loader=FileSystemLoader(ROOT / "templates"), autoescape=select_autoescape(["html"]))
 TAGS = frozenset("p br div span a b strong i em u s del blockquote pre code ul ol li h1 h2 h3 h4 h5 h6 hr img video table thead tbody tr td th caption dl dt dd sub sup details summary figure figcaption".split())
@@ -87,7 +89,7 @@ def task_label(report):
         return f"Тест · {report['entry_limit']} записей"
     scope = report.get("sync", {}).get("scope", {})
     return {"full": "Весь журнал", "period": "За период", "urls": "По ссылкам"}.get(scope.get("mode"), "Весь журнал")
-ENV.globals["task_label"] = task_label
+ENV.globals.update(task_label=task_label, app_version=__version__)
 
 
 def needs_autoformat(value, props=None):
@@ -362,7 +364,7 @@ def build_archive(store: Store, report: dict, *, images=False, userpics=False, c
     repair_image_status = images_only_partial(report)
     folder, user = store.folder, report["username"]
     entry_ids = None if entry_ids is None else set(entry_ids)
-    update_assets = (entry_ids is None or report.get('format_version') != __version__
+    update_assets = (entry_ids is None or report.get('format_version') != ARCHIVE_FORMAT_VERSION
                      or report.get('gallery_version') != 4)
     changed_assets = []
     cancel = client_cancel or threading.Event()
@@ -385,7 +387,7 @@ def build_archive(store: Store, report: dict, *, images=False, userpics=False, c
                 path = media.mapping.get(url)
                 media.mapping[url] = path if path and (folder / path).is_file() else None
     if entry_ids is None:
-        report["format_version"] = __version__
+        report["format_version"] = ARCHIVE_FORMAT_VERSION
     from .sources import stored_source
     report['source'] = stored_source(store)
     if entry_ids is None:
