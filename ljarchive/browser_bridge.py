@@ -235,7 +235,7 @@ class BrowserBridge:
             except (ValueError, OSError) as exc:
                 raise BrowserFailure('browser_address') from exc
             target = self._call('Target.createTarget', {
-                'url': 'about:blank', 'browserContextId': self.contexts[account]['context'],
+                'url': 'about:blank', 'browserContextId': self.contexts[account]['context'], 'background': True,
             })['targetId']
             trace, status, session = [], None, None
             try:
@@ -248,6 +248,10 @@ class BrowserBridge:
                                               'maxResourceBufferSize': 22 * 1024 * 1024}, session)
                 self._call('Network.setCacheDisabled', {'cacheDisabled': True}, session)
                 self._call('Network.setBypassServiceWorker', {'bypass': True}, session)
+                if allow_empty:
+                    # Chrome's tab icon can start after document completion, as the
+                    # interception session closes. Document reads never need this icon.
+                    self._call('Network.setBlockedURLs', {'urls': ['*/favicon.ico']}, session)
                 self._call('Fetch.enable', {'patterns': [{'urlPattern': '*', 'requestStage': 'Request'}]}, session)
                 self._send('Page.navigate', {'url': url, 'referrer': referer or ''}, session)
                 deadline, response_id, mime, visits = time.monotonic() + 45, None, '', {}
