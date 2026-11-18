@@ -132,6 +132,7 @@ function showStatus(s){lastState=s;if(!s.phase||s.phase==='idle'||s.job_id&&s.jo
   const clock=s.server_time||Date.now()/1000,done=terminal.has(s.phase),stalled=!done&&s.worker_alive===false;
   const request=s.request||{},activity=s.last_activity||{},silent=!done&&network.has(s.phase)&&request.at&&request.at>(s.last_response_at||s.last_success_at||0)&&activity.kind==='request'&&clock-request.at>60;
   let stage=s.cancelling?'Останавливаем…':stalled?'Загрузка прервалась':s.request_limit_reached?'Достигнут лимит запросов':done?finished[s.phase]||labels[s.phase]:doing[s.phase]||'Загружаем';
+  if(s.phase==='browser_login'&&!s.cancelling)stage='Вход в браузере';
   if(s.phase==='waiting'&&!s.cancelling&&!stalled)stage=s.retry_at>clock?'Пауза до '+new Date(s.retry_at*1000).toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'}):'Продолжаем после паузы';
   if(materialRunning)stage=material.phase==='waiting'?'Пауза перед запросом':material.phase==='saving'?'Обновляем страницы архива':'Скачиваем изображения';
   // Only this sentence is announced; it changes with the stage, not every second.
@@ -162,6 +163,8 @@ function showStatus(s){lastState=s;if(!s.phase||s.phase==='idle'||s.job_id&&s.jo
   $('job-hint').hidden=done||!!s.cancelling;
   $('job-action').disabled=!!s.cancelling;$('job-action').textContent=!done?'Остановить':ready?'Скрыть':s.phase==='cancelled'||s.phase==='error'?'Продолжить':'Докачать пропуски';
   $('job-action').className='btn'+(ready?' text':done?' primary':'');
+  $('job-browser-cancel').hidden=s.phase!=='browser_login';$('job-browser-cancel').disabled=!!s.cancelling;
+  if(s.phase==='browser_login'){$('job-action').textContent='Продолжить';$('job-action').className='btn primary';$('job-hint').hidden=true;$('progress').hidden=true;}
   if(materialRunning){$('job-action').disabled=true;$('job-state').dataset.tone='run';}
   setBusy(!done||materialRunning);
 }
@@ -213,7 +216,8 @@ $('export-form').onsubmit=async e=>{e.preventDefault();if(busy||submitting||prep
   catch(e){error(e.message,true);$('password').value='';$('password').focus();}
   finally{data.password='';submitting=false;$('submit-export').disabled=busy;}
 };
-$('job-action').onclick=async()=>{try{if(busy){$('job-action').disabled=true;showStatus(await api('/api/cancel',{}));}else if(['complete','demo'].includes(lastState.phase)){$('job').hidden=true;dismissedJob=lastState.job_id;}else{await library();const archive=archives.find(a=>a.slug===lastState.slug);if(archive)openDialog('resume',archive);else error('Сохранённая задача не найдена.');}}catch(e){error(e.message);$('job-action').disabled=false;}};
+$('job-action').onclick=async()=>{try{if(lastState.phase==='browser_login'){$('job-action').disabled=true;showStatus(await api('/api/browser-confirm',{job_id:lastState.job_id}));}else if(busy){$('job-action').disabled=true;showStatus(await api('/api/cancel',{}));}else if(['complete','demo'].includes(lastState.phase)){$('job').hidden=true;dismissedJob=lastState.job_id;}else{await library();const archive=archives.find(a=>a.slug===lastState.slug);if(archive)openDialog('resume',archive);else error('Сохранённая задача не найдена.');}}catch(e){error(e.message);$('job-action').disabled=false;}};
+$('job-browser-cancel').onclick=async()=>{try{showStatus(await api('/api/cancel',{}));}catch(e){error(e.message);}};
 $('job-settings').onclick=()=>showParameters(lastState);
 $('settings-close').onclick=()=>$('settings-dialog').close();
 let diagnosticURL='';

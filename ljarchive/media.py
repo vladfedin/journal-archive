@@ -167,7 +167,7 @@ class Media:
         self.errors = {url: error for url, error in self.errors.items() if not self.mapping.get(url)}
         for url, error in self.errors.items():
             if error.get('reason') in ('storage', 'tls', 'web_login') or (error.get('reason') == 'redirects' and authenticated_image_host(image_url(url))) or (error.get('http_status') in (401, 403) and
-                    (error.get('authentication') == 'missing' or (authenticated_image_host(url) and error.get('session_type') != 'web'))):
+                    (error.get('authentication') == 'missing' or (authenticated_image_host(url) and error.get('session_type') not in ('web', 'browser')))):
                 reopen(error)
 
     def save_state(self, store):
@@ -189,7 +189,7 @@ class Media:
             record['trace'] = self.traces[url]
         # A stop, missing login or local failure does not count as remote absence.
         if reason in ('storage', 'tls', 'web_login') or (http_status in (401, 403) and
-                (record['authentication'] == 'missing' or (authenticated_image_host(url) and record['session_type'] != 'web'))):
+                (record['authentication'] == 'missing' or (authenticated_image_host(url) and record['session_type'] not in ('web', 'browser')))):
             record['status'] = 'pending'
         self.errors[url] = fail(record, previous) if record['status'] == "failed" else carry(record, previous)
 
@@ -225,8 +225,8 @@ class Media:
         self.budget.save_cooldown(self.budget.not_before)
         self.budget.announce_wait()
 
-    def browser_get(self, url, referer, category):
-        from .browser_bridge import BrowserFailure, safe_url
+    def browser_get(self, url, referer, category, *, retry_login=True):
+        from .browser_bridge import BrowserFailure, BrowserLoginRequired, safe_url
         from .client import Cancelled
         browser = self.client.browser
         before = self.budget.used
@@ -243,14 +243,25 @@ class Media:
                                    'saved_at': datetime.now(timezone.utc).isoformat(timespec='seconds')}
             self.budget.event('success', category, url, transport='browser', bytes=len(body))
             return path
-        except BrowserFailure as exc:
+        except (BrowserFailure, BrowserLoginRequired) as exc:
+            request_browser = getattr(self.client, 'request_browser', None)
+            if isinstance(exc, BrowserLoginRequired):
+                if not request_browser:
+                    raise  # Explicit downloads use the queue's confirmation flow.
+                exc = BrowserFailure('browser_login')
             self.traces[url] = exc.trace
-            # A failed browser session is not evidence that the source is gone.
-            pending = exc.reason in ('browser_closed', 'browser_start', 'browser_login', 'browser_missing') or exc.http_status in (401, 403)
+            # A resource can deny access even with a working browser session.
+            # Count that answer; only an actual session failure needs another login.
+            pending = exc.reason in ('browser_closed', 'browser_start', 'browser_login', 'browser_missing')
             self.record_error(url, exc.reason, status='pending' if pending else 'failed', http_status=exc.http_status,
                               requests_made=self.budget.used - before)
             self.budget.event('failure', category, url, reason=exc.reason, http_status=exc.http_status,
                               transport='browser', request_url=safe_url(url))
+            if pending and request_browser:
+                if retry_login:
+                    request_browser(force=True)
+                    return self.browser_get(url, referer, category, retry_login=False)
+                self.stopped, self.stop_reason = True, exc.reason
         except (Cancelled, RequestLimitReached) as exc:
             reason = 'cancelled' if isinstance(exc, Cancelled) else 'request_limit'
             self.traces[url] = getattr(exc, 'trace', [])
@@ -428,10 +439,14 @@ class Media:
             reason = "redirects"
             raise ValueError("too many redirects")
         except WebLoginRequired:
-            self.auth_unavailable = True
             self.record_error(url, 'web_login', status='pending', http_status=http_status,
                               requests_made=requests_made, checked_at=checked_at)
             self.budget.event('failure', category, url, reason='web_login', http_status=http_status)
+            request_browser = getattr(self.client, 'request_browser', None)
+            if request_browser:
+                request_browser()
+                return self.browser_get(url, referer, category)
+            self.auth_unavailable = True
             return None
         except RequestLimitReached:
             self.stopped = True

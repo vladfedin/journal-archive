@@ -16,7 +16,7 @@ REASONS = {'http', 'timeout', 'connection', 'transfer', 'dns', 'invalid_url', 'u
            'browser_missing', 'browser_start', 'browser_closed', 'browser_timeout', 'browser_network',
            'browser_login', 'browser_type', 'browser_redirect', 'browser_large', 'browser_empty',
            'browser_http', 'browser_address', 'browser_dns'}
-PHASES = {'idle', 'preparing', 'verify', 'login', 'posts', 'comments', 'reactions', 'videos',
+PHASES = {'idle', 'preparing', 'verify', 'login', 'browser_login', 'posts', 'comments', 'reactions', 'videos',
           'materials', 'personal', 'userpics', 'render', 'waiting', 'retrying', 'loading',
           'complete', 'partial', 'cancelled', 'error', 'demo'}
 CATEGORIES = {'livejournal', 'likes', 'reactions', 'reaction_authors', 'images', 'userpics', 'videos', 'personal'}

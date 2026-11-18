@@ -38,6 +38,7 @@ class Jobs:
         self.activity_clock = time.monotonic()
         self.persisted_clock = 0
         self.cancel = threading.Event()
+        self.browser_confirmation = threading.Event()
         self.thread = None
         self.stopping = False
         self.current = None
@@ -222,15 +223,16 @@ class Jobs:
             if self.current:
                 state["parameters"] = {key: self.current[key] for key in self.PARAMS if key in self.current}
                 active = next((item for item in reversed(list(self.materials.states.values()))
-                               if item['_identity'][0] == self.current['archive'] and item['_identity'][2] == 'browser_images'), None)
-                if active:
+                               if item['_identity'][0] == self.current['archive'] and item['_identity'][2] == 'browser_images'
+                               and item.get('_main_job') == self.state.get('job_id')), None)
+                if active and not (self.thread and self.thread.is_alive()):
                     state['material_task'] = self.materials.status(active['id'])
             return state
 
     def tick_activity(self):
         now = time.monotonic()
         if self.state.get('phase') not in TERMINAL:
-            key = 'waiting_seconds' if self.state.get('phase') == 'waiting' else 'working_seconds'
+            key = 'waiting_seconds' if self.state.get('phase') in ('waiting', 'browser_login') else 'working_seconds'
             self.state[key] = self.state.get(key, 0) + max(0, now - self.activity_clock)
         self.activity_clock = now
 
@@ -367,6 +369,7 @@ class Jobs:
                 data.setdefault("images", False)
                 data.setdefault("delay", 3)
             self.cancel = threading.Event()
+            self.browser_confirmation = threading.Event()
             slug = "_demo" if demo else data["archive"]
             if slug in self.formatting:
                 raise ExportError('Обновляются страницы этого архива. Дождитесь завершения.')
@@ -394,6 +397,65 @@ class Jobs:
             self.thread.start()
             return self.snapshot()
 
+    def confirm_browser(self, job_id):
+        with self.lock:
+            if (not isinstance(job_id, str) or job_id != self.state.get('job_id')
+                    or self.state.get('phase') != 'browser_login' or self.cancel.is_set()
+                    or not self.thread or not self.thread.is_alive()):
+                raise ExportError('Этот запрос входа уже завершён.')
+            self.browser_confirmation.set()
+            return self.snapshot()
+
+    def wait_for_browser(self, account, *, force=False):
+        from .browser_bridge import BrowserLoginRequired
+        browser = self.sessions.browser
+        if not force and browser.ready(account):
+            return
+        while True:
+            if self.cancel.is_set():
+                raise Cancelled('Загрузка остановлена.')
+            self.browser_confirmation.clear()
+            browser.open_login(account)
+            self.progress(phase='browser_login', message='Войдите в ЖЖ в открывшемся окне и нажмите «Продолжить».')
+            while not self.browser_confirmation.wait(.2):
+                if self.cancel.is_set():
+                    raise Cancelled('Загрузка остановлена.')
+            if self.cancel.is_set():
+                raise Cancelled('Загрузка остановлена.')
+            try:
+                browser.confirm(account)
+                break
+            except BrowserLoginRequired:
+                continue  # A closed browser needs a fresh login, not an automatic retry.
+        self.progress(phase='preparing', message='Продолжаем загрузку…')
+
+    def remember_session(self, client):
+        self.sessions.remember(client)
+        # Only the main export waits for a confirmation in its own task card.
+        # Explicit material/profile downloads keep their existing queue controls.
+        account = client.account
+        client.request_browser = lambda **kwargs: self.wait_for_browser(account, **kwargs)
+
+    def prepare_browser(self, data):
+        from .storage import Store
+        from .media import authenticated_image_host, image_url
+        from .gaps import closed
+        if not data.get('images') or not data.get('_resuming'):
+            return
+        if not (self.output / data['archive'] / 'archive.sqlite3').is_file():
+            return  # A previous run may have stopped before creating the archive.
+        store = Store.reader(self.output / data['archive'])
+        try:
+            mapping = store.get('media', {})
+            errors = [error for url, error in store.get('media_errors', {}).items()
+                      if not mapping.get(url) and not closed(error) and authenticated_image_host(image_url(url))
+                      and (error.get('reason') in ('web_login', 'redirects', 'browser_login', 'browser_redirect', 'browser_closed')
+                           or (error.get('http_status') in (401, 403) and error.get('session_type') != 'browser'))]
+        finally:
+            store.close()
+        if errors:
+            self.wait_for_browser(data['username'], force=any(e.get('session_type') == 'browser' for e in errors))
+
     def run(self, data, demo):
         slug = "_demo" if demo else data["archive"]
         try:
@@ -407,6 +469,7 @@ class Jobs:
                     with self.lock:
                         self.recovery_before = before
                     self.progress(recovery=summary(before, before), **(before['counts'] if before else {}))
+                self.prepare_browser(data)
                 password = data.pop("password")
                 if data.get("sync_scope"):
                     scope = data["sync_scope"]
@@ -414,12 +477,12 @@ class Jobs:
                                   delay=data["delay"], cancel=self.cancel, progress=self.progress,
                                   max_requests=data["max_requests"], mode=scope["mode"], start=scope["start"],
                                   end=scope["end"], urls=scope["urls"], archive=slug, account=data.get("account", False), messages=data.get("messages", False),
-                                  session_ready=self.sessions.remember, resume=bool(data.get('_resuming')))
+                                  session_ready=self.remember_session, resume=bool(data.get('_resuming')))
                 else:
                     report = export(data["username"], password, self.output, journal=data['journal'], source_type=data['source_type'], images=data["images"], videos=data.get("videos", False),
                                     delay=data["delay"], cancel=self.cancel, progress=self.progress,
                                     entry_limit=data["entry_limit"], max_requests=data["max_requests"], account=data.get("account", False), messages=data.get("messages", False),
-                                    session_ready=self.sessions.remember)
+                                    session_ready=self.remember_session)
                 password = ""
             message = "Лимит запросов" if report.get("request_limit_reached") else ""
             if report["status"] not in ("complete", "demo") and not message:
@@ -895,6 +958,8 @@ def make_server(output: Path, port=8787):
                     return self.json(jobs.move(data.get("path")), 202)
                 if self.path == "/api/export":
                     return self.json(jobs.start(data), 202)
+                if self.path == '/api/browser-confirm':
+                    return self.json(jobs.confirm_browser(data.get('job_id')))
                 if self.path == "/api/demo":
                     return self.json(jobs.start({}, demo=True), 202)
                 if self.path == "/api/cancel":

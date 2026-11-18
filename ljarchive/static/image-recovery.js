@@ -45,7 +45,7 @@ window.ArchiveImages=(()=>{
     const run=dialog.querySelector('[data-action=download]');run.disabled=!done;run.textContent=state.phase==='needs_browser'?'Продолжить':'Докачать через браузер';
     if(state.phase==='needs_browser'){confirmed=true;checkBrowser=false;}
     if(state.phase==='error'&&state.error?.session_type==='browser'){
-      checkBrowser=[401,403].includes(state.error.http_status)||['browser_login','browser_redirect','browser_closed'].includes(state.error.reason);
+      checkBrowser=['browser_login','browser_closed','browser_start'].includes(state.error.reason);
       if(checkBrowser)run.textContent='Проверить вход';
     }
     const status=dialog.querySelector('[data-role=status]');status.textContent=state.message||'';

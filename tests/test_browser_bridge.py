@@ -42,6 +42,10 @@ def protected_browser():
                 status, mime, body = (200, 'image/png', PNG) if allowed else (403, 'text/html', b'Sign in')
             elif self.path == '/missing.png':
                 status, mime, body = 404, 'text/html', b'Missing'
+            elif self.path == '/denied.png':
+                status, mime, body = 403, 'text/html', b'Access denied'
+            elif self.path == '/unauthorized.png':
+                status, mime, body = 401, 'text/html', b'Access denied'
             elif self.path == '/limited.png':
                 headers['Retry-After'] = '7'
                 status, mime, body = 429, 'text/html', b'Wait'
@@ -282,4 +286,61 @@ def test_browser_access_denial_and_dns_are_not_password_or_disk_errors(protected
             assert media.errors[url]['reason'] == 'browser_dns' and not media.stopped
             assert media.errors[url]['requests'] == 0
         finally: media.close(); client.close()
+    finally: store.close()
+
+
+def test_first_http_login_failure_continues_same_file_in_browser(protected_browser, tmp_path, monkeypatch):
+    from ljarchive.client import LiveJournalClient, WebLoginRequired
+    from ljarchive.media import Media
+    bridge, base, calls, _ = protected_browser
+    client = LiveJournalClient('fixture', '')
+    client.browser = bridge
+    confirmations = []
+    def confirm():
+        confirmations.append(True)
+        sign_in(bridge, base, calls)
+    client.request_browser = confirm
+    media = Media(tmp_path, True, threading.Event(), budget(), client)
+    monkeypatch.setattr('ljarchive.media.authenticated_image_host', lambda u: u.startswith(base + '/'))
+    monkeypatch.setattr('ljarchive.media.public_url', lambda u: None)
+    def http_login_failed(*args, **kwargs): raise WebLoginRequired()
+    monkeypatch.setattr(media.session, 'get', http_login_failed)
+    try:
+        path = media.get(base + '/private.png', referer=base + '/')
+        assert (tmp_path / path).read_bytes() == PNG
+        assert confirmations == [True] and not media.auth_unavailable
+        assert not media.errors and media.downloads[base + '/private.png']['transport'] == 'browser'
+    finally:
+        media.close(); client.close()
+
+
+def test_browser_batch_continues_denials_and_keeps_them_closed_on_reload(protected_browser, tmp_path, monkeypatch):
+    from ljarchive.on_demand import download_browser_images
+    from ljarchive.sessions import Sessions
+    from ljarchive.storage import Store
+    from ljarchive.media import Media
+    bridge, base, calls, _ = protected_browser
+    sign_in(bridge, base, calls); calls.clear()
+    sessions = Sessions(); sessions.browser = bridge
+    monkeypatch.setattr('ljarchive.media.authenticated_image_host', lambda u: u.startswith(base + '/'))
+    monkeypatch.setattr('ljarchive.on_demand.authenticated_image_host', lambda u: u.startswith(base + '/'))
+    urls = [base + p for p in ('/denied.png', '/private.png', '/unauthorized.png')]
+    store = Store(tmp_path)
+    try:
+        with store.db:
+            store.set('username', 'fixture')
+            store.save_entry({'itemid': 1, 'event': ''.join(f'<img src="{u}">' for u in urls)})
+            store.set('entry_materials', {'1': {'urls': urls}})
+        result = download_browser_images(store, {'delay': 1, 'max_requests': 7}, threading.Event(), lambda **k: None, sessions)
+        assert result == {'kind': 'images', 'saved': 1, 'failed': 2, 'total': 3}
+        assert calls.index('/private.png') > calls.index('/denied.png')
+        assert calls.count('/denied.png') == calls.count('/unauthorized.png') == 3
+        assert calls.count('/private.png') == 1
+        media = Media(tmp_path, True, threading.Event())
+        try:
+            media.load_state(store)
+            assert all(e['attempts'] == 3 and e['closed'] and e['status'] == 'failed' for e in media.errors.values())
+            media.retry_failed()
+            assert calls.count('/denied.png') == 3  # Closed browser refusals do not reopen on restart.
+        finally: media.close()
     finally: store.close()

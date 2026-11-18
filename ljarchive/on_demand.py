@@ -10,7 +10,7 @@ from urllib.parse import urljoin
 
 from .client import Cancelled, ExportError, LiveJournalClient, RequestBudget, RequestLimitReached
 from .media import Media, authenticated_image_host, image_url, error_message
-from .gaps import reopen
+from .gaps import ATTEMPTS, closed, reopen
 from .retry import restored_deadline
 from .render import build_archive, original_url, text_value
 from .storage import Store
@@ -119,38 +119,44 @@ def download_browser_images(store, data, cancel, update, sessions):
         browser_login(client, data, sessions)
         media.load_state(store); media.browser_only = True
         pending = [item for item in image_failures(store) if item['browser']]
-        saved, failed, consecutive = 0, 0, 0
+        saved, consecutive = set(), 0
+        # An explicit request reopens old failures once, not on every retry.
+        for item in pending:
+            if item['url'] in media.errors:
+                reopen(media.errors[item['url']])
         budget.not_before = restored_deadline(store)
         budget.wait_info = store.get('request_wait', {})
         update(phase='running', total=len(pending), completed=0, saved=0, failed=0)
-        for index, item in enumerate(pending):
-            if cancel.is_set():
-                raise Cancelled('Загрузка остановлена.')
-            value = item['url']
-            if value in media.errors:
-                reopen(media.errors[value])
-            referer = f'https://{client.user.replace("_", "-")}.livejournal.com/'
-            if item['entries']:
-                row = store.db.execute('SELECT payload FROM entries WHERE id=?', (item['entries'][0]['id'],)).fetchone()
-                if row: referer = original_url(client.user, json.loads(row[0]))
-            path = media.get(value, required=True, referer=referer)
-            with store.db: media.save_state(store)
-            if path: saved += 1
-            else: failed += 1
-            update(phase='running', message=f'Сохранено {saved} · с ошибками {failed}',
-                   completed=index + 1, total=len(pending), saved=saved, failed=failed)
-            if media.stopped:
-                if cancel.is_set(): raise Cancelled('Загрузка остановлена.')
-                raise ExportError(error_message(media.errors.get(value, {})))
-            reason = media.errors.get(value, {}).get('reason')
-            consecutive = consecutive + 1 if reason in ('browser_network', 'browser_timeout', 'browser_dns') else 0
-            if not path and (reason in ('browser_closed', 'browser_login', 'browser_start') or
-                             media.errors.get(value, {}).get('http_status') in (401, 403, 429) or consecutive >= 3):
-                # One denied request is enough to ask the user to check the browser;
-                # don't repeat the same failed login over the remaining fifty files.
-                update(error=media.errors[value])
-                raise ExportError(error_message(media.errors[value]))
-        return {'kind': 'images', 'saved': saved, 'failed': failed, 'total': len(pending)}
+        for attempt in range(ATTEMPTS):
+            retry = [item for item in pending if item['url'] not in saved and not closed(media.errors.get(item['url']))]
+            for index, item in enumerate(retry):
+                if cancel.is_set():
+                    raise Cancelled('Загрузка остановлена.')
+                value = item['url']
+                referer = f'https://{client.user.replace("_", "-")}.livejournal.com/'
+                if item['entries']:
+                    row = store.db.execute('SELECT payload FROM entries WHERE id=?', (item['entries'][0]['id'],)).fetchone()
+                    if row: referer = original_url(client.user, json.loads(row[0]))
+                media.attempted.discard(value)
+                update(phase='running', message=f'Изображения · попытка {attempt + 1} из {ATTEMPTS}',
+                       completed=index, total=len(retry), saved=len(saved))
+                path = media.get(value, required=True, referer=referer)
+                with store.db: media.save_state(store)
+                if path: saved.add(value)
+                update(phase='running', message=f'Сохранено {len(saved)} из {len(pending)} · попытка {attempt + 1} из {ATTEMPTS}',
+                       completed=index + 1, total=len(retry), saved=len(saved), failed=len(pending) - len(saved))
+                if media.stopped:
+                    if cancel.is_set(): raise Cancelled('Загрузка остановлена.')
+                    raise ExportError(error_message(media.errors.get(value, {})))
+                reason = media.errors.get(value, {}).get('reason')
+                consecutive = consecutive + 1 if reason in ('browser_network', 'browser_timeout', 'browser_dns') else 0
+                if not path and (reason in ('browser_closed', 'browser_login', 'browser_start', 'browser_missing') or
+                                 media.errors.get(value, {}).get('http_status') == 429 or consecutive >= 3):
+                    # Session loss, rate limits and a broken connection affect the
+                    # queue; a file-specific 401/403/404 does not.
+                    update(error=media.errors[value])
+                    raise ExportError(error_message(media.errors[value]))
+        return {'kind': 'images', 'saved': len(saved), 'failed': len(pending) - len(saved), 'total': len(pending)}
     finally:
         media.close(); client.close()
 
@@ -293,7 +299,8 @@ class MaterialQueue:
                 if len(self.states) < 200: break
                 if self.states[key]['phase'] in ('complete', 'error', 'needs_auth', 'needs_browser', 'cancelled'): del self.states[key]
             task_id = secrets.token_hex(12)
-            self.states[task_id] = {'id': task_id, '_identity': identity, 'phase': 'queued', 'message': 'В очереди', 'requests_used': 0}
+            self.states[task_id] = {'id': task_id, '_identity': identity, '_main_job': self.jobs.state.get('job_id'),
+                                    'phase': 'queued', 'message': 'В очереди', 'requests_used': 0}
             # Credentials live only in this in-memory request; never in status or task files.
             request = {k: data[k] for k in ('archive', 'entry_id', 'kind', 'value', 'password', 'transport', 'confirmed', 'open_browser') if k in data}
             if self.jobs.current and self.jobs.current.get('archive') == slug:
@@ -358,6 +365,7 @@ class MaterialQueue:
                     task_id, request = available
                     self.queue.remove(available)
                     if self.states[task_id]['phase'] == 'cancelled': request.clear(); continue
+                    self.states[task_id]['_main_job'] = self.jobs.state.get('job_id')
                     self.current, self.running, self.cancel = task_id, True, threading.Event()
             if busy:
                 threading.Event().wait(0.5)

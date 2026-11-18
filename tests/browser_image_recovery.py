@@ -22,7 +22,7 @@ def main():
         with tempfile.TemporaryDirectory(prefix='journal-image-ui-') as directory:
             root = Path(directory)
             store = Store(root / 'fixture')
-            urls = [source + '/private.png', source + '/private.png?second=1', source + '/missing.png']
+            urls = [source + '/private.png', source + '/private.png?second=1', source + '/missing.png', source + '/denied.png']
             with store.db:
                 store.set('username', 'fixture')
                 store.save_entry({'itemid': 1, 'anum': 1, 'subject': 'Закрытые изображения', 'eventtime': '2024-01-01 00:00:00', 'security': 'private', 'event': ''.join(f'<img src="{u}">' for u in urls)})
@@ -44,30 +44,35 @@ def main():
                 page.goto(base)
                 page.get_by_role('button', name='Изображения: файлы и докачка').click()
                 modal = page.locator('.image-recovery')
-                expect(modal.locator('.image-failure')).to_have_count(3)
+                expect(modal.locator('.image-failure')).to_have_count(4)
                 modal.get_by_role('button', name='Докачать через браузер').click()
                 expect(modal.get_by_role('button', name='Продолжить', exact=True)).to_be_enabled(timeout=10000)
                 expect(modal).to_contain_text('Войдите в ЖЖ')
                 sign_in(bridge, source, calls)
                 calls.clear()
                 modal.get_by_role('button', name='Продолжить', exact=True).click()
-                expect(modal.locator('[data-role=status]')).to_contain_text('Сохранено 2 из 3 · с ошибками 1', timeout=20000)
-                expect(modal.locator('.image-failure')).to_have_count(1)
-                expect(modal.locator('.image-failure')).to_contain_text('Браузер получил HTTP 404')
+                expect(modal.locator('[data-role=status]')).to_contain_text('Сохранено 2 из 4 · с ошибками 2', timeout=30000)
+                expect(modal.locator('.image-failure')).to_have_count(2)
+                expect(modal).to_contain_text('Браузер получил HTTP 404')
+                expect(modal).to_contain_text('Браузер получил HTTP 403')
+                expect(modal.get_by_role('button', name='Докачать через браузер')).to_be_enabled()
+                assert calls.index('/denied.png') < calls.index('/private.png')
+                assert calls.count('/denied.png') == calls.count('/missing.png') == 3
                 assert len([u for u in calls if u.startswith('/private.png')]) == 2
                 for width in (320, 1000):
                     page.set_viewport_size({'width': width, 'height': 850})
                     assert not modal.evaluate('e=>e.scrollWidth>e.clientWidth')
                 page.screenshot(path=str(Path(tempfile.gettempdir()) / 'journal-browser-images.png'), full_page=True)
                 page.reload()
-                expect(page.locator('#job-message')).to_contain_text('Сохранено 2 из 3')
-                expect(page.locator('#job-recovery [data-recovery-kind=images] .gap-count')).to_have_text('1')
+                expect(page.locator('#job-message')).to_contain_text('Сохранено 2 из 4')
+                expect(page.locator('#job-recovery [data-recovery-kind=images] .gap-count')).to_have_text('2')
                 page.goto(base + '/archive/fixture/entries/1.html')
                 expect(page.locator('.post .prose img')).to_have_count(2)
                 assert page.locator('.post .prose img').evaluate_all('nodes=>nodes.every(e=>e.complete&&e.naturalWidth===1)')
                 data = json.loads((root / 'fixture/data/archive.json').read_text())
                 assert all((root / 'fixture' / data['media'][url]).read_bytes() == PNG for url in urls[:2])
-                assert list(data['media_errors']) == [urls[2]]
+                assert set(data['media_errors']) == set(urls[2:])
+                assert all(e['closed'] and e['attempts'] == 3 for e in data['media_errors'].values())
                 assert token not in json.dumps(data)
                 assert not errors, errors
                 browser.close()
