@@ -51,6 +51,11 @@ class IncompleteData(ExportError):
     """A successful response omitted requested data; retry only the pending objects."""
 
 
+class WebLoginRequired(ExportError):
+    def __init__(self):
+        super().__init__('ЖЖ не подтвердил вход для изображений. Проверьте вход в браузере и повторите загрузку с паролем.')
+
+
 class RequestBudget:
     """One hard limit for all outbound HTTP attempts in an export, including retries."""
     def __init__(self, limit=50, progress=None):
@@ -176,6 +181,8 @@ class LiveJournalClient:
         self.account = self.source['login_username']
         self.user = self.source['username']
         self._password_hash = hashlib.md5(password.encode("utf-8")).hexdigest()
+        self._web_password = password
+        self._web_login_attempted = False
         self.delay = max(1.0, float(delay))
         self.cancel = cancel or threading.Event()
         self.budget = budget or RequestBudget()
@@ -209,7 +216,7 @@ class LiveJournalClient:
         self.save_cooldown(self.not_before)
         self.budget.announce_wait(self.progress)
 
-    def _request(self, method: str, path: str, *, base_url=BASE_URL, category="livejournal", **kwargs) -> bytes:
+    def _request(self, method: str, path: str, *, base_url=BASE_URL, category="livejournal", accepted_statuses=(200,), **kwargs) -> bytes:
         if base_url not in (BASE_URL, LIKES_URL, f"https://{self.user.replace('_', '-')}.livejournal.com"):
             raise ExportError("Неподдерживаемый адрес сервиса ЖЖ.")
         for attempt in range(self.max_attempts):
@@ -240,9 +247,9 @@ class LiveJournalClient:
                         continue
                     if response.status_code in (401, 403):
                         raise ExportError("ЖЖ отказал в доступе (HTTP 401/403). Проверьте вход в браузере; при ограничении запросов продолжите позже.")
-                    if 300 <= response.status_code < 400:
+                    if 300 <= response.status_code < 400 and response.status_code not in accepted_statuses:
                         raise ExportError("ЖЖ перенаправил запрос. Возможно, требуется вход или подтверждение в браузере.")
-                    if response.status_code != 200:
+                    if response.status_code not in accepted_statuses:
                         raise HTTPError(response.status_code)
                     chunks, size = [], 0
                     for chunk in response.iter_content(65536):
@@ -336,6 +343,7 @@ class LiveJournalClient:
                     raise ExportError('Адрес полученной записи относится к другому журналу.')
 
     def login(self):
+        self.progress(phase='login', message='Вход в ЖЖ…')
         community = self.source['type'] == 'community'
         self.source['access']['status'] = 'unverified'
         result = self.call("login", clientversion="Python-LJLocalArchive/0.4", **({} if community else {'getpickws': 1, 'getpickwurls': 1}))
@@ -367,6 +375,10 @@ class LiveJournalClient:
         self.source['access']['status'] = 'verified'
         if self.session_ready:
             self.session_ready(self)
+
+    def ensure_web_session(self):
+        from .web_session import establish
+        return establish(self)
 
     def personal_page(self, path):
         if self.source['type'] == 'community':
@@ -470,6 +482,7 @@ class LiveJournalClient:
 
     def close(self):
         self._password_hash = ""
+        self._web_password = ""
         self._cookie = None
         self._reaction_token = None
         self.session.cookies.clear()

@@ -29,6 +29,7 @@ def network(monkeypatch, responder):
     calls = []
     monkeypatch.setattr('ljarchive.media.public_url', lambda _: None)
     monkeypatch.setattr(Media, 'wait', lambda self, _: not self.cancel.is_set())
+    monkeypatch.setattr(LiveJournalClient, 'ensure_web_session', lambda self: False)
     def get(self, url, **kwargs):
         calls.append((url, kwargs['headers']))
         return responder(url, kwargs['headers'])

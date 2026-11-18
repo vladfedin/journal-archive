@@ -14,7 +14,8 @@ def test_report_is_allowlisted_and_keeps_per_file_causes(tmp_path):
         store.set('username', 'PRIVATE_OWNER')
         store.save_entry({'itemid': 9, 'event': 'PRIVATE_TEXT'})
         store.set('media', {url: None})
-        store.set('media_errors', {url: {'reason': 'http', 'http_status': 403, 'requests': 1,
+        store.set('media_errors', {url: {'reason': 'http', 'http_status': 403, 'requests': 1, 'attempts': 3,
+                                      'authentication': 'sent', 'session_type': 'api', 'closed': True,
                                       'checked_at': '2026-11-17T12:00:00Z', 'message': 'SECRET'}})
         store.set('entry_materials', {'9': {'urls': [url]}})
         store.set('videos', {url: {'status': 'failed', 'entries': [9], 'title': 'PRIVATE_TEXT',
@@ -25,7 +26,9 @@ def test_report_is_allowlisted_and_keeps_per_file_causes(tmp_path):
         {'password': 'SECRET', 'username': 'PRIVATE_OWNER', 'archive': '/secret/path', 'images': True,
          'urls': [url], 'max_requests': None})
     assert report['inventory_available'] and report['materials'][0]['http_status'] == 403
-    assert report['materials'][0]['entry_ids'] == [9] and report['materials'][0]['attempts'] == 1
+    assert report['materials'][0]['entry_ids'] == [9] and report['materials'][0]['attempts'] == 3
+    assert report['materials'][0]['requests'] == 1 and report['materials'][0]['closed'] is True
+    assert report['materials'][0]['authentication'] == 'sent' and report['materials'][0]['session_type'] == 'api'
     assert report['reasons'] == {'http': 1, 'download': 1}
     assert report['run']['events'][0]['http_status'] == 429
     text = json.dumps(report)

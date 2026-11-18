@@ -81,6 +81,7 @@ def download_one(store, data, cancel, update, sessions=None):
         if kind == 'image':
             trusted = authenticated_image_host(image_url(value))
             if trusted and data.get('password'):
+                client.session.cookies.clear()
                 client.login()
             media = Media(store.folder, True, cancel, budget, client=client); media.load_state(store)
             if value in media.errors:
@@ -90,7 +91,7 @@ def download_one(store, data, cancel, update, sessions=None):
             if cancel.is_set(): raise Cancelled('Загрузка остановлена.')
             if not path:
                 error = media.errors.get(value, {})
-                if (trusted and error.get('http_status') in (401, 403) and error.get('authentication') in ('missing', 'sent')
+                if (trusted and (error.get('http_status') in (401, 403) or error.get('reason') == 'web_login')
                         and not data.get('password')):
                     if sessions:
                         sessions.forget(client)
@@ -245,7 +246,7 @@ class MaterialQueue:
                 threading.Event().wait(0.5)
                 continue
             def update(**values):
-                if values.get('phase') in ('videos', 'login'): values['phase'] = 'running'
+                if values.get('phase') in ('videos', 'login', 'materials', 'retrying', 'loading'): values['phase'] = 'running'
                 with self.jobs.lock:
                     event = values.pop('activity', None)
                     if event and event.get('kind') == 'request' and self.states[task_id].get('phase') == 'waiting':

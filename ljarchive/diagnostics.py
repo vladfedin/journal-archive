@@ -12,7 +12,7 @@ from .storage import Store
 REASONS = {'http', 'timeout', 'connection', 'transfer', 'dns', 'invalid_url', 'unsupported_type',
            'too_large', 'empty', 'storage', 'redirects', 'host_paused', 'request_limit', 'cancelled',
            'paused', 'unknown', 'download', 'embed_unresolved', 'not_requested', 'local_missing',
-           'api_limit', 'incomplete', 'restored', 'tls'}
+           'api_limit', 'incomplete', 'restored', 'tls', 'web_login'}
 PHASES = {'idle', 'preparing', 'verify', 'login', 'posts', 'comments', 'reactions', 'videos',
           'materials', 'personal', 'userpics', 'render', 'waiting', 'retrying', 'loading',
           'complete', 'partial', 'cancelled', 'error', 'demo'}
@@ -101,7 +101,10 @@ def build_diagnostics(folder, state, params):
         result['materials'].append({'id': f'image-{index}', 'kind': 'image',
             'reason': reason if reason in REASONS else 'unknown', 'http_status': number(error.get('http_status')),
             'status': error.get('status') if error.get('status') in ('pending', 'failed', 'unknown') else 'unknown',
-            'attempts': number(error.get('requests')), 'checked_at': date(error.get('checked_at')),
+            'attempts': number(error.get('attempts')), 'requests': number(error.get('requests')),
+            'closed': bool(error.get('closed')), 'checked_at': date(error.get('checked_at')),
+            'authentication': error.get('authentication') if error.get('authentication') in ('sent', 'missing', 'not_requested', 'not_applicable') else 'unknown',
+            'session_type': error.get('session_type') if error.get('session_type') in ('web', 'api', 'none') else 'unknown',
             'entry_ids': sorted(references.get(url, []))})
     for index, record in enumerate(settings['videos'].values(), 1):
         saved = record.get('path')

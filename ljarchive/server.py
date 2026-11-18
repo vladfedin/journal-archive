@@ -408,7 +408,7 @@ class Jobs:
                                   delay=data["delay"], cancel=self.cancel, progress=self.progress,
                                   max_requests=data["max_requests"], mode=scope["mode"], start=scope["start"],
                                   end=scope["end"], urls=scope["urls"], archive=slug, account=data.get("account", False), messages=data.get("messages", False),
-                                  session_ready=self.sessions.remember)
+                                  session_ready=self.sessions.remember, resume=bool(data.get('_resuming')))
                 else:
                     report = export(data["username"], password, self.output, journal=data['journal'], source_type=data['source_type'], images=data["images"], videos=data.get("videos", False),
                                     delay=data["delay"], cancel=self.cancel, progress=self.progress,

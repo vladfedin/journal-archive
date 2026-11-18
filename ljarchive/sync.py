@@ -74,11 +74,12 @@ def url_id(user, url):
 
 
 class SyncExporter(Exporter):
-    def __init__(self, folder, client, scope, *, images=False, progress=None, account=False, messages=False, videos=False):
+    def __init__(self, folder, client, scope, *, images=False, progress=None, account=False, messages=False, videos=False, resume=False):
         super().__init__(folder, client, images=images, progress=progress, account=account, messages=messages, videos=videos)
         self.scope = scope
         self.selected_ids = set()
         self.state = {}
+        self.resume_requested, self.resuming = resume, False
 
     def checkpoint(self, **changes):
         self.state.update(changes)
@@ -90,8 +91,12 @@ class SyncExporter(Exporter):
         with store.db:
             bind_source(store, self.client)
         old = store.get("sync_job", {})
-        if old and not old.get("done") and old.get("scope") == self.scope.data():
+        if old and (self.resume_requested or not old.get("done")) and old.get("scope") == self.scope.data():
             self.state = old
+            self.resuming = True
+            self.state['done'] = False
+            if self.state['phase'] == 'done':
+                self.state['phase'] = 'comments'
         else:
             self.state = {"scope": self.scope.data(), "started_at": now(), "phase": "posts", "done": False,
                           "calendar_loaded": False, "seen": [], "unavailable": [], "url_done": [], "absent_checked": []}
@@ -108,7 +113,27 @@ class SyncExporter(Exporter):
             store.set("username", self.client.user)
             store.set("entry_limit", None)
             store.set("started_at", self.state["started_at"])
+            store.set('sync_job', self.state)
             store.set("journal_id", getattr(self.client, "journal_id", None) or store.get("journal_id"))
+
+    def refresh_calendar(self):
+        """On resume discover new posts without fetching unchanged days again."""
+        if not self.resuming or self.scope.mode == 'urls' or not self.state.get('calendar_loaded'):
+            return
+        self.update('posts', 'Проверяем свежие записи…')
+        days = self.client.call('getdaycounts').get('daycounts')
+        if not isinstance(days, list):
+            raise ExportError('ЖЖ не вернул календарь для проверки свежих записей.')
+        old = {r['day']: r['expected'] for r in self.store.db.execute('SELECT day,expected FROM days')}
+        with self.store.db:
+            for day in days:
+                value = date.fromisoformat(day['date']).isoformat()
+                expected = int(day['count'])
+                if self.scope.includes(value) and expected > 0 and old.get(value) != expected:
+                    self.store.db.execute('INSERT OR REPLACE INTO days(day,expected,done) VALUES (?,?,0)', (value, expected))
+                    self.store.set('sync_scan_done', False)
+        if self.store.db.execute('SELECT 1 FROM days WHERE done!=1').fetchone():
+            self.checkpoint(phase='posts')
 
     def reopen_entries(self, ids):
         """An explicit refresh of these entries gives their closed gaps new attempts."""
@@ -214,7 +239,8 @@ class SyncExporter(Exporter):
                 for entry in entries:
                     if entry.get("eventtime", "")[:10] != day["day"]:
                         raise ExportError("ЖЖ вернул запись за другой день.")
-                    self.accept(entry)
+                    if not (self.resuming and entry.get('itemid') in self.state['seen']):
+                        self.accept(entry)
                 complete = len({e["itemid"] for e in entries}) == day["expected"]
                 with store.db:
                     store.db.execute("UPDATE days SET done=? WHERE day=?", (1 if complete else 2, day["day"]))
@@ -424,6 +450,7 @@ class SyncExporter(Exporter):
                     store.set("journal_id", self.client.journal_id)
                     if getattr(self.client, "userpics", None) is not None:
                         store.set("userpic_catalog", self.client.userpics)
+                self.refresh_calendar()
                 failures = []
                 def stage(operation, label):
                     try:
@@ -485,14 +512,14 @@ class SyncExporter(Exporter):
 
 def sync(user, password, output, *, mode="full", start=None, end=None, urls=None, images=False,
          delay=3, max_requests=None, cancel=None, progress=None, archive=None, account=False, messages=False, videos=False,
-         journal=None, source_type=None, session_ready=None):
+         journal=None, source_type=None, session_ready=None, resume=False):
     user = username(user)
     identity = source(user, journal, source_type)
     scope = validate_scope(identity['username'], mode, start, end, urls)
     slug = target_slug(identity['username'], archive)
     budget = RequestBudget(max_requests, progress)
     client = LiveJournalClient(user, password, delay=delay, cancel=cancel, budget=budget, progress=progress, journal=journal, source_type=source_type, session_ready=session_ready)
-    return SyncExporter(Path(output) / slug, client, scope, images=images, progress=progress, account=account, messages=messages, videos=videos).run()
+    return SyncExporter(Path(output) / slug, client, scope, images=images, progress=progress, account=account, messages=messages, videos=videos, resume=resume).run()
 
 
 def target_slug(user, archive=None):

@@ -13,13 +13,14 @@ from urllib.parse import urljoin, urlsplit, urlunsplit
 import requests
 
 from .storage import atomic_write
-from .client import RequestBudget, RequestLimitReached
+from .client import RequestBudget, RequestLimitReached, WebLoginRequired
+from .web_session import AGENT, cookie_header, ready as web_ready
 from .retry import backoff
 from .gaps import ATTEMPTS, carry, closed, fail, reopen
 
 TYPES = {"image/jpeg": ".jpg", "image/png": ".png", "image/gif": ".gif", "image/webp": ".webp", "image/avif": ".avif"}
 IMAGE_HOSTS = frozenset(('ic.pics.livejournal.com', 'pics.livejournal.com', 'l-userpic.livejournal.com', 'userpic.livejournal.com'))
-BROWSER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36'
+BROWSER_AGENT = AGENT
 
 
 def authenticated_image_host(url):
@@ -50,6 +51,7 @@ REASONS = {
     "paused": "Не запрошено: загрузка изображений приостановлена после повторных ошибок",
     "host_paused": "Не запрошено: этот сервер изображений приостановлен после повторных ошибок",
     "unknown": "Причина не сохранена; требуется повторная загрузка",
+    'web_login': 'ЖЖ не подтвердил вход для изображений. Повторите загрузку с паролем.',
 }
 
 
@@ -62,7 +64,7 @@ def plain_reason(error):
         if code == 410:
             return "файл больше недоступен"
         if code in (401, 403):
-            return "нужен вход в ЖЖ" if error.get("authentication") == "missing" else "доступ к файлу закрыт"
+            return "нужен вход в ЖЖ" if error.get("authentication") == "missing" or error.get('session_type') in ('api', 'none') else "доступ к файлу закрыт"
         return "ошибка сервера"
     return {"timeout": "сервер не отвечал", "connection": "сервер недоступен", "dns": "сервер недоступен",
             "transfer": "загрузка обрывалась", "unsupported_type": "по ссылке не картинка",
@@ -70,13 +72,13 @@ def plain_reason(error):
             "invalid_url": "недопустимый адрес", "storage": "не удалось записать на диск",
             'tls': 'не удалось проверить сертификат', 'request_limit': 'достигнут лимит запросов',
             'cancelled': 'загрузка остановлена', 'host_paused': 'сервер временно недоступен',
-            'paused': 'загрузка приостановлена'}.get(reason, "причина не сохранена")
+            'paused': 'загрузка приостановлена', 'web_login': 'нужен веб-вход в ЖЖ'}.get(reason, "причина не сохранена")
 
 
 def error_message(error):
     if error.get("reason") == "http":
         code = error.get("http_status")
-        if code in (401, 403) and error.get('authentication') == 'missing':
+        if code in (401, 403) and (error.get('authentication') == 'missing' or error.get('session_type') in ('api', 'none')):
             return f"HTTP {code} — требуется вход в ЖЖ"
         detail = {401: "требуется авторизация", 403: "доступ запрещён", 404: "файл не найден",
                   429: "слишком много запросов"}.get(code, "ошибка сервера")
@@ -110,6 +112,7 @@ class Media:
         self.paused_origins = set()
         self.attempted = set()
         self.authentication = {}
+        self.session_types = {}
         self.categories = {}
         self.referers = {}
         self.verified_files = set()
@@ -123,11 +126,7 @@ class Media:
             headers['Referer'] = referer if referer and referer.startswith(origin) else origin
             if getattr(self.client, '_cookie', None):
                 # Keep domain/path restrictions on web cookies issued by LJ itself.
-                jar = requests.cookies.RequestsCookieJar()
-                for cookie in self.client.session.cookies:
-                    if cookie.name in ('ljsession', 'ljmastersession', 'ljloggedin'):
-                        jar.set_cookie(cookie)
-                value = requests.cookies.get_cookie_header(jar, requests.Request('GET', url).prepare()) or ''
+                value = cookie_header(self.client, url)
                 if not any(part.strip().startswith('ljsession=') for part in value.split(';')):
                     value += ('; ' if value else '') + 'ljsession=' + self.client._cookie
                 headers['Cookie'] = value
@@ -139,8 +138,9 @@ class Media:
         self.mapping = {**store.get("media", {}), **self.mapping}
         self.errors = {**store.get("media_errors", {}), **self.errors}
         self.errors = {url: error for url, error in self.errors.items() if not self.mapping.get(url)}
-        for error in self.errors.values():
-            if error.get('reason') in ('storage', 'tls') or (error.get('http_status') in (401, 403) and error.get('authentication') == 'missing'):
+        for url, error in self.errors.items():
+            if error.get('reason') in ('storage', 'tls', 'web_login') or (error.get('http_status') in (401, 403) and
+                    (error.get('authentication') == 'missing' or (authenticated_image_host(url) and error.get('session_type') != 'web'))):
                 reopen(error)
 
     def save_state(self, store):
@@ -154,10 +154,12 @@ class Media:
         record = {"status": status, "reason": reason, "http_status": http_status,
                   "requests": requests_made, "checked_at": checked_at,
                   "authentication": self.authentication.get(url, 'not_requested'),
+                  'session_type': self.session_types.get(url, 'none'),
                   "category": self.categories.get(url, previous.get("category", "images")),
                   "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
         # A stop, missing login or local failure does not count as remote absence.
-        if reason in ('storage', 'tls') or (http_status in (401, 403) and record['authentication'] == 'missing'):
+        if reason in ('storage', 'tls', 'web_login') or (http_status in (401, 403) and
+                (record['authentication'] == 'missing' or (authenticated_image_host(url) and record['session_type'] != 'web'))):
             record['status'] = 'pending'
         self.errors[url] = fail(record, previous) if record['status'] == "failed" else carry(record, previous)
 
@@ -225,6 +227,7 @@ class Media:
         requests_made, http_status, checked_at = 0, None, None
         reason = "invalid_url"
         current = url
+        web_retry = False
         try:
             current = image_url(url)
             attempt = int(self.errors.get(url, {}).get('attempts', 0))
@@ -245,6 +248,7 @@ class Media:
                     self.record_error(url, "cancelled", status="pending", requests_made=requests_made, checked_at=checked_at)
                     return None
                 self.budget.consume(category)
+                self.budget.progress(phase='materials', message='Получаем изображение…')
                 self.budget.event("request", category, current, attempt=attempt + 1, max_attempts=ATTEMPTS)
                 requests_made += 1
                 if attempt:
@@ -256,11 +260,18 @@ class Media:
                     self.session.cookies.clear()
                     headers = self.headers(current, referer)
                     self.authentication[url] = ('sent' if headers.get('Cookie') else 'missing') if authenticated_image_host(current) else 'not_applicable'
+                    self.session_types[url] = ('web' if self.client and web_ready(self.client, current) else
+                                               'api' if headers.get('Cookie') else 'none') if authenticated_image_host(current) else 'none'
                     response = self.session.get(current, headers=headers, stream=True, timeout=(10, 20), allow_redirects=False)
                 except (requests.Timeout, requests.ConnectionError):
                     raise
                 with response:
                     http_status = response.status_code
+                    if (http_status in (401, 403) and authenticated_image_host(current) and self.client and not web_retry
+                            and self.session_types[url] != 'web' and hasattr(self.client, 'ensure_web_session')):
+                        web_retry = True
+                        if self.client.ensure_web_session():
+                            continue
                     if response.status_code in (429, 500, 502, 503, 504):
                         self.defer(backoff(attempt, response.headers.get("Retry-After"), limited=response.status_code == 429),
                                    reason="http", category=category, url=current, http_status=response.status_code,
@@ -300,6 +311,10 @@ class Media:
                     return path
             reason = "redirects"
             raise ValueError("too many redirects")
+        except WebLoginRequired:
+            self.record_error(url, 'web_login', status='pending', http_status=http_status,
+                              requests_made=requests_made, checked_at=checked_at)
+            return None
         except RequestLimitReached:
             self.stopped = True
             self.stop_reason = "request_limit"
