@@ -274,6 +274,8 @@ class Jobs:
                 self.state['events'] = (self.state.get('events', []) + [event])[-30:]
                 if event['kind'] == 'success':
                     self.state['last_success_at'] = event['at']
+                if event['kind'] in ('response', 'success', 'redirect') or (event['kind'] == 'failure' and event.get('http_status')):
+                    self.state['last_response_at'] = event['at']
                 if event['kind'] == 'request':
                     self.state['request'] = event
                     if previous in ('waiting', 'retrying'):

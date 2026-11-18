@@ -114,3 +114,73 @@ def test_old_forbidden_api_attempts_are_reopened_for_web_login(tmp_path):
         media.load_state(store)
         assert not media.errors[PICTURE].get('closed') and not media.errors[PICTURE].get('attempts')
     finally: media.close(); store.close()
+
+
+def test_photo_redirect_uses_www_cookie_and_keeps_issued_photo_cookie(tmp_path, monkeypatch):
+    client = LiveJournalClient('fixture', PASSWORD); authenticated(client)
+    calls = web_network(monkeypatch, client)
+    gateway = 'https://www.livejournal.com/misc/session.bml?return=synthetic'
+    seen = []
+    def image(session, url, **kwargs):
+        seen.append(url)
+        cookie = kwargs['headers'].get('Cookie', '')
+        if url == gateway:
+            assert 'ljmastersession=synthetic-master-cookie' in cookie
+            response = ImageResponse(status=302, headers={'Location': PICTURE})
+            response.cookies = requests.cookies.RequestsCookieJar()
+            response.cookies.set('ljsession', 'synthetic-photo-domain', domain='.livejournal.com', secure=True)
+            return response
+        if 'synthetic-photo-domain' in cookie:
+            return ImageResponse(content=b'picture-through-login', headers={'Content-Type': 'image/png'})
+        return ImageResponse(status=302, headers={'Location': gateway})
+    monkeypatch.setattr(requests.Session, 'get', image)
+    media = Media(tmp_path, True, threading.Event(), client.budget, client)
+    try:
+        path = media.get(PICTURE)
+        assert (tmp_path / path).read_bytes() == b'picture-through-login'
+        assert seen == [PICTURE, gateway, PICTURE]
+        assert [m for m, _ in calls] == ['GET', 'POST']
+        assert client.budget.used == 5
+        assert media.session_types[PICTURE] == 'web'
+        assert not media.errors
+    finally: media.close(); client.close()
+
+
+def test_unchanged_login_redirect_stops_once_and_does_not_repeat_known_images(tmp_path, monkeypatch):
+    client = LiveJournalClient('fixture', PASSWORD); authenticated(client)
+    calls = web_network(monkeypatch, client)
+    gateway = 'https://www.livejournal.com/misc/session.bml'
+    seen = []
+    def image(session, url, **kwargs):
+        seen.append(url)
+        if url.endswith('/public.png'):
+            return ImageResponse(content=b'public', headers={'Content-Type': 'image/png'})
+        return ImageResponse(status=302, headers={'Location': PICTURE if url == gateway else gateway})
+    monkeypatch.setattr(requests.Session, 'get', image)
+    media = Media(tmp_path, True, threading.Event(), client.budget, client)
+    try:
+        assert media.get(PICTURE) is None
+        assert seen == [PICTURE, gateway, PICTURE]
+        assert media.errors[PICTURE]['reason'] == 'web_login'
+        assert media.errors[PICTURE]['status'] == 'pending'
+        assert media.errors[PICTURE]['authentication'] == 'sent'
+        assert not media.errors[PICTURE].get('closed')
+        media.retry_failed()
+        old = PICTURE + '?old'
+        media.errors[old] = {'reason': 'redirects', 'attempts': 2, 'status': 'failed'}
+        assert media.get(old) is None and len(seen) == 3
+        assert media.get('https://ic.pics.livejournal.com/public.png')
+        assert len(seen) == 4
+    finally: media.close(); client.close()
+
+
+def test_old_login_redirect_loop_is_reopened_without_affecting_external_links(tmp_path):
+    store = Store(tmp_path)
+    old = {'status': 'failed', 'reason': 'redirects', 'http_status': 302, 'attempts': 3, 'closed': True}
+    with store.db: store.set('media_errors', {PICTURE: old, 'https://images.example/loop': old})
+    media = Media(tmp_path, True, threading.Event())
+    try:
+        media.load_state(store)
+        assert not media.errors[PICTURE].get('closed')
+        assert media.errors['https://images.example/loop']['closed']
+    finally: media.close(); store.close()

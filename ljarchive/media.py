@@ -14,7 +14,7 @@ import requests
 
 from .storage import atomic_write
 from .client import RequestBudget, RequestLimitReached, WebLoginRequired
-from .web_session import AGENT, cookie_header, ready as web_ready
+from .web_session import AGENT, AUTH_COOKIES, cookie_header, ready as web_ready
 from .retry import backoff
 from .gaps import ATTEMPTS, carry, closed, fail, reopen
 
@@ -33,11 +33,23 @@ def authenticated_image_host(url):
 
 def image_url(url):
     """Old posts often embed HTTP URLs; use TLS on known LJ image hosts."""
-    parts = urlsplit(url)
-    if (parts.scheme == 'http' and parts.hostname in IMAGE_HOSTS and not parts.username
-            and not parts.password and parts.port in (None, 80)):
-        return urlunsplit(('https', parts.hostname, parts.path, parts.query, parts.fragment))
+    try:
+        parts = urlsplit(url)
+        if (parts.scheme == 'http' and parts.hostname in IMAGE_HOSTS and not parts.username
+                and not parts.password and parts.port in (None, 80)):
+            return urlunsplit(('https', parts.hostname, parts.path, parts.query, parts.fragment))
+    except ValueError:
+        pass  # The download records the invalid address as a per-file error.
     return url
+
+
+def web_auth_host(url):
+    try:
+        parts = urlsplit(url)
+        return (parts.scheme == 'https' and parts.hostname == 'www.livejournal.com'
+                and not parts.username and not parts.password and parts.port in (None, 443))
+    except ValueError:
+        return False
 
 REASONS = {
     "timeout": "Сервер не ответил вовремя", "connection": "Ошибка соединения",
@@ -115,6 +127,7 @@ class Media:
         self.session_types = {}
         self.categories = {}
         self.referers = {}
+        self.auth_unavailable = False
         self.verified_files = set()
         self.used_urls = {"images": set(), "userpics": set()}
         self.videos, self.video_embeds, self.external_embeds = {}, {}, {}
@@ -139,7 +152,7 @@ class Media:
         self.errors = {**store.get("media_errors", {}), **self.errors}
         self.errors = {url: error for url, error in self.errors.items() if not self.mapping.get(url)}
         for url, error in self.errors.items():
-            if error.get('reason') in ('storage', 'tls', 'web_login') or (error.get('http_status') in (401, 403) and
+            if error.get('reason') in ('storage', 'tls', 'web_login') or (error.get('reason') == 'redirects' and authenticated_image_host(image_url(url))) or (error.get('http_status') in (401, 403) and
                     (error.get('authentication') == 'missing' or (authenticated_image_host(url) and error.get('session_type') != 'web'))):
                 reopen(error)
 
@@ -228,8 +241,12 @@ class Media:
         reason = "invalid_url"
         current = url
         web_retry = False
+        trusted_source = authenticated_image_host(image_url(url))
+        visited = set()
         try:
             current = image_url(url)
+            if self.auth_unavailable and trusted_source and self.errors.get(url, {}).get('reason') in ('redirects', 'web_login'):
+                raise WebLoginRequired()
             attempt = int(self.errors.get(url, {}).get('attempts', 0))
             # Redirects belong to this attempt. Failed downloads are retried by the
             # final pass, not by a nested six-attempt loop.
@@ -241,6 +258,23 @@ class Media:
                     self.record_error(url, "host_paused", status="pending", requests_made=requests_made, checked_at=checked_at)
                     return None
                 public_url(current)
+                headers = self.headers(current, referer)
+                # Photo authorization can return through the main LJ domain. It needs
+                # the server-issued www cookies, never the API master token.
+                if trusted_source and web_auth_host(current) and self.client:
+                    if not cookie_header(self.client, current) or not web_ready(self.client):
+                        web_retry = True
+                        if not self.client.ensure_web_session():
+                            raise WebLoginRequired()
+                    value = cookie_header(self.client, current)
+                    if value: headers['Cookie'] = value
+                fingerprint = (current, headers.get('Cookie', ''))
+                if fingerprint in visited:
+                    if trusted_source:
+                        raise WebLoginRequired()
+                    reason = 'redirects'
+                    raise ValueError('redirect loop')
+                visited.add(fingerprint)
                 if self.budget.limit is not None and self.budget.used >= self.budget.limit:
                     self.budget.consume(category)
                 self.budget.announce_wait()
@@ -258,19 +292,33 @@ class Media:
                 try:
                     # Recompute on every redirect; never forward a cookie to a different service.
                     self.session.cookies.clear()
-                    headers = self.headers(current, referer)
-                    self.authentication[url] = ('sent' if headers.get('Cookie') else 'missing') if authenticated_image_host(current) else 'not_applicable'
-                    self.session_types[url] = ('web' if self.client and web_ready(self.client, current) else
-                                               'api' if headers.get('Cookie') else 'none') if authenticated_image_host(current) else 'none'
+                    if authenticated_image_host(current):
+                        self.authentication[url] = 'sent' if headers.get('Cookie') else 'missing'
+                        self.session_types[url] = 'web' if self.client and web_ready(self.client, current) else 'api' if headers.get('Cookie') else 'none'
+                    elif not trusted_source:
+                        self.authentication[url], self.session_types[url] = 'not_applicable', 'none'
                     response = self.session.get(current, headers=headers, stream=True, timeout=(10, 20), allow_redirects=False)
                 except (requests.Timeout, requests.ConnectionError):
                     raise
                 with response:
                     http_status = response.status_code
+                    self.budget.event('response', category, current, http_status=http_status)
+                    if self.client and trusted_source and (authenticated_image_host(current) or web_auth_host(current)):
+                        # Keep new photo-domain cookies through the redirect chain;
+                        # clear the transport jar before each request to other hosts.
+                        for cookie in getattr(response, 'cookies', ()):
+                            domain = cookie.domain.lstrip('.')
+                            if (cookie.name in AUTH_COOKIES and domain in {'livejournal.com', 'www.livejournal.com', *IMAGE_HOSTS}
+                                    and (parts.hostname == domain or parts.hostname.endswith('.' + domain))):
+                                from copy import copy
+                                self.client.session.cookies.set_cookie(copy(cookie))
+                        if getattr(self.client, 'session_ready', None):
+                            self.client.session_ready(self.client)
                     if (http_status in (401, 403) and authenticated_image_host(current) and self.client and not web_retry
                             and self.session_types[url] != 'web' and hasattr(self.client, 'ensure_web_session')):
                         web_retry = True
                         if self.client.ensure_web_session():
+                            visited.clear()
                             continue
                     if response.status_code in (429, 500, 502, 503, 504):
                         self.defer(backoff(attempt, response.headers.get("Retry-After"), limited=response.status_code == 429),
@@ -278,7 +326,10 @@ class Media:
                                    attempt=attempt + 1, max_attempts=ATTEMPTS, server_delay=bool(response.headers.get("Retry-After")))
                         response.raise_for_status()
                     if 300 <= response.status_code < 400:
-                        current = image_url(urljoin(current, response.headers.get("Location", "")))
+                        target = image_url(urljoin(current, response.headers.get("Location", "")))
+                        self.budget.event('redirect', category, current, http_status=http_status,
+                                          destination='journal_login' if web_auth_host(target) else 'journal_image' if authenticated_image_host(target) else 'external')
+                        current = target
                         continue
                     response.raise_for_status()
                     ext = TYPES.get(response.headers.get("Content-Type", "").split(";")[0].lower())
@@ -309,11 +360,15 @@ class Media:
                     self.errors.pop(url, None)
                     self.budget.event("success", category, current)
                     return path
+            if trusted_source and any(web_auth_host(address) for address, _ in visited):
+                raise WebLoginRequired()
             reason = "redirects"
             raise ValueError("too many redirects")
         except WebLoginRequired:
+            self.auth_unavailable = True
             self.record_error(url, 'web_login', status='pending', http_status=http_status,
                               requests_made=requests_made, checked_at=checked_at)
+            self.budget.event('failure', category, url, reason='web_login', http_status=http_status)
             return None
         except RequestLimitReached:
             self.stopped = True

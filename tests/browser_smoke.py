@@ -151,6 +151,18 @@ def main():
                 expect(page.locator('#job-meta')).to_contain_text('идёт 3 мин, из них пауз 1 мин')
                 expect(page.locator('#job-kind')).to_have_text('докачка пропусков')
                 assert page.locator('#job [aria-live]:not([aria-live=off]), #job [role=status]').evaluate_all('n => n.map(x => x.id)') == ['job-stage']
+                # A run with recent 302 responses is not a silent server, even if no file was saved.
+                state.update(phase='materials', last_success_at=4102440000, last_response_at=4102444699,
+                             request={'at':4102444698,'host':'ic.pics.livejournal.com'},
+                             last_activity={'kind':'redirect','http_status':302,'at':4102444699},
+                             message='Загрузка изображения · попытка 2 из 3')
+                page.evaluate('s => showStatus(s)', state)
+                expect(page.locator('#job-message')).to_contain_text('ЖЖ перенаправляет запрос · 302')
+                expect(page.locator('#job-message')).not_to_contain_text('не отвечает')
+                state.update(last_response_at=4102444500, request={'at':4102444600,'host':'images.example'},
+                             last_activity={'kind':'request','at':4102444600})
+                page.evaluate('s => showStatus(s)', state)
+                expect(page.locator('#job-message')).to_contain_text('Ожидаем ответ от images.example')
                 page.locator('#job-diagnostics').click()
                 expect(page.locator('#diagnostics-download')).to_be_visible()
                 page.locator('#diagnostics-dialog summary').click()

@@ -32,7 +32,8 @@ def date(value):
 
 def event(value):
     result = {key: number(value[key]) for key in ('at', 'retry_at', 'attempt', 'max_attempts', 'http_status') if key in value}
-    for key, allowed in (('kind', {'request', 'success', 'failure', 'wait'}), ('reason', REASONS), ('category', CATEGORIES)):
+    for key, allowed in (('kind', {'request', 'response', 'redirect', 'success', 'failure', 'wait'}), ('reason', REASONS), ('category', CATEGORIES),
+                         ('destination', {'journal_login', 'journal_image', 'external'})):
         if key in value:
             result[key] = value[key] if value[key] in allowed else 'unknown'
     if type(value.get('server_delay')) is bool:
@@ -62,7 +63,7 @@ def build_diagnostics(folder, state, params):
     version = state.get('app_version')
     run['application_version'] = version if isinstance(version, str) and re.fullmatch(r'\d+\.\d+\.\d+', version) else None
     run['phase'] = state.get('phase') if state.get('phase') in PHASES else 'unknown'
-    for key in ('started_at', 'server_time', 'last_progress_at', 'last_success_at', 'last_saved_at', 'working_seconds',
+    for key in ('started_at', 'server_time', 'last_progress_at', 'last_success_at', 'last_response_at', 'last_saved_at', 'working_seconds',
                 'waiting_seconds', 'retry_at', 'requests_used', 'request_limit', 'entries', 'comments'):
         if key in state:
             run[key] = number(state[key])
