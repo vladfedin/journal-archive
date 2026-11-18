@@ -358,6 +358,8 @@ def render_feed(entry, user, links, media, comment_ids):
 
 
 def build_archive(store: Store, report: dict, *, images=False, userpics=False, client_cancel=None, progress=None, budget=None, media=None, client=None, complete_after_media=False, entry_ids=None, changed_media=()):
+    from .recovery import images_only_partial, requested_gaps_settled, inventory, summary as recovery_summary
+    repair_image_status = images_only_partial(report)
     folder, user = store.folder, report["username"]
     entry_ids = None if entry_ids is None else set(entry_ids)
     update_assets = (entry_ids is None or report.get('format_version') != __version__
@@ -522,6 +524,10 @@ def build_archive(store: Store, report: dict, *, images=False, userpics=False, c
     from .video import video_report
     report['videos'] = video_report(store, selected)
     report["media_complete"] = report["images_unavailable"] == report["images_closed"] and not (report.get('videos_requested') and report['videos']['missing'])
+    if repair_image_status and report['media_complete'] and not complete_after_media:
+        with store.db:
+            media.save_state(store)
+        complete_after_media = requested_gaps_settled(report, recovery_summary(inventory(store)))
     if complete_after_media and report['media_complete']:
         report['status'] = 'complete'
         report['issues'] = [issue for issue in report['issues'] if issue != 'Не все изображения получены.']

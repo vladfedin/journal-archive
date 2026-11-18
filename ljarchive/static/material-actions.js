@@ -44,7 +44,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if(!error.trace?.length)evidence.append(el('p','',error.requests===0?'Запрос файла не отправлен':`Запросов: ${error.requests??'нет данных'} · HTTP ${error.http_status??'нет данных'}`));
     }
     function showAsset(asset){
-      if(inserted||!asset)return;
+      if(inserted||!asset||asset.kind==='unavailable')return;
       if(asset.kind==='external'){
         const recognized=el('span','external-widget');recognized.dataset.widgetUrl=asset.embed_url;
         const link=el('a','',asset.provider+' ↗');link.href=asset.url;link.target='_blank';link.rel='noreferrer noopener';
@@ -81,7 +81,9 @@ document.addEventListener('DOMContentLoaded', () => {
       status.textContent=text;
       const done=['complete','error','needs_auth','needs_browser','cancelled'].includes(state.phase);
       button.disabled=!done;browser.disabled=!done;cancel.hidden=done||inserted;
-      if(state.phase==='complete'){
+      if(state.phase==='complete'&&state.asset?.kind==='unavailable'){
+        button.textContent='Проверить снова';
+      }else if(state.phase==='complete'){
         if(state.asset?.kind==='video'){const result=el('div','material-result','Сохранено'+(state.asset.bytes?' · '+size(state.asset.bytes):''));details(state.asset);result.append(evidence);slot.append(result);}
         controls.remove();
       }

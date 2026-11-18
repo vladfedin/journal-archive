@@ -88,8 +88,9 @@ def main():
                 expect(page.locator('#job-action')).to_have_text('Скрыть', timeout=20000)
                 state = page.request.get(base + '/api/status').json()
                 assert state['phase'] == 'complete' and state['job_id'] == job_id
-                assert resumed == [True] and state['requests_used'] == 4
-                assert calls.count('/denied.png') == 3 and calls.count('/private.png') == 1
+                expect(page.locator('#job-meta')).to_contain_text('сохранено 1 · недоступно 1')
+                assert resumed == [True] and state['requests_used'] == 2
+                assert calls.count('/denied.png') == 1 and calls.count('/private.png') == 1
                 data = json.loads((root / 'fixture/data/archive.json').read_text())
                 assert (root / 'fixture' / data['media'][urls[1]]).read_bytes() == PNG
                 assert data['media_errors'][urls[0]]['closed']

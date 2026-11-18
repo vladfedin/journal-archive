@@ -6,6 +6,7 @@ import ipaddress
 import socket
 import threading
 import time
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit, urlunsplit
@@ -65,6 +66,20 @@ REASONS = {
     "unknown": "Причина не сохранена; требуется повторная загрузка",
     'web_login': 'ЖЖ не подтвердил вход для изображений. Повторите загрузку с паролем.',
 }
+
+
+def settle_browser_answer(url, error):
+    """A final answer for the requested image, rather than an SSO intermediate."""
+    if error.get('reason') != 'browser_http' or not error.get('attempts'):
+        return error
+    from .browser_bridge import safe_url
+    trace = error.get('trace') or []
+    code = error.get('http_status')
+    if (error.get('session_type') == 'browser'
+            and code in (403, 404, 410) and trace and trace[-1].get('http_status') == code
+            and trace[-1].get('url') == safe_url(image_url(url))):
+        error.update(availability='unavailable', closed=True, closed_at=error.get('closed_at') or error.get('updated_at'))
+    return error
 
 
 def plain_reason(error):
@@ -144,6 +159,9 @@ class Media:
         self.traces = {}
         self.downloads = {}
         self.browser_only = False
+        self.browser_outcomes = {}
+        self.browser_counts = Counter()
+        self.last_browser_result = None
 
     def headers(self, url, referer=None):
         headers = {}
@@ -166,6 +184,7 @@ class Media:
         self.errors = {**store.get("media_errors", {}), **self.errors}
         self.errors = {url: error for url, error in self.errors.items() if not self.mapping.get(url)}
         for url, error in self.errors.items():
+            settle_browser_answer(url, error)
             if error.get('reason') in ('storage', 'tls', 'web_login') or (error.get('reason') == 'redirects' and authenticated_image_host(image_url(url))) or (error.get('http_status') in (401, 403) and
                     (error.get('authentication') == 'missing' or (authenticated_image_host(url) and error.get('session_type') not in ('web', 'browser')))):
                 reopen(error)
@@ -230,6 +249,18 @@ class Media:
         from .client import Cancelled
         browser = self.client.browser
         before = self.budget.used
+        def publish(result=None):
+            if result:
+                previous = self.browser_outcomes.get(url)
+                if previous:
+                    self.browser_counts[previous] -= 1
+                self.browser_outcomes[url] = result
+                self.browser_counts[result] += 1
+                self.last_browser_result = {'url': safe_url(url), 'outcome': result,
+                                            'http_status': self.errors.get(url, {}).get('http_status')}
+            self.budget.progress(browser_images_progress={
+                'current': safe_url(url), 'last': self.last_browser_result, **self.browser_counts})
+        publish()
         self.authentication[url], self.session_types[url] = 'browser_managed', 'browser'
         try:
             body, ext, trace = browser.image(self.client.account, image_url(url), referer,
@@ -241,6 +272,7 @@ class Media:
             self.traces[url] = trace
             self.downloads[url] = {'path': path, 'bytes': len(body), 'transport': 'browser', 'trace': trace,
                                    'saved_at': datetime.now(timezone.utc).isoformat(timespec='seconds')}
+            publish('saved')
             self.budget.event('success', category, url, transport='browser', bytes=len(body))
             return path
         except (BrowserFailure, BrowserLoginRequired) as exc:
@@ -255,6 +287,8 @@ class Media:
             pending = exc.reason in ('browser_closed', 'browser_start', 'browser_login', 'browser_missing')
             self.record_error(url, exc.reason, status='pending' if pending else 'failed', http_status=exc.http_status,
                               requests_made=self.budget.used - before)
+            record = settle_browser_answer(url, self.errors[url])
+            publish('unavailable' if closed(record) else 'pending')
             self.budget.event('failure', category, url, reason=exc.reason, http_status=exc.http_status,
                               transport='browser', request_url=safe_url(url))
             if pending and request_browser:
@@ -267,9 +301,11 @@ class Media:
             self.traces[url] = getattr(exc, 'trace', [])
             self.record_error(url, reason, status='pending', http_status=getattr(exc, 'http_status', None),
                               requests_made=self.budget.used - before)
+            publish('pending')
             self.stopped, self.stop_reason = True, reason
         except OSError:
             self.record_error(url, 'storage', status='pending', requests_made=self.budget.used - before)
+            publish('pending')
             self.stopped, self.stop_reason = True, 'storage'
         return None
 

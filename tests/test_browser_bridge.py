@@ -291,9 +291,9 @@ def test_browser_download_persists_file_json_and_html_then_skips_it(protected_br
 
 def test_browser_access_denial_and_dns_are_not_password_or_disk_errors(protected_browser, tmp_path, monkeypatch):
     import socket
-    from ljarchive.client import ExportError, LiveJournalClient
+    from ljarchive.client import LiveJournalClient
     from ljarchive.media import Media
-    from ljarchive.on_demand import download_one, NeedsLogin
+    from ljarchive.on_demand import download_one
     from ljarchive.sessions import Sessions
     from ljarchive.storage import Store
     bridge, base, _, _ = protected_browser
@@ -306,9 +306,8 @@ def test_browser_access_denial_and_dns_are_not_password_or_disk_errors(protected
         with store.db:
             store.set('username', 'fixture')
             store.save_entry({'itemid': 1, 'event': f'<img src="{url}">'})
-        with pytest.raises(ExportError) as refused:
-            download_one(store, {'entry_id': 1, 'kind': 'image', 'value': url, 'transport': 'browser'}, threading.Event(), lambda **k: None, sessions)
-        assert not isinstance(refused.value, NeedsLogin)
+        result = download_one(store, {'entry_id': 1, 'kind': 'image', 'value': url, 'transport': 'browser'}, threading.Event(), lambda **k: None, sessions)
+        assert result == {'kind': 'unavailable', 'http_status': 403}
         error = store.get('media_errors')[url]
         assert error['http_status'] == 403 and error['session_type'] == 'browser'
         def dns_failure(url): raise socket.gaierror('fixture DNS failure')
@@ -368,14 +367,15 @@ def test_browser_batch_continues_denials_and_keeps_them_closed_on_reload(protect
         result = download_browser_images(store, {'delay': 1, 'max_requests': 7}, threading.Event(), lambda **k: None, sessions)
         assert result == {'kind': 'images', 'saved': 1, 'failed': 2, 'total': 3}
         assert calls.index('/private.png') > calls.index('/denied.png')
-        assert calls.count('/denied.png') == calls.count('/unauthorized.png') == 3
+        assert calls.count('/denied.png') == 1 and calls.count('/unauthorized.png') == 3
         assert calls.count('/private.png') == 1
         media = Media(tmp_path, True, threading.Event())
         try:
             media.load_state(store)
-            assert all(e['attempts'] == 3 and e['closed'] and e['status'] == 'failed' for e in media.errors.values())
+            assert all(e['closed'] and e['status'] == 'failed' for e in media.errors.values())
+            assert media.errors[urls[0]]['attempts'] == 1 and media.errors[urls[2]]['attempts'] == 3
             media.retry_failed()
-            assert calls.count('/denied.png') == 3  # Closed browser refusals do not reopen on restart.
+            assert calls.count('/denied.png') == 1  # Closed browser refusals do not reopen on restart.
         finally: media.close()
     finally: store.close()
 
@@ -398,3 +398,18 @@ def test_image_name_containing_login_is_not_a_login_page(protected_browser):
     # The authenticated image can belong to an account/path containing 'login'.
     body, ext, trace = bridge.image('fixture', base + '/login_user.png', '', budget(), threading.Event())
     assert body == PNG and ext == '.png' and trace[-1]['http_status'] == 200
+
+
+@pytest.mark.parametrize('code,endpoint,settled', [
+    (403, 'image.png', True), (404, 'image.png', True), (410, 'image.png', True),
+    (403, 'login.bml', False), (401, 'image.png', False), (429, 'image.png', False)])
+def test_final_browser_answer_requires_response_from_image(code, endpoint, settled):
+    from ljarchive.gaps import closed, reopen
+    from ljarchive.media import settle_browser_answer
+    base = 'https://ic.pics.livejournal.com/'
+    url = base + 'image.png'
+    record = {'session_type': 'browser', 'attempts': 1, 'reason': 'browser_http', 'http_status': code,
+              'trace': [{'url': base + endpoint, 'http_status': code}]}
+    assert closed(settle_browser_answer(url, record)) == settled
+    reopen(record)
+    assert not closed(settle_browser_answer(url, record))

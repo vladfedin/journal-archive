@@ -1,6 +1,5 @@
 """A serialized, bounded queue for explicit downloads from archived posts."""
 import json
-import re
 import secrets
 import sqlite3
 import threading
@@ -9,7 +8,7 @@ from html.parser import HTMLParser
 from urllib.parse import urljoin
 
 from .client import AuthenticationRequired, Cancelled, ExportError, LiveJournalClient, RequestBudget, RequestLimitReached
-from .media import Media, authenticated_image_host, image_url, error_message
+from .media import Media, authenticated_image_host, image_url, error_message, settle_browser_answer
 from .gaps import ATTEMPTS, closed, reopen
 from .retry import restored_deadline
 from .render import build_archive, original_url, text_value
@@ -98,7 +97,7 @@ def image_failures(store):
         path = mapping.get(url)
         if path and (store.folder / path).is_file():
             continue
-        error = errors.get(url, {})
+        error = settle_browser_answer(url, errors.get(url, {}))
         result.append({'url': url, 'browser': authenticated_image_host(image_url(url)),
                        'error': error, 'message': error_message(error),
                        'entries': [titles[eid] for eid in sorted(refs.get(url, ())) if eid in titles]})
@@ -119,20 +118,19 @@ def download_browser_images(store, data, cancel, update, sessions):
     budget.save_cooldown = cooldown
     try:
         sessions.restore(client)
-        browser_login(client, data, sessions)
         media.load_state(store); media.browser_only = True
-        pending = [item for item in image_failures(store) if item['browser']]
-        saved, consecutive = set(), 0
-        # An explicit request reopens old failures once, not on every retry.
-        for item in pending:
-            if item['url'] in media.errors:
-                reopen(media.errors[item['url']])
+        pending = [item for item in image_failures(store) if item['browser'] and not closed(media.errors.get(item['url']))]
+        saved, seen, consecutive = set(), set(), 0
+        # Persist final answers from older archives even when no request is needed.
+        with store.db: media.save_state(store)
+        if pending:
+            browser_login(client, data, sessions)
         budget.not_before = restored_deadline(store)
         budget.wait_info = store.get('request_wait', {})
-        update(phase='running', total=len(pending), completed=0, saved=0, failed=0)
+        update(phase='running', batch_total=len(pending), total=len(pending), completed=0, saved=0, failed=0)
         for attempt in range(ATTEMPTS):
             retry = [item for item in pending if item['url'] not in saved and not closed(media.errors.get(item['url']))]
-            for index, item in enumerate(retry):
+            for item in retry:
                 if cancel.is_set():
                     raise Cancelled('Загрузка остановлена.')
                 value = item['url']
@@ -142,12 +140,13 @@ def download_browser_images(store, data, cancel, update, sessions):
                     if row: referer = original_url(client.user, json.loads(row[0]))
                 media.attempted.discard(value)
                 update(phase='running', message=f'Изображения · попытка {attempt + 1} из {ATTEMPTS}',
-                       completed=index, total=len(retry), saved=len(saved))
+                       batch_total=len(pending), completed=len(seen), total=len(pending), saved=len(saved))
                 path = media.get(value, required=True, referer=referer)
                 with store.db: media.save_state(store)
+                seen.add(value)
                 if path: saved.add(value)
                 update(phase='running', message=f'Сохранено {len(saved)} из {len(pending)} · попытка {attempt + 1} из {ATTEMPTS}',
-                       completed=index + 1, total=len(retry), saved=len(saved), failed=len(pending) - len(saved))
+                       completed=len(seen), total=len(pending), saved=len(saved), failed=len(seen) - len(saved))
                 if media.stopped:
                     if cancel.is_set(): raise Cancelled('Загрузка остановлена.')
                     raise ExportError(error_message(media.errors.get(value, {})))
@@ -205,6 +204,8 @@ def download_one(store, data, cancel, update, sessions=None):
             if not path:
                 error = media.errors.get(value, {})
                 update(error=error)
+                if error.get('availability') == 'unavailable' and closed(error):
+                    return {'kind': 'unavailable', 'http_status': error['http_status']}
                 if (trusted and (error.get('http_status') in (401, 403) or error.get('reason') == 'web_login')
                         and error.get('session_type') != 'browser' and not data.get('password')):
                     if sessions:
@@ -409,16 +410,9 @@ class MaterialQueue:
                 report = json.loads(path.read_text(encoding='utf-8')) if path.exists() else {
                     'username': store.get('username'), 'status': 'partial', 'created_at': store.get('started_at', ''),
                     'entries_saved': store.counts()['entries'], 'comments_saved': store.counts()['comments'], 'missing_comments': []}
-                from .recovery import inventory as gaps, summary
+                from .recovery import inventory as gaps, summary, images_only_partial, requested_gaps_settled
                 current = summary(gaps(store))
-                image_issue = lambda text: text == 'Не все изображения получены.' or bool(re.fullmatch(r'Не удалось сохранить \d+ изображений\. Их ссылки оставлены на страницах\.', text))
-                issues = report.get('issues', [])
-                # Only repair a known media-only partial result. Unknown/incomplete
-                # content or a cancelled export cannot be declared complete here.
-                complete = (report.get('status') == 'partial' and any(map(image_issue, issues))
-                            and all(map(image_issue, issues)) and current['discovery_complete'] and not current['remaining']
-                            and not report.get('request_limit_reached') and not any(report.get(key) for key in
-                            ('pending_days', 'pending_comment_entry_ids', 'orphan_entry_ids', 'unknown_encoding_entry_ids')))
+                complete = images_only_partial(report) and requested_gaps_settled(report, current)
                 targets = None
                 if request['kind'] in ('image', 'video', 'embed'):
                     from .gallery import inventory as material_inventory
@@ -454,13 +448,18 @@ class MaterialQueue:
                 else:
                     asset = download_one(store, request, self.cancel, update, sessions=self.jobs.sessions)
                 refresh()
-                message = (f"Сохранено {asset['saved']} из {asset['total']} · с ошибками {asset['failed']}" if asset['kind'] == 'images'
-                           else 'Сохранено' if asset['kind'] != 'external' else 'Онлайн-плеер')
+                message = 'Сохранено'
+                if asset['kind'] == 'images':
+                    message = f"Сохранено {asset['saved']} из {asset['total']} · остались ссылками {asset['failed']}"
+                elif asset['kind'] == 'unavailable':
+                    message = f"Недоступно · HTTP {asset['http_status']}. Ссылка сохранена."
+                elif asset['kind'] == 'external':
+                    message = 'Онлайн-плеер'
                 counts = {'completed': asset['total'], 'total': asset['total']} if asset['kind'] == 'images' else {}
                 update(phase='complete', message=message, asset=asset, **counts)
                 with self.jobs.lock:
                     if request['kind'] == 'browser_images' and self.jobs.current and self.jobs.current.get('archive') == request['archive']:
-                        self.jobs.progress(message=message)
+                        self.jobs.progress(message=message, browser_images_progress=self.states[task_id].get('browser_images_progress', {}))
             except BrowserLoginRequired as exc:
                 update(phase='needs_browser', message=str(exc))
             except NeedsLogin as exc:

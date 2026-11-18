@@ -51,13 +51,13 @@ def main():
                 sign_in(bridge, source, calls)
                 calls.clear()
                 modal.get_by_role('button', name='Продолжить', exact=True).click()
-                expect(modal.locator('[data-role=status]')).to_contain_text('Сохранено 2 из 4 · с ошибками 2', timeout=30000)
+                expect(modal.locator('[data-role=status]')).to_contain_text('Сохранено 2 из 4 · остались ссылками 2', timeout=30000)
                 expect(modal.locator('.image-failure')).to_have_count(2)
                 expect(modal).to_contain_text('Браузер получил HTTP 404')
                 expect(modal).to_contain_text('Браузер получил HTTP 403')
-                expect(modal.get_by_role('button', name='Докачать через браузер')).to_be_enabled()
+                expect(modal.get_by_role('button', name='Докачать через браузер')).to_be_hidden()
                 assert calls.index('/denied.png') < calls.index('/private.png')
-                assert calls.count('/denied.png') == calls.count('/missing.png') == 3
+                assert calls.count('/denied.png') == calls.count('/missing.png') == 1
                 assert len([u for u in calls if u.startswith('/private.png')]) == 2
                 for width in (320, 1000):
                     page.set_viewport_size({'width': width, 'height': 850})
@@ -72,7 +72,7 @@ def main():
                 data = json.loads((root / 'fixture/data/archive.json').read_text())
                 assert all((root / 'fixture' / data['media'][url]).read_bytes() == PNG for url in urls[:2])
                 assert set(data['media_errors']) == set(urls[2:])
-                assert all(e['closed'] and e['attempts'] == 3 for e in data['media_errors'].values())
+                assert all(e['closed'] and e['attempts'] == 1 for e in data['media_errors'].values())
                 assert token not in json.dumps(data)
                 assert not errors, errors
                 browser.close()

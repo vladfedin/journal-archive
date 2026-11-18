@@ -8,13 +8,14 @@ times and treated as absent. Reasons belong to their own category.
 from collections import Counter
 import hashlib
 import json
+import re
 import sqlite3
 from datetime import datetime, timezone
 
 from .entries import is_repost
 from .client import Cancelled
 from .gaps import ATTEMPTS, closed
-from .media import plain_reason
+from .media import plain_reason, settle_browser_answer
 from .storage import Store
 from .userpics import resolve, picture_url
 
@@ -24,6 +25,23 @@ LABELS = {'days': 'Дни, за которые ЖЖ выдал не все за�
           'videos': 'Видео', 'reactions': 'Счётчики реакций', 'authors': 'Списки отреагировавших',
           'personal': 'Разделы профиля и переписки'}
 NOT_YET = 'ещё не запрашивались'
+
+
+def image_issue(text):
+    return text == 'Не все изображения получены.' or bool(re.fullmatch(
+        r'Не удалось сохранить \d+ изображений\. Их ссылки оставлены на страницах\.', text))
+
+
+def images_only_partial(report):
+    issues = report.get('issues') or []
+    return (report.get('status') == 'partial' and bool(issues) and all(map(image_issue, issues))
+            and not any(report.get(key) for key in ('request_limit_reached', 'pending_days',
+                        'pending_comment_entry_ids', 'orphan_entry_ids', 'unknown_encoding_entry_ids')))
+
+
+def requested_gaps_settled(report, recovery):
+    return (recovery.get('discovery_complete') and not any(row['remaining'] for row in recovery['rows']
+            if row['key'] != 'videos' or report.get('videos_requested') is not False))
 
 
 def fingerprint(url):
@@ -144,7 +162,7 @@ def inventory_snapshot(data, *, cancel=None, progress=None):
         tick(index, len(urls), 'Проверяем сохранённые изображения…')
         path = mapping.get(url)
         if not path or not (data['folder'] / path).is_file():
-            error = errors.get(url)
+            error = settle_browser_answer(url, errors.get(url, {}))
             gap('images', fingerprint(url), error, plain_reason(error) if error else NOT_YET)
     for url, record in settings.get('videos', {}).items():
         check_cancel(cancel)

@@ -38,23 +38,24 @@ function gapItem(row,value,why,progress){
   if(progress!=null){const bar=el('span','gap-bar'),fill=el('i');fill.style.width=Math.round(100*progress)+'%';bar.append(fill);li.append(bar);}
   if(why)li.append(el('p','gap-why',why));return li;
 }
-function gapsView(data,{attempt=false,running=false,plan=false}={}){
+function gapsView(data,{attempt=false,running=false,plan=false,videos=true}={}){
   const box=el('div','gaps-view');
   if(!data?.available){box.append(el('p','gaps-note',data?.message||'Список пропусков пока недоступен.'));return box;}
-  const rows=data.rows||[],open=rows.filter(r=>r.remaining),shut=rows.filter(r=>r.unavailable),got=attempt?resolvedText(rows):'';
+  const rows=data.rows||[],open=rows.filter(r=>r.remaining&&(r.key!=='videos'||videos)),shut=rows.filter(r=>r.unavailable),got=attempt?resolvedText(rows):'';
   const group=(title,cls,items)=>{const section=el('section','gaps-group '+cls),list=el('ul','gap-list');section.append(el('h3','',title));list.append(...items);section.append(list);return section;};
   if(got)box.append(el('p','gaps-done',(running?'Уже докачано: ':'Докачано: ')+got+'.'));
   if(open.length)box.append(group(running?'Докачиваем':plan?'Будем докачивать':'Осталось докачать','is-open',open.map(r=>{
     const notes=[];if(attempt&&r.new)notes.push('найдено новых: '+num(r.new));
     const why=(r.reasons||[]).filter(x=>!x.final);if(why.length)notes.push(reasonsText(why,r.remaining));
     return gapItem(r,r.remaining,notes.join(' · '),attempt&&r.before?(r.before-Math.min(r.before,r.remaining))/r.before:null);})));
+  const extra=rows.find(r=>r.key==='videos'&&r.remaining&&!videos);
+  if(extra)box.append(group('Видео вне этой выгрузки','is-extra',[gapItem(extra,extra.remaining,reasonsText(extra.reasons.filter(r=>!r.final),extra.remaining))]));
   if(shut.length){
     const section=group('Автоповторы завершены','is-closed',shut.map(r=>gapItem(r,r.unavailable,reasonsText((r.reasons||[]).filter(x=>x.final),r.unavailable))));
-    const tries=data.max_attempts||3;
-    section.append(el('p','gaps-note',`После ${tries} попыток автоматические повторы завершены. Полученное сохранено, изображения остались ссылками на оригинал. Кнопка «Загрузить» или обновление записи по ссылке запустит новую проверку.`));
+    section.append(el('p','gaps-note',`Недоступные изображения остались ссылками на оригинал. Кнопка «Загрузить» или обновление записи по ссылке запустит новую проверку.`));
     box.append(section);
   }
-  if(!open.length&&!shut.length)box.append(el('p','gaps-done',running?'Пропусков пока нет.':'Пропусков нет: всё, что ЖЖ отдаёт, сохранено.'));
+  if(!open.length&&!shut.length&&!extra)box.append(el('p','gaps-done',running?'Пропусков пока нет.':'Пропусков нет: всё, что ЖЖ отдаёт, сохранено.'));
   if(!data.discovery_complete&&(running||plan))box.append(el('p','gaps-note','Записи получены ещё не все — список может пополниться.'));
   const pics=data.pictures||{};
   if(!running&&(pics.assumed||pics.unknown)){const parts=[];if(pics.assumed)parts.push(`у ваших записей и комментариев (${num(pics.assumed)}) показан основной`);if(pics.unknown)parts.push(`у чужих комментариев (${num(pics.unknown)}) — нейтральная заглушка`);box.append(el('p','gaps-note','ЖЖ не сообщил, какой юзерпик был выбран: '+parts.join(', ')+'. Это не пропуск.'));}
@@ -88,7 +89,7 @@ function openDialog(kind,archive=null){
   const token=++planToken;preparingResume=resume;$('resume-plan').hidden=!resume;$('resume-plan').replaceChildren();
   if(resume){
     $('resume-plan').append(el('p','fine','Проверяем сохранённый прогресс…'));
-    api('/api/recovery/'+encodeURIComponent(archive.slug)).then(data=>{if(token!==planToken)return;$('resume-plan').replaceChildren(gapsView(data,{plan:true}));if(data.attempts?.length)$('resume-plan').append(attemptHistory(data.attempts));}).catch(()=>{if(token===planToken)$('resume-plan').replaceChildren(el('p','fine','Список пропусков недоступен. Можно продолжить с сохранённого этапа.'));}).finally(()=>{if(token===planToken){preparingResume=false;setBusy(busy);}});
+    api('/api/recovery/'+encodeURIComponent(archive.slug)).then(data=>{if(token!==planToken)return;$('resume-plan').replaceChildren(gapsView(data,{plan:true,videos:archive.parameters?.videos!==false}));if(data.attempts?.length)$('resume-plan').append(attemptHistory(data.attempts));}).catch(()=>{if(token===planToken)$('resume-plan').replaceChildren(el('p','fine','Список пропусков недоступен. Можно продолжить с сохранённого этапа.'));}).finally(()=>{if(token===planToken){preparingResume=false;setBusy(busy);}});
   }
   setBusy(busy);
   $('source-type').value=archive?.parameters?.source_type||'own';$('source-type').disabled=!isNew;
@@ -135,6 +136,7 @@ function showStatus(s){lastState=s;if(!s.phase||s.phase==='idle'||s.job_id&&s.jo
   if(s.phase==='browser_login'&&!s.cancelling)stage='Вход в браузере';
   if(s.phase==='waiting'&&!s.cancelling&&!stalled)stage=s.retry_at>clock?'Пауза до '+new Date(s.retry_at*1000).toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'}):'Продолжаем после паузы';
   if(materialRunning)stage=material.phase==='waiting'?'Пауза перед запросом':material.phase==='saving'?'Обновляем страницы архива':'Скачиваем изображения';
+  if(material?.phase==='complete' && !s.request_limit_reached && s.phase==='partial')stage='Докачка изображений завершена';
   // Only this sentence is announced; it changes with the stage, not every second.
   if($('job-stage').textContent!==stage)$('job-stage').textContent=stage;
   $('job-state').dataset.tone=stalled||s.phase==='error'?'error':s.phase==='waiting'||silent?'wait':['complete','demo'].includes(s.phase)&&!s.request_limit_reached?'done':done?'warn':'run';
@@ -148,6 +150,18 @@ function showStatus(s){lastState=s;if(!s.phase||s.phase==='idle'||s.job_id&&s.jo
   meta.push(count(s.comments,['комментарий','комментария','комментариев']));
   if(s.started_at&&s.working_seconds!=null){const pause=s.waiting_seconds||0;meta.push((done?'заняло ':'идёт ')+minutes((s.working_seconds||0)+pause)+(pause>=60?`, из них пауз ${minutes(pause)}`:''));}
   if(s.request_limit)meta.push(`запросов ${num(s.requests_used)} из ${num(s.request_limit)}`);
+  const photos=material?.browser_images_progress||s.browser_images_progress;
+  if(photos){
+    meta.unshift(`Изображения · сохранено ${num(photos.saved)} · недоступно ${num(photos.unavailable)} · к повтору ${num(photos.pending)}`);
+    if((materialRunning&&material.phase!=='saving'||!done&&['running','waiting','materials','retrying','loading'].includes(s.phase))&&photos.current){
+      const line=el('div','material-source',photos.current);
+      $('job-message').append(line);$('job-now').hidden=false;
+      if(photos.last){
+        const previous=photos.last,label={saved:'Сохранено',unavailable:'Недоступно',pending:'К повтору'}[previous.outcome];
+        $('job-message').append(el('div','material-source',`${label}${previous.http_status?' · HTTP '+previous.http_status:''} · ${previous.url}`));
+      }
+    }
+  }
   $('job-meta').textContent=meta.join(' · ');
   $('progress').hidden=done||(!$('job-timeline').hidden&&!localProgress(s.phase));if(s.total){$('progress').max=s.total;$('progress').value=s.completed||0;}else $('progress').removeAttribute('value');
   const ready=['complete','demo'].includes(s.phase);
@@ -157,7 +171,7 @@ function showStatus(s){lastState=s;if(!s.phase||s.phase==='idle'||s.job_id&&s.jo
   $('job-settings').hidden=!s.parameters;
   $('job-diagnostics').hidden=!s.slug||s.slug==='_demo';
   $('job-recovery').hidden=!s.recovery;
-  const recoveryKey=JSON.stringify([s.job_id,s.operation,done,s.recovery]);if($('job-recovery').dataset.key!==recoveryKey){$('job-recovery').dataset.key=recoveryKey;$('job-recovery-content').replaceChildren(gapsView(s.recovery,{attempt:s.operation==='resume',running:!done}));}
+  const recoveryKey=JSON.stringify([s.job_id,s.operation,done,s.recovery]);if($('job-recovery').dataset.key!==recoveryKey){$('job-recovery').dataset.key=recoveryKey;$('job-recovery-content').replaceChildren(gapsView(s.recovery,{attempt:s.operation==='resume',running:!done,videos:s.parameters?.videos!==false}));}
   let imageAction=$('job-images');if(!imageAction){imageAction=el('button','btn','Изображения: файлы и докачка');imageAction.type='button';imageAction.id='job-images';$('job-recovery').append(imageAction);}
   imageAction.hidden=!s.slug||!s.recovery?.rows?.some(r=>r.key==='images'&&(r.remaining||r.unavailable));imageAction.onclick=()=>window.ArchiveImages.open(s.slug);
   $('job-hint').hidden=done||!!s.cancelling;

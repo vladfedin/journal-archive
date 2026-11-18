@@ -37,7 +37,7 @@ window.ArchiveImages=(()=>{
         if(error.trace?.length){const details=node('details');details.append(node('summary','Запросы'));for(const t of error.trace)details.append(node('p',`${t.transport==='browser'?'Браузер':'HTTP'} · ${t.http_status||t.network_error||'ответ не получен'} · ${t.url}`));row.append(details);}
         list.append(row);
       }
-      const button=dialog.querySelector('[data-action=download]');button.hidden=!data.items.some(i=>i.browser);
+      const button=dialog.querySelector('[data-action=download]');button.hidden=!data.items.some(i=>i.browser&&!i.error?.closed);
     }catch(e){list.replaceChildren(node('p',e.message));}
   }
   function show(state){
@@ -49,11 +49,13 @@ window.ArchiveImages=(()=>{
       if(checkBrowser)run.textContent='Проверить вход';
     }
     const status=dialog.querySelector('[data-role=status]');status.textContent=state.message||'';
-    if(!done&&state.total)status.textContent+=` · ${state.completed||0} / ${state.total}`;
+    const photos=state.browser_images_progress,total=state.batch_total??state.total;
+    const checked=photos?(photos.saved||0)+(photos.unavailable||0)+(photos.pending||0):state.completed||0;
+    if(!done&&photos&&state.phase!=='saving')status.textContent=`Проверено ${checked} из ${total} · сохранено ${photos.saved||0} · недоступно ${photos.unavailable||0} · к повтору ${photos.pending||0}`;
     const event=state.last_activity;
-    if(!done&&event?.request_url)status.append(node('span',event.request_url));
+    if(!done&&state.phase!=='saving'&&(photos?.current||event?.request_url))status.append(node('span',photos?.current||event.request_url));
     dialog.querySelector('[data-action=cancel]').hidden=done;
-    const progress=dialog.querySelector('progress');progress.hidden=done||!state.total;progress.max=state.total||1;progress.value=state.completed||0;
+    const progress=dialog.querySelector('progress');progress.hidden=done||!total;progress.max=total||1;progress.value=checked;
     return done;
   }
   async function poll(){

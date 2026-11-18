@@ -61,11 +61,12 @@ def capture_materials(exporter, entry):
 
 
 def material_progress(record, mapping, errors=None):
+    from .media import settle_browser_answer
     result = {key: value for key, value in record.items() if key != 'urls'}
     if 'urls' in record:
         result['saved'] = sum(bool(mapping.get(url)) for url in record['urls'])
         # Asked for several times and not given: shown as links to the original, not chased.
-        result['unavailable'] = sum(not mapping.get(url) and closed((errors or {}).get(url)) for url in record['urls'])
+        result['unavailable'] = sum(not mapping.get(url) and closed(settle_browser_answer(url, (errors or {}).get(url, {}))) for url in record['urls'])
     result['missing'] = max(0, result.get('requested', 0) - result.get('saved', 0))
     return result
 
@@ -124,7 +125,7 @@ def timeline(store, *, task=False):
         mat = material_progress(materials.get(str(eid), {}), mapping, errors)
         done = repost or status.get('done', bodies_done)
         state = 'pending' if not done else 'ready'
-        if (status.get('error') and not repost) or (done and mat.get('saved', 0) < mat.get('requested', 0)) or missing_videos.get(eid):
+        if (status.get('error') and not repost) or (done and mat['missing'] > mat.get('unavailable', 0)) or missing_videos.get(eid):
             state = 'partial'
         elif not done and counts[eid]:
             state = 'loading'

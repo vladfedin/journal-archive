@@ -76,7 +76,27 @@ class Jobs:
                 self.state.pop('retry_at', None)
             self.current = latest["parameters"]
             self.history = latest.get('history', [])
+            self.restore_image_result()
             self.persist()
+
+    def restore_image_result(self):
+        from .recovery import image_issue, images_only_partial, read_inventory, requested_gaps_settled, summary
+        if (self.state.get('phase') != 'partial' or self.state.get('request_limit_reached')
+                or not image_issue(self.state.get('message') or '')):
+            return
+        folder = self.output / self.current['archive']
+        try:
+            report = json.loads((folder / 'export-report.json').read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            return
+        if not images_only_partial(report):
+            return
+        recovery = summary(read_inventory(folder))
+        if recovery.get('available'):
+            self.state['recovery'] = recovery
+            if requested_gaps_settled(report, recovery):
+                self.state.update(phase='complete', message='Проверка изображений завершена.')
+
 
     def move(self, value):
         from .relocation import target_path, relocate
