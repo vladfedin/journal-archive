@@ -17,7 +17,7 @@ import json
 
 import requests
 
-from .client import Cancelled, ExportError, RequestLimitReached
+from .client import AuthenticationRequired, Cancelled, ExportError, HTTPError, RequestLimitReached
 from .media import public_url
 from .retry import backoff
 from .gaps import ATTEMPTS, closed, fail, reopen
@@ -358,8 +358,12 @@ class VideoArchive:
             record.update(status='pending', error={'reason': exc.reason})
         except (Cancelled, RequestLimitReached) as exc:
             record.update(status='pending', error={'reason': 'cancelled' if isinstance(exc, Cancelled) else 'request_limit'})
-        except ExportError as exc:
+        except AuthenticationRequired as exc:
             record.update(status='pending', error={'reason': 'auth_required', 'detail': str(exc)})
+        except ExportError as exc:
+            record.update(status='failed', error={'reason': 'http' if isinstance(exc, HTTPError) else 'download',
+                'http_status': exc.status if isinstance(exc, HTTPError) else None, 'detail': str(exc)})
+            fail(record)
         except OSError:
             record.update(status='pending', error={'reason': 'storage'})
         except Exception as exc:
@@ -390,13 +394,13 @@ class VideoArchive:
                 cookie = 'ljsession=' + self.client._cookie
             if cookie: headers['Cookie'] = cookie
             return self.client._request('GET', p.path, base_url='https://' + p.hostname, category='videos', headers=headers)
+        web_attempted = False
         try:
             raw = page()
-        except (Cancelled, RequestLimitReached):
-            raise
-        except ExportError:
+        except AuthenticationRequired:
+            web_attempted = True
             if not self.client.ensure_web_session():
-                raise ExportError('Для видео ЖЖ требуется вход владельца.') from None
+                raise AuthenticationRequired('Для видео ЖЖ требуется вход владельца.') from None
             raw = page()
         class Player(HTMLParser):
             token = None
@@ -405,8 +409,13 @@ class VideoArchive:
                 if a.get('data-rambler-player-id') == record_id:
                     self.token = a.get('data-auth-token')
         player = Player(); player.feed(raw.decode('utf-8', 'replace')); player.close()
+        if not player.token and not web_attempted:
+            if not self.client.ensure_web_session():
+                raise AuthenticationRequired('Для видео ЖЖ требуется вход владельца.')
+            raw = page()
+            player = Player(); player.feed(raw.decode('utf-8', 'replace')); player.close()
         if not player.token:
-            raise ExportError('ЖЖ не выдал доступ к этой видеовставке. Повторите со входом владельца.')
+            raise ExportError('После входа ЖЖ не вернул эту видеовставку или её данные доступа.')
         params = {'id' if record_id.isdigit() else 'uuid': int(record_id) if record_id.isdigit() else record_id,
                   'referrer': base}
         with self.open('https://api.vp.rambler.ru/api/v3/records/getPlayerData?' + urlencode({'params': json.dumps(params)})) as response:

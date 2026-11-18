@@ -173,3 +173,36 @@ def test_malformed_or_foreign_profile_is_not_reported_as_saved(owner):
     sections = account_data(owner.store)['sections']
     assert sections['foaf']['status'] == sections['userpics']['status'] == 'partial'
     assert sections['friends']['status'] == 'captured'
+
+
+def test_partial_friends_response_keeps_missing_lists_with_provenance(owner):
+    collector = Personal(owner)
+    collector.save('friends', status='captured', data={'friends': [{'username': 'old'}], 'friendofs': [{'username': 'known'}]})
+    owner.personal_cycle = 'refresh-friends'
+    owner.client.call = lambda *a, **k: {'friends': [{'username': 'fresh'}]}
+    collector = Personal(owner)
+    collector.capture('friends', collector.friends, 'LJ.XMLRPC.getfriends')
+    section = collector.section('friends')
+    assert section['status'] == 'partial'
+    assert section['data']['friends'] == [{'username': 'fresh'}]
+    assert section['data']['friendofs'] == [{'username': 'known'}]
+    assert section['retained_fields'] == ['friendofs']
+    assert section['latest_response'] == {'friends': [{'username': 'fresh'}]}
+    owner.client.call = lambda *a, **k: {'friends': [], 'friendofs': []}
+    collector.capture('friends', collector.friends, 'LJ.XMLRPC.getfriends')
+    section = collector.section('friends')
+    assert section['status'] == 'captured' and section['data']['friendofs'] == []
+    assert 'retained_fields' not in section and 'latest_response' not in section
+
+
+def test_partial_userpic_feed_keeps_old_and_new_valid_pictures(owner):
+    collector = Personal(owner)
+    collector.save('userpics', status='captured', data={'pictures': [{'url': 'https://l-userpic.livejournal.com/7/123'}]})
+    owner.personal_cycle = 'refresh-pictures'
+    owner.client.personal_feed = lambda name: b'<feed xmlns="http://www.w3.org/2005/Atom"><id>urn:lj:livejournal.com:atom1:fixture:userpics</id><entry><id>bad</id></entry><entry><content src="https://l-userpic.livejournal.com/8/123"/></entry></feed>'
+    collector = Personal(owner)
+    collector.capture('userpics', collector.userpics, 'data/userpics')
+    section = collector.section('userpics')
+    assert section['status'] == 'partial'
+    assert {p['url'] for p in section['data']['pictures']} == {'https://l-userpic.livejournal.com/7/123', 'https://l-userpic.livejournal.com/8/123'}
+    assert len(section['latest_response']['pictures']) == 1

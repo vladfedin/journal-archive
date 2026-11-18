@@ -23,6 +23,10 @@ class ExportError(Exception):
     """An actionable, credential-free error safe to show in the UI."""
 
 
+class AuthenticationRequired(ExportError):
+    """An HTTP access refusal or login redirect, distinct from transport failure."""
+
+
 class HTTPError(ExportError):
     def __init__(self, status):
         self.status = status
@@ -51,7 +55,7 @@ class IncompleteData(ExportError):
     """A successful response omitted requested data; retry only the pending objects."""
 
 
-class WebLoginRequired(ExportError):
+class WebLoginRequired(AuthenticationRequired):
     def __init__(self):
         super().__init__('ЖЖ не подтвердил вход для изображений. Проверьте вход в браузере и повторите загрузку с паролем.')
 
@@ -246,10 +250,10 @@ class LiveJournalClient:
                             raise ExportError("ЖЖ временно ограничивает запросы или недоступен. Данные сохранены, продолжите позже.")
                         continue
                     if response.status_code in (401, 403):
-                        raise ExportError("ЖЖ отказал в доступе (HTTP 401/403). Проверьте вход в браузере; при ограничении запросов продолжите позже.")
+                        raise AuthenticationRequired("ЖЖ отказал в доступе (HTTP 401/403). Проверьте вход в браузере; при ограничении запросов продолжите позже.")
                     if 300 <= response.status_code < 400 and response.status_code not in accepted_statuses:
                         self.budget.event('failure', category, base_url, reason='redirects', http_status=response.status_code)
-                        raise ExportError("ЖЖ перенаправил запрос. Возможно, требуется вход или подтверждение в браузере.")
+                        raise AuthenticationRequired("ЖЖ перенаправил запрос. Возможно, требуется вход или подтверждение в браузере.")
                     if response.status_code not in accepted_statuses:
                         raise HTTPError(response.status_code)
                     chunks, size = [], 0

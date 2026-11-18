@@ -62,11 +62,16 @@ class Personal:
         row = self.store.db.execute('SELECT payload FROM account_sections WHERE id=?', (key,)).fetchone()
         return json.loads(row[0]) if row else {}
 
-    def save(self, key, *, status, data=None, error=None, source=None):
+    def save(self, key, *, status, data=None, error=None, source=None, retained_fields=None, latest_response=None):
         from .exporter import now
         old = self.section(key)
         record = {'status': status, 'checked_at': now(), 'captured_at': now() if data is not None else old.get('captured_at'), 'cycle': self.cycle, 'source': source or old.get('source'),
                   'data': data if data is not None else old.get('data'), 'error': error}
+        for name, value in (('retained_fields', retained_fields), ('latest_response', latest_response)):
+            if value is not None:
+                record[name] = value
+            elif data is None and name in old:
+                record[name] = old[name]
         with self.store.db:
             self.store._version('account', 'account_sections', key, record)
             self.store.db.execute('INSERT OR REPLACE INTO account_sections VALUES (?,?)', (key, dumps(record)))
@@ -101,7 +106,12 @@ class Personal:
     def friends(self):
         result = self.client.call('getfriends', includegroups=1, includefriendof=1, includebdays=1)
         if not isinstance(result.get('friends'), list) or not isinstance(result.get('friendofs'), list):
-            self.save('friends', status='partial', data=result, source='LJ.XMLRPC.getfriends')
+            previous = self.section('friends').get('data') or {}
+            missing = {key for key in ('friends', 'friendofs', 'friendgroups') if not isinstance(result.get(key), list)}
+            fresh = {key: value for key, value in result.items() if key not in missing}
+            retained = sorted(set(previous) - set(fresh))
+            self.save('friends', status='partial', data={**previous, **fresh}, source='LJ.XMLRPC.getfriends',
+                      retained_fields=retained, latest_response=result)
             raise IncompleteData('ЖЖ не вернул полный список связей.')
         return result
 
@@ -142,16 +152,25 @@ class Personal:
         if root.tag != ns + 'feed' or root.findtext(ns + 'id') != f'urn:lj:livejournal.com:atom1:{self.client.user}:userpics':
             raise IncompleteData('Каталог юзерпиков не подтверждает владельца.')
         pictures = []
+        incomplete = False
         from .userpics import picture_url
         for entry in root.findall(ns + 'entry'):
             content = entry.find(ns + 'content')
             url = picture_url(content.get('src')) if content is not None else None
             if not url:
-                self.save('userpics', status='partial', data={'document': source, 'pictures': pictures}, source='data/userpics')
-                raise IncompleteData('В каталоге есть юзерпик без адреса.')
+                incomplete = True
+                continue
             pictures.append({'url': url, 'id': entry.findtext(ns + 'id'), 'title': entry.findtext(ns + 'title'),
                              'updated': entry.findtext(ns + 'updated'), 'summary': entry.findtext(ns + 'summary'),
                              'keywords': [c.get('term') for c in entry.findall(ns + 'category')]})
+        if incomplete:
+            previous = self.section('userpics').get('data') or {}
+            merged = {pic['url']: pic for pic in previous.get('pictures', [])}
+            merged.update({pic['url']: pic for pic in pictures})
+            response = {'document': source, 'pictures': pictures}
+            self.save('userpics', status='partial', data={**previous, **response, 'pictures': list(merged.values())},
+                      source='data/userpics', latest_response=response, retained_fields=['pictures'])
+            raise IncompleteData('В каталоге есть юзерпик без адреса; ранее сохранённые изображения оставлены.')
         return {'catalog': self.store.get('userpic_catalog', {}), 'pictures': pictures, 'document': source, 'format': 'application/atom+xml'}
 
     def save_message(self, item):
@@ -376,6 +395,17 @@ def render_personal(store, report):
     from .media import Media
     from .storage import atomic_write
     import threading
+    import hashlib
+    issue = 'Личные данные сохранены частично. Подробности — в разделе «Профиль».'
+    previous_personal = report.get('personal', {})
+    # Restore a status lowered solely by this section, only if the rest of the
+    # report is unchanged. A new content/media issue must keep the archive partial.
+    baseline = hashlib.sha256(dumps({k: v for k, v in report.items() if k not in ('personal', 'status', 'issues')}).encode()).hexdigest()
+    previous_issue = issue in report.get('issues', [])
+    report['issues'] = [text for text in report.get('issues', []) if text != issue]
+    if (previous_issue and report.get('status') == 'partial' and not report['issues']
+            and previous_personal.get('complete_baseline') == baseline):
+        report['status'] = 'complete'
     data = account_data(store)
     sections, mapping = data['sections'], store.get('media', {})
     requested = store.get('personal_requested', {})
@@ -407,9 +437,11 @@ def render_personal(store, report):
                 required_urls.update(parser.urls)
     report['personal']['media'] = {'total': len(required_urls), 'saved': sum(bool(mapping.get(u)) for u in required_urls)}
     report['personal']['complete'] = not missing and all(mapping.get(u) for u in required_urls)
-    if not report['personal']['complete'] and report['status'] == 'complete':
-        report['status'] = 'partial'
-        report.setdefault('issues', []).append('Личные данные сохранены частично. Подробности — в разделе «Профиль».')
+    if not report['personal']['complete']:
+        if report['status'] == 'complete':
+            report['status'] = 'partial'
+            report['personal']['complete_baseline'] = baseline
+        report['issues'].append(issue)
     profile = (sections.get('profile', {}).get('data') or {})
     friends = sections.get('friends', {}).get('data') or {}
     pictures = [{'url': u, 'path': mapping.get(u)} for u in sorted(urls)]

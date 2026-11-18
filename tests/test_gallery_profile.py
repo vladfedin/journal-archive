@@ -86,3 +86,36 @@ def test_profile_download_preserves_post_queue_and_refreshes_only_personal_pages
         assert data['comments'][0]['body'] == 'Original comment'
         assert data['account']['sections']['friends']['data']['friends'][0]['username'] == 'reader'
     finally: store.close()
+
+
+def test_completed_profile_clears_its_own_incomplete_status_only(tmp_path):
+    from ljarchive.personal import Personal
+    from types import SimpleNamespace
+    from ljarchive.storage import atomic_write, dumps
+    store = Store(tmp_path)
+    try:
+        with store.db:
+            store.set('username', 'fixture'); store.set('personal_requested', {'account': True})
+        atomic_write(tmp_path / 'export-report.json', dumps({'username': 'fixture', 'status': 'complete', 'issues': []}))
+        refresh_profile(store)
+        report = json.loads((tmp_path / 'export-report.json').read_text())
+        assert report['status'] == 'partial' and report['personal']['complete_baseline']
+        collector = Personal(SimpleNamespace(store=store, client=None))
+        for key in ('profile', 'foaf', 'friends', 'tags', 'userpics', 'settings_display', 'settings_privacy', 'settings_notifications'):
+            collector.save(key, status='captured', data={})
+        refresh_profile(store)
+        report = json.loads((tmp_path / 'export-report.json').read_text())
+        assert report['personal']['complete'] and report['status'] == 'complete'
+        assert not report['issues']
+        # A separate content failure must not be erased by updating a profile.
+        collector.save('friends', status='partial', error='Missing')
+        refresh_profile(store)
+        report = json.loads((tmp_path / 'export-report.json').read_text())
+        report['issues'].append('Не все комментарии получены.')
+        atomic_write(tmp_path / 'export-report.json', dumps(report))
+        collector.save('friends', status='captured', data={'friends': [], 'friendofs': []})
+        refresh_profile(store)
+        report = json.loads((tmp_path / 'export-report.json').read_text())
+        assert report['personal']['complete'] and report['status'] == 'partial'
+        assert report['issues'] == ['Не все комментарии получены.']
+    finally: store.close()

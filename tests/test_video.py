@@ -30,7 +30,7 @@ def test_native_lj_video_is_indexed_and_rendered_without_remote_player(tmp_path,
 def test_native_video_checks_lj_access_before_returning_stream_and_never_stores_token(tmp_path, monkeypatch):
     import io
     from ljarchive.video import lj_video_url
-    from ljarchive.client import ExportError
+    from ljarchive.client import AuthenticationRequired
     video = manager(tmp_path, monkeypatch)
     with video.store.db: video.store.save_entry({'itemid': 1, 'anum': 7})
     calls = []
@@ -55,7 +55,7 @@ def test_native_video_checks_lj_access_before_returning_stream_and_never_stores_
         assert calls == ['/263.html', '/video/check']
         assert 'SECRET' not in json.dumps(video.store.get('videos', {}))
         def denied(method, path, **kw):
-            if path == '/video/check': raise ExportError('ЖЖ отказал в доступе (HTTP 401/403).')
+            if path == '/video/check': raise AuthenticationRequired('ЖЖ отказал в доступе (HTTP 401/403).')
             return request(method, path, **kw)
         monkeypatch.setattr(video.client, '_request', denied)
         video.download(lj_video_url('12345'), 1)
@@ -282,4 +282,62 @@ def test_video_redirect_to_private_network_is_rejected_before_request(tmp_path, 
     try:
         with pytest.raises(ValueError): video.open(Request('https://example.org/clip.mp4'))
         assert len(calls) == video.client.budget.used == 1 and len(checked) == 2
+    finally: close(video)
+
+
+def test_native_transient_failure_is_retried_and_closes_after_finite_attempts(tmp_path, monkeypatch):
+    from ljarchive.client import ExportError
+    from ljarchive.video import lj_video_url
+    video = manager(tmp_path, monkeypatch)
+    url = lj_video_url('12345')
+    with video.store.db:
+        video.store.save_entry({'itemid': 1, 'anum': 7, 'event': '<div data-rambler-player-id="12345"></div>'})
+    calls = []
+    def fail(*args):
+        calls.append(1)
+        raise ExportError('Не удалось связаться с ЖЖ.')
+    monkeypatch.setattr(video, 'lj_source', fail)
+    try:
+        video.download(url, 1)
+        assert video.records[url]['status'] == 'failed'
+        assert video.records[url]['error']['reason'] == 'download'
+        video.retry_failed()
+        assert len(calls) == video.records[url]['attempts'] == 3
+        assert video.records[url]['closed']
+    finally: close(video)
+
+
+def test_native_page_transport_error_does_not_start_web_login(tmp_path, monkeypatch):
+    from ljarchive.client import ExportError
+    from ljarchive.video import lj_video_url
+    video = manager(tmp_path, monkeypatch)
+    with video.store.db: video.store.save_entry({'itemid': 1, 'anum': 7})
+    def failed(*a, **k): raise ExportError('Сетевая ошибка')
+    monkeypatch.setattr(video.client, '_request', failed)
+    monkeypatch.setattr(video.client, 'ensure_web_session', lambda: pytest.fail('A transport error is not a login request'))
+    try:
+        video.download(lj_video_url('12345'), 1)
+        assert video.records[lj_video_url('12345')]['error']['reason'] == 'download'
+        assert video.records[lj_video_url('12345')]['attempts'] == 1
+    finally: close(video)
+
+
+def test_native_html_login_page_retries_with_web_session(tmp_path, monkeypatch):
+    import io
+    from ljarchive.video import lj_video_url
+    video = manager(tmp_path, monkeypatch)
+    with video.store.db: video.store.save_entry({'itemid': 1, 'anum': 7})
+    ready, calls = [], []
+    def login(): ready.append(True); return True
+    def request(method, path, **kw):
+        calls.append(path)
+        if path == '/video/check': return b'OK'
+        return b'<div data-rambler-player-id="12345" data-auth-token="SECRET"></div>' if ready else b'<html>Please log in</html>'
+    monkeypatch.setattr(video.client, 'ensure_web_session', login)
+    monkeypatch.setattr(video.client, '_request', request)
+    monkeypatch.setattr(video, 'open', lambda url: io.BytesIO(json.dumps({'success': True, 'result': {'playList': {
+        'id': 12345, 'type': 'offline', 'source': 'https://cdn.example/video.m3u8'}}}).encode()))
+    try:
+        assert video.lj_source(lj_video_url('12345'), 1)[0] == 'https://cdn.example/video.m3u8'
+        assert calls == ['/263.html', '/263.html', '/video/check'] and ready == [True]
     finally: close(video)
