@@ -980,6 +980,16 @@ def make_server(output: Path, port=8787):
             except (ValueError, UnicodeDecodeError):
                 return self.json({"error": "Некорректный JSON."}, 400)
             try:
+                if self.path == '/api/communities':
+                    from .client import LiveJournalClient
+                    account, password = data.get('username'), data.pop('password', None)
+                    if not isinstance(account, str) or not isinstance(password, str) or not 0 < len(password) <= 1024:
+                        raise ExportError('Введите имя пользователя и пароль ЖЖ.')
+                    client = LiveJournalClient(account, password, delay=1, max_attempts=1, budget=RequestBudget(6))
+                    try:
+                        return self.json({'communities': client.managed_communities()})
+                    finally:
+                        client.close()
                 if self.path == '/api/profile':
                     return self.json(jobs.materials.start({**data, 'kind': 'profile', 'entry_id': 0, 'value': 'profile'}), 202)
                 if self.path == '/api/material':

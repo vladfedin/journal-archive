@@ -72,14 +72,49 @@ function attemptHistory(attempts){
 }
 async function api(path,data){const r=await fetch(path,{method:data===undefined?'GET':'POST',headers:data===undefined?{}:{'Content-Type':'application/json'},body:data===undefined?undefined:JSON.stringify(data),cache:'no-store'});const value=await r.json();if(!r.ok)throw new Error(value.error||'Не удалось выполнить запрос.');return value;}
 function error(message,form=false){const target=$(form?'form-error':'app-error');target.textContent=message;target.hidden=!message;}
-function setBusy(value){busy=value;document.querySelectorAll('[data-new],[data-update],[data-resume]').forEach(b=>b.disabled=value||moving||closed);$('submit-export').disabled=value||moving||submitting||preparingResume||closed;$('move-storage').disabled=value||moving||closed;$('move-storage').title=value?'После завершения загрузки':'';}
+function setBusy(value){busy=value;document.querySelectorAll('[data-new],[data-update],[data-resume]').forEach(b=>b.disabled=value||moving||closed);$('submit-export').disabled=value||moving||submitting||preparingResume||needsCommunity()||closed;$('move-storage').disabled=value||moving||closed;$('move-storage').title=value?'После завершения загрузки':'';}
 function setScope(value){scope=value;document.querySelectorAll('[data-scope]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.scope===value)));$('period-fields').hidden=value!=='period';$('url-fields').hidden=value!=='urls';$('entry-urls').required=value==='urls';$('entry-urls').disabled=value!=='urls';if(!limitEdited)$('request-limit').value=value==='latest'?'50':'';$('request-limit').required=value==='latest';$('account').checked=value==='full';setSource();}
+let communityRequest=0;
+const choosingCommunity=()=>mode==='new'&&$('source-type').value==='community';
+const needsCommunity=()=>choosingCommunity()&&!$('journal').value;
+function resetCommunities(){
+  communityRequest++;
+  $('journal').replaceChildren();
+  $('journal').hidden=true;
+  $('load-communities').hidden=false;
+  $('community-status').hidden=true;
+  setBusy(busy);
+}
+async function loadCommunities(){
+  if(!choosingCommunity())return;
+  for(const id of ['username','password'])if(!$(id).reportValidity())return;
+  const token=++communityRequest,status=$('community-status'),button=$('load-communities');
+  button.hidden=true;status.textContent='Загружаем сообщества…';status.hidden=false;
+  try{
+    const {communities}=await api('/api/communities',{username:$('username').value,password:$('password').value});
+    if(token!==communityRequest)return;
+    if(communities.length){
+      const select=$('journal');
+      select.replaceChildren(...communities.map(name=>new Option(name,name)));
+      if(communities.length>1){select.insertBefore(new Option('Выберите сообщество',''),select.firstChild);select.value='';}
+      select.hidden=false;status.hidden=true;
+    }else{status.textContent='ЖЖ не вернул управляемых сообществ.';button.hidden=false;}
+  }catch(e){if(token===communityRequest){status.textContent=e.message;button.hidden=false;}}
+  finally{if(token===communityRequest)setBusy(busy);}
+}
 function setSource(){
   const community=$('source-type').value==='community';
-  $('journal-field').hidden=!community;$('journal').required=community&&mode!=='resume';$('journal').disabled=!community||mode==='resume';
+  $('journal-field').hidden=!community;$('journal').required=choosingCommunity();$('journal').disabled=!choosingCommunity();
   for(const key of ['account','messages']){$(key).closest('label').hidden=community;$(key).disabled=community;if(community)$(key).checked=false;}
+  setBusy(busy);
 }
-$('source-type').onchange=setSource;
+$('source-type').onchange=()=>{
+  resetCommunities();setSource();
+  if(choosingCommunity()&&$('username').validity.valid&&$('password').value)loadCommunities();
+};
+$('load-communities').onclick=loadCommunities;
+$('journal').onchange=()=>setBusy(busy);
+for(const id of ['username','password'])$(id).addEventListener('input',()=>{if(choosingCommunity())resetCommunities();});
 function openDialog(kind,archive=null){
   if(busy||moving||closed)return;mode=kind;selected=archive;error('',true);const resume=kind==='resume',isNew=kind==='new';
   document.querySelectorAll('.more[open]').forEach(menu=>menu.open=false);
@@ -93,7 +128,12 @@ function openDialog(kind,archive=null){
   }
   setBusy(busy);
   $('source-type').value=archive?.parameters?.source_type||'own';$('source-type').disabled=!isNew;
-  $('journal').value=archive?.parameters?.journal||archive?.username||'';$('journal').readOnly=!isNew;$('source-fields').hidden=resume;
+  resetCommunities();
+  if(!isNew){
+    const name=archive.parameters?.journal||archive.username;
+    $('journal').replaceChildren(new Option(name,name));$('journal').hidden=false;$('load-communities').hidden=true;
+  }
+  $('source-fields').hidden=resume;
   $('username').value=isNew?'':archive.parameters?.username||archive.username;$('username').readOnly=!isNew;$('username-field').hidden=resume;
   $('credentials').classList.toggle('is-resume',resume);$('password').type='password';$('show-password').setAttribute('aria-label','Показать пароль');
   $('scope-fields').hidden=resume;$('resume-note').hidden=!resume;
@@ -219,16 +259,16 @@ let previousKey='';async function poll(){if(closed)return;let received=false;try
 document.querySelectorAll('[data-new]').forEach(b=>b.onclick=()=>openDialog('new'));
 document.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>$('export-dialog').close());
 document.querySelectorAll('[data-scope]').forEach(b=>b.onclick=()=>setScope(b.dataset.scope));
-$('export-dialog').addEventListener('close',()=>{$('password').value='';planToken++;preparingResume=false;setBusy(busy);});
+$('export-dialog').addEventListener('close',()=>{$('password').value='';planToken++;communityRequest++;preparingResume=false;setBusy(busy);});
 $('request-limit').oninput=()=>limitEdited=true;
 $('show-password').onclick=()=>{const show=$('password').type==='password';$('password').type=show?'text':'password';$('show-password').setAttribute('aria-label',show?'Скрыть пароль':'Показать пароль');};
-$('export-form').onsubmit=async e=>{e.preventDefault();if(busy||submitting||preparingResume||closed)return;error('',true);let data;
+$('export-form').onsubmit=async e=>{e.preventDefault();if(busy||submitting||preparingResume||needsCommunity()||closed)return;error('',true);let data;
   if(mode==='resume')data={resume:selected.slug,password:$('password').value};
   else data={username:$('username').value,journal:$('source-type').value==='community'?$('journal').value:$('username').value,source_type:$('source-type').value,password:$('password').value,entry_limit:scope==='latest'?10:null,mode:scope==='latest'?null:scope,images:$('images').checked,videos:$('videos').checked,account:$('account').checked,messages:$('messages').checked,delay:Number($('delay').value),max_requests:$('request-limit').value?Number($('request-limit').value):null,date_from:scope==='period'?$('date-from').value||null:null,date_to:scope==='period'?$('date-to').value||null:null,urls:scope==='urls'?$('entry-urls').value:[],archive:selected?.slug||null};
   submitting=true;$('submit-export').disabled=true;
   try{const state=await api('/api/export',data);$('export-dialog').close();showStatus(state);await library();}
-  catch(e){error(e.message,true);$('password').value='';$('password').focus();}
-  finally{data.password='';submitting=false;$('submit-export').disabled=busy;}
+  catch(e){error(e.message,true);$('password').value='';if(choosingCommunity())resetCommunities();$('password').focus();}
+  finally{data.password='';submitting=false;setBusy(busy);}
 };
 $('job-action').onclick=async()=>{try{if(lastState.phase==='browser_login'){$('job-action').disabled=true;showStatus(await api('/api/browser-confirm',{job_id:lastState.job_id}));}else if(busy){$('job-action').disabled=true;showStatus(await api('/api/cancel',{}));}else if(['complete','demo'].includes(lastState.phase)){$('job').hidden=true;dismissedJob=lastState.job_id;}else{await library();const archive=archives.find(a=>a.slug===lastState.slug);if(archive)openDialog('resume',archive);else error('Сохранённая задача не найдена.');}}catch(e){error(e.message);$('job-action').disabled=false;}};
 $('job-browser-cancel').onclick=async()=>{try{showStatus(await api('/api/cancel',{}));}catch(e){error(e.message);}};

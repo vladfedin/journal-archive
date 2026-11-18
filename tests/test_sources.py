@@ -277,3 +277,16 @@ def test_server_persists_login_separately_and_resumes_community(local_server, mo
         server.jobs.thread.join(5)
         assert calls[-1][0] == 'manager' and calls[-1][2]['journal'] == 'bookclub'
         assert server.jobs.archives()['archives'][0]['username'] == 'bookclub'
+
+
+def test_community_picker_lists_managed_journals_without_creating_archive(local_server, monkeypatch):
+    server, base = local_server
+    client, wire = community_client(monkeypatch)
+    monkeypatch.setattr('ljarchive.client.LiveJournalClient', lambda *args, **kwargs: client)
+    with requests.Session() as session:
+        session.get(base)
+        response = session.post(base + '/api/communities', headers={'Origin': base},
+                                json={'username': wire.manager, 'password': 'test-password'})
+    assert response.json() == {'communities': [wire.journal]}
+    assert [name for name, _ in wire.calls] == ['getchallenge', 'sessiongenerate', 'manage']
+    assert client._cookie is None and not list(server.jobs.tasks.glob('*.json'))

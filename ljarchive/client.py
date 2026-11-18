@@ -364,14 +364,9 @@ class LiveJournalClient:
         uid = result.get("userid")
         if not community and isinstance(uid, int) and not isinstance(uid, bool) and uid > 0:
             self.journal_id = uid
-        cookie = self.call("sessiongenerate", expiration="short", ipfixed=1).get("ljsession")
-        if not isinstance(cookie, str) or not cookie or any(c in cookie for c in "\r\n;"):
-            raise ExportError("ЖЖ не выдал сессию для выгрузки комментариев.")
-        self._cookie = cookie
+        self.generate_session()
         if community:
-            from .sources import managed_communities
-            page = self._request('GET', '/community/manage.bml', headers={'Cookie': 'ljsession=' + self._cookie})
-            if self.user not in managed_communities(page):
+            if self.user not in self.managed_communities():
                 self.source['access']['status'] = 'unconfirmed'
                 raise ExportError('ЖЖ не подтвердил управление этим сообществом. Проверьте аккаунт и права на странице «Мои сообщества»; право публикации или модерации недостаточно.')
             identity = self.call('login', usejournal=self.user, getcaps=1)
@@ -383,6 +378,28 @@ class LiveJournalClient:
         self.source['access']['status'] = 'verified'
         if self.session_ready:
             self.session_ready(self)
+
+    def generate_session(self):
+        cookie = self.call("sessiongenerate", expiration="short", ipfixed=1).get("ljsession")
+        if not isinstance(cookie, str) or not cookie or any(c in cookie for c in "\r\n;"):
+            raise ExportError("ЖЖ не выдал сессию для этого аккаунта.")
+        self._cookie = cookie
+
+    def managed_communities(self):
+        from .sources import managed_communities
+        if not self._cookie:
+            self.generate_session()
+        path = '/community/manage.bml'
+        try:
+            page = self._request('GET', path, headers={'Cookie': 'ljsession=' + self._cookie})
+        except AuthenticationRequired:
+            try:
+                if not self.ensure_web_session():
+                    raise WebLoginRequired()
+            except WebLoginRequired:
+                raise AuthenticationRequired('ЖЖ не подтвердил вход для просмотра сообществ.') from None
+            page = self._request('GET', path)
+        return sorted(managed_communities(page) - {self.account})
 
     def ensure_web_session(self):
         from .web_session import establish
