@@ -30,7 +30,8 @@ def test_gallery_links_images_and_videos_to_every_post_and_comment(tmp_path):
         write_gallery(store, {'username': 'fixture'})
         content = (tmp_path / 'materials.html').read_text()
         assert '<a href="entries/2.html"><img' in content
-        assert 'data-material-kind="video"' in content and 'entries/1.html#comment-10' in content
+        assert 'data-material-kind="video"' not in content and 'entries/1.html#comment-10' in content
+        assert 'data-material-kind="video"' in (tmp_path / 'materials-video.html').read_text()
         assert json.loads((tmp_path / 'data/materials.json').read_text())['materials'] == rows
         with store.db: store.set('media', {image: '../outside.png'})
         assert next(r for r in inventory(store) if r['kind'] == 'image')['path'] is None
@@ -119,3 +120,35 @@ def test_completed_profile_clears_its_own_incomplete_status_only(tmp_path):
         assert report['personal']['complete'] and report['status'] == 'partial'
         assert report['issues'] == ['Не все комментарии получены.']
     finally: store.close()
+
+
+def test_gallery_tag_pages_use_matching_comment_and_include_every_page(tmp_path):
+    import hashlib
+    tag = 'фото / лето'
+    shared = 'https://example.org/shared.png'
+    avatar = 'https://example.org/avatar.png'
+    stem = 'materials-tag-' + hashlib.sha256(tag.encode()).hexdigest()[:24]
+    store = Store(tmp_path)
+    try:
+        with store.db:
+            store.set('username', 'fixture')
+            store.set('userpic_catalog', {'defaultpicurl': avatar})
+            store.save_entry({'itemid': 1, 'eventtime': '2020-01-01', 'props': {'taglist': tag},
+                              'event': ''.join(f'<img src="https://example.org/{n}.png">' for n in range(48))})
+            store.save_comment({'id': 3, 'jitemid': 1, 'date': '2021-04-05', 'body': f'<img src="{shared}">'})
+            store.save_entry({'itemid': 2, 'eventtime': '2025-01-01', 'event': f'<img src="{shared}">'})
+        write_gallery(store, {'username': 'fixture'})
+        first = (tmp_path / (stem + '.html')).read_text()
+        second = (tmp_path / (stem + '-2.html')).read_text()
+        assert first.count('class="gallery-card"') == 48 and second.count('class="gallery-card"') == 1
+        assert 'href="entries/1.html#comment-3" class="gallery-empty"' in first
+        assert '5\xa0апреля 2021' in first
+        assert avatar not in (tmp_path/'materials.html').read_text()
+        assert avatar in (tmp_path/'materials-userpic.html').read_text()
+        assert stem in (tmp_path/'materials-tags.html').read_text()
+        with store.db:
+            store.save_entry({'itemid': 1, 'event': ''})
+        write_gallery(store, {'username': 'fixture'})
+        assert not list(tmp_path.glob(stem + '*.html'))
+    finally:
+        store.close()

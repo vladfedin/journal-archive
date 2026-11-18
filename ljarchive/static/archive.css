@@ -217,3 +217,16 @@ a.year-mark{display:block;width:fit-content;text-decoration:none}a.year-mark:hov
 .material-progress{display:block;width:100%;height:5px;margin:6px 0}.material-progress[hidden]{display:none}
 
 .material-source{display:block;font:12px/1.5 var(--sans);overflow-wrap:anywhere;word-break:break-word;margin:4px 0}.material-result{display:block;font:12px/1.5 var(--sans)}
+
+.gallery-main{max-width:1160px}
+.gallery-main .gallery-filters{margin:22px 0 14px}
+.gallery-filters [aria-current=page]{background:var(--hover);color:var(--action)}
+.gallery-topics{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:0 0 22px;font-size:13px}
+.gallery-topics a{display:inline-flex;align-items:baseline;gap:6px;color:var(--ink);border-radius:18px;background:var(--subtle);padding:6px 12px;overflow-wrap:anywhere;max-width:100%}
+.gallery-topics small{color:var(--muted);font-variant-numeric:tabular-nums}
+.gallery-topics .active-topic,.gallery-topics .all-topics{color:var(--action)}
+.gallery-card:focus-within,.gallery-card:hover{border-color:var(--muted)}
+.gallery-main .gallery-preview{height:auto;aspect-ratio:4/3}
+.gallery-main .gallery-preview img,.gallery-main .gallery-preview video{width:100%;height:100%;max-height:100%;object-fit:contain}
+.gallery-caption>.muted{margin-top:4px}
+@media(max-width:600px){.gallery-main .material-gallery{gap:14px}.gallery-filters .btn{padding-inline:9px}}

@@ -387,6 +387,7 @@ def build_archive(store: Store, report: dict, *, images=False, userpics=False, c
     report['source'] = stored_source(store)
     if entry_ids is None:
         report["calendar_version"] = 2
+        report["gallery_version"] = 1
     report.setdefault("issues", [])
     report["reactions"] = reaction_report(store)
     if report.get("status") == "complete" and not (report["reactions"]["complete"] and report["reactions"]["authors_complete"]):

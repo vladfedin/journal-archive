@@ -1,5 +1,6 @@
 """Local material index with references back to the source posts and comments."""
 import hashlib
+import re
 from collections import defaultdict
 from urllib.parse import urlsplit
 
@@ -57,11 +58,18 @@ def inventory(store):
         eid = int(entry['itemid'])
         base = original_url(store.get('username'), entry)
         title = plain(entry.get('subject')) or 'Без заголовка'
+        props = entry.get('props')
+        raw_tags = props.get('taglist', '') if isinstance(props, dict) else ''
+        if isinstance(raw_tags, str):
+            raw_tags = raw_tags.split(',')
+        tags = sorted({tag.strip() for tag in raw_tags if isinstance(tag, str) and tag.strip()},
+                      key=str.casefold) if isinstance(raw_tags, (list, tuple)) else []
         entry_comments = [] if is_repost(entry) else comments[eid]
         for kind, item in [('post', entry), *[('comment', c) for c in entry_comments]]:
             cid = int(item['id']) if kind == 'comment' else None
             reference = {'entry_id': eid, 'comment_id': cid, 'title': title,
-                         'date': entry.get('eventtime', ''),
+                         'date': (item.get('date') if cid else None) or entry.get('eventtime') or '',
+                         'tags': tags, 'author': (item.get('user') or '') if cid else '',
                          'href': f'entries/{eid}.html' + (f'#comment-{cid}' if cid else '')}
             source = text_value(item.get('event' if kind == 'post' else 'body'))
             images = Images(base); images.feed(source); images.close()
@@ -91,22 +99,54 @@ def write_gallery(store, report):
     from .render import ENV
     rows = inventory(store)
     atomic_write(store.folder / 'data/materials.json', dumps({'materials': rows}))
-    groups = [('all', 'Все', rows), *[(kind, label, [r for r in rows if r['kind'] == kind])
-              for kind, label in [('image', 'Изображения'), ('video', 'Видео'), ('userpic', 'Юзерпики')]]]
-    def filename(kind, page=1):
-        return 'materials' + ('' if kind == 'all' else '-' + kind) + (f'-{page}' if page > 1 else '') + '.html'
-    filters = [{'label': label, 'kind': kind, 'count': len(items), 'href': filename(kind)} for kind, label, items in groups]
+    images = [row for row in rows if row['kind'] == 'image']
+    groups = [('image', 'Изображения', images),
+              ('video', 'Видео', [row for row in rows if row['kind'] == 'video']),
+              ('userpic', 'Юзерпики', [row for row in rows if row['kind'] == 'userpic'])]
+    filters = [{'label': label, 'kind': kind, 'count': len(items),
+                'href': 'materials.html' if kind == 'image' else f'materials-{kind}.html'}
+               for kind, label, items in groups]
+
+    # One tile per URL, with a backlink to an occurrence matching the selected tag.
+    by_tag = defaultdict(list)
+    for image in images:
+        matches = {}
+        for ref in image['references']:
+            for tag in ref['tags'] or [None]:
+                matches.setdefault(tag, ref)
+        for tag, ref in matches.items():
+            by_tag[tag].append({**image, 'selected_ref': ref})
+    topics = []
+    for tag, items in by_tag.items():
+        key = hashlib.sha256(tag.encode()).hexdigest()[:24] if tag else 'none'
+        topics.append({'tag': tag, 'label': tag or 'Без тегов', 'stem': 'materials-tag-' + key,
+                       'count': len(items)})
+    topics.sort(key=lambda topic: (topic['tag'] is None, topic['label'].casefold(), topic['label']))
+    popular = sorted(topics, key=lambda topic: -topic['count'])[:4]
+    template = ENV.get_template('materials.html')
     produced = set()
-    for kind, label, items in groups:
+
+    def render_page(name, **context):
+        produced.add(name)
+        atomic_write(store.folder / name, template.render(user=report['username'], report=report,
+                     filters=filters, popular=popular, topic_count=len(topics), **context))
+
+    def paginate(stem, kind, items, topic=None):
         pages = max(1, (len(items) + 47) // 48)
+        def filename(page):
+            return stem + (f'-{page}' if page > 1 else '') + '.html'
         for page in range(1, pages + 1):
-            name = filename(kind, page); produced.add(name)
-            atomic_write(store.folder / name, ENV.get_template('materials.html').render(
-                user=report['username'], report=report, rows=items[(page-1)*48:page*48],
-                filters=filters, kind=kind, page=page, pages=pages,
-                previous=filename(kind, page-1) if page > 1 else None,
-                following=filename(kind, page+1) if page < pages else None))
-    import re
+            render_page(filename(page), rows=items[(page-1)*48:page*48], kind=kind,
+                        topic=topic, page=page, pages=pages,
+                        previous=filename(page-1) if page > 1 else None,
+                        following=filename(page+1) if page < pages else None)
+
+    for kind, _, items in groups:
+        paginate('materials-' + kind, kind, items)
+    paginate('materials', 'image', images)
+    for topic in topics:
+        paginate(topic['stem'], 'image', by_tag[topic['tag']], topic)
+    render_page('materials-tags.html', kind='image', directory=True, topics=topics)
     for old in store.folder.glob('materials*.html'):
-        if re.fullmatch(r'materials(?:-(?:image|video|userpic))?(?:-\d+)?\.html', old.name) and old.name not in produced:
+        if re.fullmatch(r'materials(?:-(?:image|video|userpic|tags|tag-(?:none|[0-9a-f]{24})))?(?:-\d+)?\.html', old.name) and old.name not in produced:
             old.unlink()
