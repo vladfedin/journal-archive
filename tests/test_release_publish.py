@@ -139,6 +139,17 @@ class PublishTests(unittest.TestCase):
         self.assertFalse((self.root/'outside.txt').exists())
         self.assertFalse(any('/runs/1/' in path or '/runs/2/' in path for path in seen))
 
+    def test_recovery_rejects_trigger_tag_mismatch_before_any_api_call(self):
+        with patch.dict(recover_release.os.environ, {'GITHUB_REF': 'refs/tags/v9.9.9', 'GITHUB_REF_NAME': 'v9.9.9', 'GITHUB_REPOSITORY': self.repo}), patch.object(recover_release.runpy, 'run_path', return_value={'__version__': '0.8.7'}), patch.object(recover_release, 'recover') as recovered:
+            with self.assertRaisesRegex(ValueError, 'tag does not match'):
+                recover_release.main()
+            recovered.assert_not_called()
+
+    def test_recovery_uses_current_version_for_manual_branch_run(self):
+        with patch.dict(recover_release.os.environ, {'GITHUB_REF': 'refs/heads/main', 'GITHUB_REF_NAME': 'main', 'GITHUB_REPOSITORY': self.repo}), patch.object(recover_release.runpy, 'run_path', return_value={'__version__': '0.8.7'}), patch.object(recover_release, 'recover') as recovered:
+            recover_release.main()
+            self.assertEqual(recovered.call_args.args[1:], (self.repo, 'v0.8.7'))
+
 
 if __name__ == '__main__':
     unittest.main()

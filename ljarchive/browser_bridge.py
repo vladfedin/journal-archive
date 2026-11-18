@@ -10,6 +10,7 @@ from collections import deque
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import socket
 import subprocess
@@ -20,6 +21,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from websockets.sync.client import connect
 from websockets.protocol import State
+from websockets.exceptions import WebSocketException
 
 from .client import Cancelled, ExportError, RequestLimitReached
 
@@ -78,6 +80,18 @@ def browser_executable():
             if path:
                 candidates.append(Path(path))
     return next((p for p in candidates if p.is_file()), None)
+
+
+def debugging_endpoint(path):
+    """Chromium may still hold its port file exclusively while starting on Windows."""
+    try:
+        lines = path.read_text(encoding='utf-8').splitlines()
+        if (len(lines) >= 2 and 1 <= int(lines[0]) <= 65535
+                and re.fullmatch(r'/devtools/browser/[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}', lines[1])):
+            return f'ws://127.0.0.1:{int(lines[0])}{lines[1]}'
+    except (OSError, UnicodeError, ValueError):
+        pass
+    return None
 
 
 class BrowserBridge:
@@ -139,12 +153,14 @@ class BrowserBridge:
             port_file = Path(self.profile.name) / 'DevToolsActivePort'
             deadline = time.monotonic() + 12
             while time.monotonic() < deadline and self.process.poll() is None:
-                if port_file.is_file():
-                    lines = port_file.read_text().splitlines()
-                    if len(lines) >= 2:
-                        self.socket = connect(f'ws://127.0.0.1:{int(lines[0])}{lines[1]}',
-                                              proxy=None, max_size=32 * 1024 * 1024, open_timeout=5)
+                endpoint = debugging_endpoint(port_file)
+                if endpoint:
+                    try:
+                        self.socket = connect(endpoint, proxy=None, max_size=32 * 1024 * 1024,
+                                              open_timeout=max(.01, min(2, deadline - time.monotonic())))
                         return
+                    except (OSError, WebSocketException, TimeoutError):
+                        pass  # The file can precede the listening debugging endpoint.
                 time.sleep(.1)
         except Exception as exc:
             self.close()

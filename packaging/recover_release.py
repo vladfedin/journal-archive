@@ -67,7 +67,14 @@ def recover(root, repo, tag):
         publish(root, repo, tag, [platform])
 
 
-if __name__ == '__main__':
+def main():
     root = Path(__file__).resolve().parents[1]
     version = runpy.run_path(str(root / 'ljarchive/__init__.py'))['__version__']
-    recover(root, os.environ['GITHUB_REPOSITORY'], 'v' + version)
+    tag = 'v' + version
+    if os.environ.get('GITHUB_REF', '').startswith('refs/tags/') and os.environ.get('GITHUB_REF_NAME') != tag:
+        raise ValueError('Release tag does not match application version')
+    recover(root, os.environ['GITHUB_REPOSITORY'], tag)
+
+
+if __name__ == '__main__':
+    main()

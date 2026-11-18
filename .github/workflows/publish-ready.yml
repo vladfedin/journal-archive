@@ -2,11 +2,7 @@ name: Publish ready release packages
 on:
   workflow_dispatch:
   push:
-    branches: [main]
-    paths:
-      - '.github/workflows/publish-ready.yml'
-      - 'packaging/publish.py'
-      - 'packaging/recover_release.py'
+    tags: ['v*']
 permissions:
   actions: read
   contents: write

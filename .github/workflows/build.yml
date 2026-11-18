@@ -3,7 +3,6 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
-    tags: ['v*']
   pull_request:
 concurrency:
   group: build-${{ github.ref }}
@@ -103,9 +102,3 @@ jobs:
           name: LiveJournalArchive-${{ matrix.os }}
           path: release/*
           if-no-files-found: error
-
-      - name: Publish this platform
-        if: startsWith(github.ref, 'refs/tags/v')
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python packaging/publish.py --platform "${{ matrix.platform }}"

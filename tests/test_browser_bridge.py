@@ -114,6 +114,31 @@ def test_real_browser_uses_login_and_redirects_without_exporting_credentials(pro
     assert other.value.http_status == 403
 
 
+def test_browser_waits_for_a_temporarily_locked_port_file(protected_browser, monkeypatch):
+    import ljarchive.browser_bridge as module
+    bridge, _, _, _ = protected_browser
+    bridge.close()
+    read = Path.read_text
+    attempts = []
+    def locked(path, *args, **kwargs):
+        if path.name == 'DevToolsActivePort':
+            attempts.append(1)
+            if len(attempts) == 1: raise PermissionError('browser is writing')
+            if len(attempts) == 2: return '9222\n'  # A partially written file.
+            if len(attempts) == 3: return '9222\n/devtools/browser/123'
+        return read(path, *args, **kwargs)
+    monkeypatch.setattr(Path, 'read_text', locked)
+    connect = module.connect
+    connections = []
+    def not_listening(*args, **kwargs):
+        connections.append(1)
+        if len(connections) == 1: raise ConnectionRefusedError('browser is starting')
+        return connect(*args, **kwargs)
+    monkeypatch.setattr(module, 'connect', not_listening)
+    bridge.open_login('fixture')
+    assert len(attempts) >= 5 and len(connections) == 2 and bridge.contexts['fixture']['target']
+
+
 def test_real_browser_obeys_budget_cancel_and_http_errors(protected_browser):
     bridge, base, calls, _ = protected_browser
     sign_in(bridge, base, calls)
