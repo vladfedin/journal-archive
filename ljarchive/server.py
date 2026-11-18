@@ -699,7 +699,10 @@ def make_server(output: Path, port=8787):
                 return self.json({"error": "Недопустимый Host."}, 403)
             path = unquote(urlsplit(self.path).path)
             if path == "/":
-                return self.file(ROOT / "templates" / "app.html", cookie=True)
+                from .render import ENV
+                body = ENV.get_template("app.html").render(version=__version__).encode("utf-8")
+                self.response_headers(200, "text/html; charset=utf-8", len(body), cookie=True)
+                return self.wfile.write(body)
             if path == "/favicon.ico":
                 return self.file(ROOT / "static" / "favicon.ico")
             if path == "/help":
