@@ -8,7 +8,7 @@ from collections import deque
 from html.parser import HTMLParser
 from urllib.parse import urljoin
 
-from .client import Cancelled, ExportError, LiveJournalClient, RequestBudget, RequestLimitReached
+from .client import AuthenticationRequired, Cancelled, ExportError, LiveJournalClient, RequestBudget, RequestLimitReached
 from .media import Media, authenticated_image_host, image_url, error_message
 from .gaps import ATTEMPTS, closed, reopen
 from .retry import restored_deadline
@@ -24,9 +24,10 @@ class NeedsLogin(ExportError):
 
 def inventory(store, eid):
     row = store.db.execute('SELECT payload FROM entries WHERE id=?', (eid,)).fetchone()
-    if not row:
+    comments = store.comments(eid)
+    if not row and not comments:
         raise ExportError('Запись не найдена в архиве.')
-    entry = json.loads(row[0])
+    entry = json.loads(row[0]) if row else {'itemid': eid, 'event': '', 'unavailable': True}
     base = original_url(store.get('username'), entry)
     refs, images = VideoRefs(base), set()
     class Images(HTMLParser):
@@ -35,7 +36,7 @@ def inventory(store, eid):
             if tag == 'img' and value:
                 images.add(urljoin(base, value))
     parser = Images()
-    for item in [entry, *store.comments(eid)]:
+    for item in [entry, *comments]:
         body = text_value(item.get('event', item.get('body')))
         refs.feed(body); parser.feed(body)
     refs.close(); parser.close()
@@ -63,8 +64,10 @@ def validate(store, data):
     entry, allowed = inventory(store, eid)
     if value not in allowed[kind]:
         raise ExportError('Этот материал не найден в сохранённой записи или её комментариях.')
-    if data.get('transport') == 'browser' and (kind != 'image' or not authenticated_image_host(image_url(value))):
-        raise ExportError('Через браузер загружаются изображения с серверов ЖЖ.')
+    from .video import lj_video_id
+    if data.get('transport') == 'browser' and not (kind == 'embed' or
+            (kind == 'video' and lj_video_id(value)) or (kind == 'image' and authenticated_image_host(image_url(value)))):
+        raise ExportError('Вход через браузер доступен для материалов ЖЖ.')
     return entry
 
 
@@ -210,23 +213,24 @@ def download_one(store, data, cancel, update, sessions=None):
                 raise ExportError(error_message(error))
             asset = {'kind': 'image', 'path': path}
         else:
+            if data.get('transport') == 'browser':
+                browser_login(client, data, sessions)
             manager = VideoArchive(store, client, update)
             if kind == 'embed':
                 key = embed_key(original_url(client.user, entry), value)
                 if key in manager.records:
                     reopen(manager.records[key])
                 if key not in manager.embeds and key not in manager.external:
-                    if data.get('password'):
+                    if data.get('password') and not client._cookie:
                         client.login()
                     try:
                         manager.resolve(entry, [value])
                     except (Cancelled, RequestLimitReached):
                         raise
-                    except ExportError as exc:
-                        if not data.get('password') and ('401/403' in str(exc) or 'требуется вход' in str(exc)):
-                            if sessions:
-                                sessions.forget(client)
-                            raise NeedsLogin('Для этой вставки может потребоваться вход в ЖЖ.') from exc
+                    except AuthenticationRequired:
+                        if sessions:
+                            sessions.browser.open_login(client.account)
+                            raise BrowserLoginRequired() from None
                         raise
                 if key in manager.external:
                     asset = {**manager.external[key], 'kind': 'external'}
@@ -234,14 +238,18 @@ def download_one(store, data, cancel, update, sessions=None):
                     value = manager.embeds[key]
                     asset = None
                 else:
-                    if not data.get('password'):
-                        raise NeedsLogin('Вставка не получена. Можно повторить со входом в ЖЖ.')
-                    raise ExportError('Тип вставки пока не поддерживается. Откройте оригинал.')
+                    from .gaps import fail
+                    record = manager.records.setdefault(key, {'url': original_url(client.user, entry), 'entries': [eid]})
+                    record.update(status='failed', stage='source', trace=manager.trace[-100:],
+                                  error={'reason': 'embed_unresolved', 'detail': 'Вставка не найдена на текущей странице записи.'})
+                    fail(record); manager.save()
+                    update(error={**record['error'], 'stage': 'source', 'trace': record['trace']})
+                    raise ExportError('Вставка не найдена на текущей странице записи.')
             else:
                 asset = None
             if asset is None:
                 from .video import lj_video_id
-                if lj_video_id(value) and data.get('password'):
+                if lj_video_id(value) and data.get('password') and not client._cookie:
                     client.login()
                 if value in manager.records:
                     reopen(manager.records[value])
@@ -249,12 +257,17 @@ def download_one(store, data, cancel, update, sessions=None):
                 if cancel.is_set(): raise Cancelled('Загрузка остановлена.')
                 record = manager.records[value]
                 if record['status'] != 'saved':
-                    if record.get('error', {}).get('reason') == 'auth_required' and not data.get('password'):
-                        raise NeedsLogin('Для видео ЖЖ требуется вход владельца.')
+                    update(error={**record.get('error', {}), 'trace': record.get('trace', []),
+                                  'requests': record.get('requests', 0), 'stage': record.get('stage'),
+                                  'updated_at': record.get('checked_at')})
+                    if record.get('error', {}).get('reason') == 'auth_required' and sessions:
+                        sessions.browser.open_login(client.account)
+                        raise BrowserLoginRequired()
                     from .video import video_report
                     message = video_report(store)['missing'].get(value, {}).get('error', {}).get('message', 'Видео не получено.')
                     raise ExportError(message)
-                asset = {'kind': 'video', 'path': record['path']}
+                asset = {'kind': 'video', 'path': record['path'], 'bytes': record.get('bytes'), 'title': record.get('title'),
+                         'trace': record.get('trace', []), 'requests': record.get('requests', 0)}
         if cancel.is_set():
             raise Cancelled('Загрузка остановлена.')
         update(phase='saving', message='Сохранение страниц…', asset=asset)
@@ -373,6 +386,11 @@ class MaterialQueue:
             def update(**values):
                 if values.get('phase') in ('videos', 'login', 'materials', 'personal', 'retrying', 'loading'): values['phase'] = 'running'
                 with self.jobs.lock:
+                    current_state = self.states[task_id]
+                    if ((values.get('stage') and values['stage'] != current_state.get('stage')) or
+                            (values.get('phase') and values['phase'] != current_state.get('phase'))):
+                        for key in ('completed', 'total', 'progress_unit'):
+                            current_state.pop(key, None)
                     event = values.pop('activity', None)
                     if event:
                         self.states[task_id]['last_activity'] = event
@@ -382,8 +400,8 @@ class MaterialQueue:
                         self.states[task_id].pop('retry_at', None)
                         self.states[task_id].pop('wait', None)
                     self.states[task_id].update(values)
-            store = None
-            def refresh():
+            store, asset = None, None
+            def refresh(*, failed=False):
                 if request['kind'] == 'profile':
                     from .personal import refresh_profile
                     return refresh_profile(store)
@@ -401,10 +419,25 @@ class MaterialQueue:
                             and all(map(image_issue, issues)) and current['discovery_complete'] and not current['remaining']
                             and not report.get('request_limit_reached') and not any(report.get(key) for key in
                             ('pending_days', 'pending_comment_entry_ids', 'orphan_entry_ids', 'unknown_encoding_entry_ids')))
-                update(phase='saving', message='Обновляем страницы архива…')
+                targets = None
+                if request['kind'] in ('image', 'video', 'embed'):
+                    from .gallery import inventory as material_inventory
+                    value = request['value']
+                    if request['kind'] == 'embed':
+                        entry, _ = inventory(store, request['entry_id'])
+                        value = store.get('video_embeds', {}).get(embed_key(original_url(store.get('username'), entry), value))
+                    targets = {request['entry_id']}
+                    for item in material_inventory(store):
+                        if item['url'] == value:
+                            targets.update(ref['entry_id'] for ref in item['references'])
+                if failed and targets is not None:
+                    targets = set()  # Only evidence/JSON/gallery changed, no new file to insert into posts.
+                if not failed:
+                    update(phase='saving', stage='index', message='Обновляем связанные записи…')
                 def rendering(**values):
-                    update(**{**values, 'phase': 'saving'})
-                build_archive(store, report, images=False, complete_after_media=complete, progress=rendering)
+                    if not failed: update(**{**values, 'phase': 'saving'})
+                build_archive(store, report, images=False, complete_after_media=complete, progress=rendering,
+                              entry_ids=targets, changed_media=[asset['path']] if asset and asset.get('path') else [])
                 with self.jobs.lock:
                     if self.jobs.current and self.jobs.current.get('archive') == request['archive']:
                         values = {'recovery': current}
@@ -438,10 +471,10 @@ class MaterialQueue:
                     except Exception: pass  # Captured sections remain committed to SQLite.
                 update(phase='cancelled', message='Загрузка остановлена')
             except ExportError as exc:
-                if store:
-                    try: refresh()
-                    except Exception: pass  # Error metadata is already committed to SQLite.
                 update(phase='error', message=str(exc))
+                if store:
+                    try: refresh(failed=True)
+                    except Exception: pass  # Error metadata is already committed to SQLite.
             except Exception:
                 update(phase='error', message='Не удалось сохранить материал. Можно повторить загрузку.')
             finally:

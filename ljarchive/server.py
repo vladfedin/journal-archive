@@ -717,6 +717,17 @@ def make_server(output: Path, port=8787):
                     return self.json(result)
                 except ExportError as exc:
                     return self.json({'error': str(exc)}, 400)
+            if path.startswith('/api/materials/'):
+                try:
+                    slug = path.removeprefix('/api/materials/')
+                    jobs.task_path(slug)
+                    with jobs.lock:
+                        items = [{**jobs.materials.status(state['id']), 'entry_id': state['_identity'][1],
+                                  'kind': state['_identity'][2], 'value': state['_identity'][3]}
+                                 for state in jobs.materials.states.values() if state['_identity'][0] == slug]
+                    return self.json({'tasks': items})
+                except ExportError as exc:
+                    return self.json({'error': str(exc)}, 400)
             if path.startswith('/api/material/'):
                 try: return self.json(jobs.materials.status(path.removeprefix('/api/material/')))
                 except ExportError as exc: return self.json({'error': str(exc)}, 404)

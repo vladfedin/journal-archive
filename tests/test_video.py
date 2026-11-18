@@ -60,8 +60,8 @@ def test_native_video_checks_lj_access_before_returning_stream_and_never_stores_
         monkeypatch.setattr(video.client, '_request', denied)
         video.download(lj_video_url('12345'), 1)
         record = video.records[lj_video_url('12345')]
-        assert record['status'] == 'pending' and record['error']['reason'] == 'auth_required'
-        assert not record.get('attempts') and 'SECRET' not in json.dumps(video.records)
+        assert record['status'] == 'failed' and record['error']['reason'] == 'download'
+        assert record.get('attempts') == 1 and 'SECRET' not in json.dumps(video.records)
     finally: close(video)
 
 
@@ -322,7 +322,7 @@ def test_native_page_transport_error_does_not_start_web_login(tmp_path, monkeypa
     finally: close(video)
 
 
-def test_native_html_login_page_retries_with_web_session(tmp_path, monkeypatch):
+def test_missing_player_is_not_misclassified_as_missing_login(tmp_path, monkeypatch):
     import io
     from ljarchive.video import lj_video_url
     video = manager(tmp_path, monkeypatch)
@@ -338,6 +338,55 @@ def test_native_html_login_page_retries_with_web_session(tmp_path, monkeypatch):
     monkeypatch.setattr(video, 'open', lambda url: io.BytesIO(json.dumps({'success': True, 'result': {'playList': {
         'id': 12345, 'type': 'offline', 'source': 'https://cdn.example/video.m3u8'}}}).encode()))
     try:
-        assert video.lj_source(lj_video_url('12345'), 1)[0] == 'https://cdn.example/video.m3u8'
-        assert calls == ['/263.html', '/263.html', '/video/check'] and ready == [True]
+        from ljarchive.client import ExportError, AuthenticationRequired
+        with pytest.raises(ExportError, match='не найден') as missing:
+            video.lj_source(lj_video_url('12345'), 1)
+        assert not isinstance(missing.value, AuthenticationRequired)
+        assert calls == ['/263.html'] and ready == []
     finally: close(video)
+
+
+def test_native_numeric_id_matches_provider_uuid_without_password(tmp_path, monkeypatch):
+    import io
+    import secrets
+    from ljarchive.video import lj_video_url
+    video = manager(tmp_path, monkeypatch)
+    token = secrets.token_hex(24)
+    uuid = 'record::12345678-1234-1234-1234-123456789abc'
+    with video.store.db: video.store.save_entry({'itemid': 1, 'anum': 7})
+    calls = []
+    monkeypatch.setattr(video.client, 'ensure_web_session', lambda: pytest.fail('Public migrated video does not require login'))
+    def request(method, path, **kw):
+        calls.append(path)
+        if path == '/video/check':
+            assert kw['params']['recordId'] == 12345 and kw['params']['token'] == token
+            return b''
+        return f'<div data-rambler-player-id="{uuid}" data-auth-token="{token}"></div>'.encode()
+    monkeypatch.setattr(video.client, '_request', request)
+    monkeypatch.setattr(video, 'open', lambda url: io.BytesIO(json.dumps({'success': True, 'result': {'playList': {
+        'id': 12345, 'uuid': uuid, 'type': 'offline', 'source': 'https://cdn.example/video.m3u8'}}}).encode()))
+    try:
+        assert video.lj_source(lj_video_url('12345'), 1)[0] == 'https://cdn.example/video.m3u8'
+        assert calls == ['/263.html', '/video/check']
+        assert token not in json.dumps(video.trace)
+        # The provider must establish correspondence, never pick another player on the page.
+        monkeypatch.setattr(video, 'open', lambda url: io.BytesIO(json.dumps({'success': True, 'result': {'playList': {
+            'id': 99999, 'uuid': uuid, 'type': 'offline', 'source': 'https://cdn.example/video.m3u8'}}}).encode()))
+        from ljarchive.client import ExportError
+        with pytest.raises(ExportError, match='другой ролик'): video.lj_source(lj_video_url('12345'), 1)
+    finally: close(video)
+
+
+@pytest.mark.parametrize('browser_body', [b'<form action="/login.bml"><input type="password"></form>', None])
+def test_browser_login_failures_are_recognized_for_embeds(tmp_path, monkeypatch, browser_body):
+    from types import SimpleNamespace
+    from ljarchive.browser_bridge import BrowserFailure
+    from ljarchive.client import AuthenticationRequired
+    video=manager(tmp_path,monkeypatch)
+    def document(*args):
+        if browser_body is None:raise BrowserFailure('browser_login')
+        return browser_body, [{'url':'https://fixture.livejournal.com/1.html','http_status':200}]
+    video.client.browser=SimpleNamespace(ready=lambda account:True, document=document)
+    try:
+        with pytest.raises(AuthenticationRequired):video.resolve({'itemid':1,'anum':1},['3'])
+    finally:close(video)

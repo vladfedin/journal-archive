@@ -206,11 +206,21 @@ class BrowserBridge:
             self.contexts[account]['confirmed'] = True
 
     def image(self, account, url, referer, budget, cancel, category='images'):
+        from .media import TYPES
+        return self._document(account, url, referer, budget, cancel, category, TYPES)
+
+    def document(self, account, url, referer, budget, cancel, category='videos'):
+        """Read an authenticated page without executing its scripts or subrequests."""
+        body, _, trace = self._document(account, url, referer, budget, cancel, category,
+                                       {'text/html': '', 'application/json': '', 'text/plain': ''}, allow_empty=True)
+        return body, trace
+
+    def _document(self, account, url, referer, budget, cancel, category, types, *, allow_empty=False):
         with self.lock:
             if not self.ready(account):
                 self.open_login(account)
                 raise BrowserLoginRequired()
-            from .media import public_url, TYPES
+            from .media import public_url
             validate = self.validate_url or public_url
             try:
                 validate(url)
@@ -300,8 +310,8 @@ class BrowserBridge:
                                 budget.save_cooldown(budget.not_before)
                         if status >= 400:
                             raise BrowserFailure('browser_http', trace, status)
-                        if mime not in TYPES:
-                            login = 'login' in urlsplit(response['url']).path
+                        login = mime == 'text/html' and urlsplit(response['url']).path in ('/login.bml', '/login', '/login/onclick.bml')
+                        if mime not in types or login:
                             raise BrowserFailure('browser_login' if login else 'browser_type', trace, status)
                         length = next((v for k, v in response.get('headers', {}).items() if k.lower() == 'content-length'), '')
                         if str(length).isdigit() and int(length) > MAX_IMAGE:
@@ -314,11 +324,11 @@ class BrowserBridge:
                     elif method == 'Network.loadingFinished' and p.get('requestId') == response_id:
                         result = self._call('Network.getResponseBody', {'requestId': response_id}, session)
                         body = base64.b64decode(result['body']) if result.get('base64Encoded') else result['body'].encode()
-                        if not body:
+                        if not body and not allow_empty:
                             raise BrowserFailure('browser_empty', trace, status)
                         if len(body) > MAX_IMAGE:
                             raise BrowserFailure('browser_large', trace, status)
-                        return body, TYPES[mime], trace
+                        return body, types[mime], trace
                     elif method == 'Network.loadingFailed' and p.get('type') == 'Document':
                         if trace:
                             # Only Chromium's error code, never an arbitrary server string.

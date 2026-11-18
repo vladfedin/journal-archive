@@ -17,7 +17,22 @@ def file_hash(path, check=None):
     return digest.hexdigest()
 
 
-def write_manifest(folder):
+def write_manifest(folder, *, changed=None):
+    if changed is not None:
+        try:
+            manifest = json.loads((folder / 'integrity.json').read_text(encoding='utf-8'))
+            if manifest.get('algorithm') != 'sha256' or not isinstance(manifest.get('files'), dict):
+                raise ValueError()
+        except (OSError, ValueError):
+            return write_manifest(folder)
+        for name in set(changed):
+            path = (folder / name).resolve()
+            if not path.is_relative_to(folder.resolve()):
+                raise ValueError('Invalid manifest path')
+            if path.is_file(): manifest['files'][name] = file_hash(path)
+            else: manifest['files'].pop(name, None)
+        atomic_write(folder / 'integrity.json', json.dumps(manifest, indent=2) + '\n')
+        return
     files = {}
     for path in sorted(folder.rglob("*")):
         if path.is_file() and not path.is_symlink() and path.suffix in (".html", ".css", ".js", ".json", ".jpg", ".png", ".gif", ".webp", ".avif", ".svg", ".ico", ".mp4", ".webm", ".ogv", ".mov", ".m4v"):

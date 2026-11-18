@@ -1,6 +1,7 @@
 """Local material index with references back to the source posts and comments."""
 import hashlib
 from collections import defaultdict
+from urllib.parse import urlsplit
 
 from .progress import Images
 from .storage import atomic_write, dumps
@@ -10,10 +11,14 @@ from .video import VideoRefs, embed_key
 
 def inventory(store):
     from .render import original_url, plain, text_value
+    from .entries import is_repost
     entries = store.entries()
     comments = defaultdict(list)
     for comment in store.comments():
         comments[int(comment.get('jitemid', 0))].append(comment)
+    known = {int(entry['itemid']) for entry in entries}
+    entries.extend({'itemid': eid, 'subject': f'Запись #{eid} · текст недоступен', 'event': '', 'eventtime': ''}
+                   for eid in comments if eid not in known)
     pictures = describe(store)
     mapping, errors = store.get('media', {}), store.get('media_errors', {})
     videos, embeds = store.get('videos', {}), store.get('video_embeds', {})
@@ -32,6 +37,19 @@ def inventory(store):
                          'kind': kind, 'url': url, 'path': path if saved else None,
                          'status': 'saved' if saved else 'unavailable' if record.get('closed') else 'missing',
                          'title': record.get('title') or title, 'references': []}
+            try:
+                parsed = urlsplit(url)
+                rows[key]['source_href'] = url if parsed.scheme in ('http', 'https') and parsed.hostname and not parsed.username and not parsed.password else None
+            except ValueError:
+                rows[key]['source_href'] = None
+            if kind == 'video':
+                from .video import video_error_message, lj_video_id
+                rows[key]['provider'] = 'ЖЖ' if lj_video_id(url) else 'YouTube' if 'youtube.com/' in url else 'Видео'
+                rows[key]['download_status'] = record.get('status', 'not_requested')
+                rows[key]['bytes'] = record.get('bytes')
+                rows[key]['error'] = {**record.get('error', {}), 'trace': record.get('trace', []),
+                                      'requests': record.get('requests'), 'updated_at': record.get('checked_at')}
+                rows[key]['message'] = video_error_message(record) if record.get('error') else ''
         if reference and reference not in rows[key]['references']:
             rows[key]['references'].append(reference)
 
@@ -39,7 +57,8 @@ def inventory(store):
         eid = int(entry['itemid'])
         base = original_url(store.get('username'), entry)
         title = plain(entry.get('subject')) or 'Без заголовка'
-        for kind, item in [('post', entry), *[('comment', c) for c in comments[eid]]]:
+        entry_comments = [] if is_repost(entry) else comments[eid]
+        for kind, item in [('post', entry), *[('comment', c) for c in entry_comments]]:
             cid = int(item['id']) if kind == 'comment' else None
             reference = {'entry_id': eid, 'comment_id': cid, 'title': title,
                          'date': entry.get('eventtime', ''),

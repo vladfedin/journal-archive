@@ -165,6 +165,7 @@ class Content(HTMLParser):
         self.out, self.base, self.links, self.media = [], base, links, media
         self.comment_ids = comment_ids
         self.preserve_depth = 0
+        self.link_sources = []
         self.feed(source)
         self.close()
 
@@ -222,7 +223,9 @@ class Content(HTMLParser):
             return
         if tag == "a":
             from .video import canonical_video
+            original_link = urljoin(self.base, attrs.get('href', ''))
             video_url = canonical_video(attrs.get('href'), self.base)
+            self.link_sources.append(original_link if video_url else None)
             attrs["href"] = self.local_link(attrs.get("href", ""))
             attrs["rel"] = "noreferrer noopener"
             if video_url:
@@ -232,19 +235,29 @@ class Content(HTMLParser):
                 path = record.get('path')
                 if record.get('status') == 'saved' and path and (self.media.folder / path).is_file() and (self.media.folder / path).resolve().is_relative_to(self.media.folder.resolve()):
                     attrs['data-video-path'] = '../' + path
+                    self.link_sources[-1] = None
         self.out.append("<" + tag + "".join(f' {k}="{html.escape(v or "", quote=True)}"' for k, v in attrs.items()) + ">")
 
     def material_slot(self, kind, value, original, label):
         esc = lambda s: html.escape(str(s), quote=True)
         error = self.media.errors.get(value) if kind == 'image' else None
+        if kind == 'video':
+            record = self.media.videos.get(value, {})
+            if record.get('error'):
+                from .video import video_error_message
+                error = {**record['error'], 'message': video_error_message(record), 'trace': record.get('trace', []),
+                         'requests': record.get('requests'), 'updated_at': record.get('checked_at')}
         detail = ''
         if error:
             from .media import error_message
-            detail = '<span class="material-last-result">' + esc(error_message(error)) + '</span>'
+            detail = '<span class="material-last-result">' + esc(error.get('message') or error_message(error)) + '</span>'
+        source = '<span class="material-source">' + esc(original) + '</span>'
+        if urlsplit(original).scheme in ('http', 'https'):
+            source = '<a class="material-source" href="' + esc(original) + '" target="_blank" rel="noreferrer noopener">' + esc(original) + '</a>'
         return ('<span class="material-slot" data-material-kind="' + kind + '" data-material-value="' + esc(value) +
                 '"' + (' data-material-error="' + esc(dumps(error)) + '"' if error else '') +
                 '><a class="media-link" href="' + esc(original) + '" target="_blank" rel="noreferrer noopener">' +
-                html.escape(label) + '</a>' + detail + '</span>')
+                html.escape(label) + '</a>' + source + detail + '</span>')
 
     def handle_startendtag(self, tag, attrs):
         self.handle_starttag(tag, attrs)
@@ -254,6 +267,11 @@ class Content(HTMLParser):
             self.preserve_depth = max(0, self.preserve_depth - 1)
         if tag not in ("img", "br", "hr", "video"):
             self.out.append(f"</{tag}>")
+        if tag == 'a' and self.link_sources:
+            source = self.link_sources.pop()
+            if source:
+                escaped = html.escape(source, quote=True)
+                self.out.append(f'<a class="material-source" href="{escaped}" target="_blank" rel="noreferrer noopener">{escaped}</a>')
 
     def handle_data(self, data):
         if not self.preserve_depth:
@@ -339,17 +357,36 @@ def render_feed(entry, user, links, media, comment_ids):
     return feed.replace('src="../media/', 'src="media/').replace('data-video-path="../media/', 'data-video-path="media/')
 
 
-def build_archive(store: Store, report: dict, *, images=False, userpics=False, client_cancel=None, progress=None, budget=None, media=None, client=None, complete_after_media=False):
+def build_archive(store: Store, report: dict, *, images=False, userpics=False, client_cancel=None, progress=None, budget=None, media=None, client=None, complete_after_media=False, entry_ids=None, changed_media=()):
     folder, user = store.folder, report["username"]
+    entry_ids = None if entry_ids is None else set(entry_ids)
+    update_assets = entry_ids is None or report.get('format_version') != __version__
+    changed_assets = []
     cancel = client_cancel or threading.Event()
     media = media or Media(folder, images, cancel, budget=budget, client=client)
     media.enabled = images
     media.load_state(store)
     entries, comments = store.entries(), store.comments()
-    report["format_version"] = __version__
+    if entry_ids is not None:
+        from .progress import Images
+        from .entries import is_repost
+        by_id = {int(e['itemid']): e for e in entries}
+        for item in [*entries, *comments]:
+            eid = int(item.get('itemid') or item.get('jitemid') or 0)
+            if 'jitemid' in item and is_repost(by_id.get(eid, {})):
+                continue
+            parser = Images(original_url(user, by_id.get(eid, {'itemid': eid})))
+            parser.feed(text_value(item.get('event', item.get('body')))); parser.close()
+            for url in parser.urls:
+                media.used_urls['images'].add(url)
+                path = media.mapping.get(url)
+                media.mapping[url] = path if path and (folder / path).is_file() else None
+    if entry_ids is None:
+        report["format_version"] = __version__
     from .sources import stored_source
     report['source'] = stored_source(store)
-    report["calendar_version"] = 2
+    if entry_ids is None:
+        report["calendar_version"] = 2
     report.setdefault("issues", [])
     report["reactions"] = reaction_report(store)
     if report.get("status") == "complete" and not (report["reactions"]["complete"] and report["reactions"]["authors_complete"]):
@@ -397,8 +434,10 @@ def build_archive(store: Store, report: dict, *, images=False, userpics=False, c
             links[(url.hostname, url.path)] = str(entry["itemid"]) + ".html"
     comment_ids = {int(c["id"]) for c in comments}
     (folder / "assets").mkdir(exist_ok=True)
-    for asset in ("archive.css", "archive.js", "theme.js", "common.js", "favicon.svg", "favicon.ico", "timeline.js", "statistics.js", "statistics-live.js", "calendar.js", "calendar.css", "material-actions.js", "profile.js"):
-        shutil.copyfile(ROOT / "static" / asset, folder / "assets" / asset)
+    if update_assets:
+        for asset in ("archive.css", "archive.js", "theme.js", "common.js", "favicon.svg", "favicon.ico", "timeline.js", "statistics.js", "statistics-live.js", "calendar.js", "calendar.css", "material-actions.js", "profile.js"):
+            shutil.copyfile(ROOT / "static" / asset, folder / "assets" / asset)
+            changed_assets.append('assets/' + asset)
     search, summaries = [], []
     from .comment_state import comment_view
     from .entries import is_repost, repost_url
@@ -408,10 +447,18 @@ def build_archive(store: Store, report: dict, *, images=False, userpics=False, c
     from .video import missing_by_entry
     missing_videos = missing_by_entry(store)
     try:
+        rendered_count = 0
+        render_total = len(entries) if entry_ids is None else len(entry_ids & {int(e['itemid']) for e in entries})
         for index, entry in enumerate(entries):
-            if progress:
-                progress(phase="render", message=f"Собираем страницу {index + 1} из {len(entries)}…", completed=index, total=len(entries))
             eid = int(entry["itemid"])
+            if entry_ids is not None and eid not in entry_ids:
+                raw_comments = [] if is_repost(entry) else by_entry[eid]
+                summaries.append(entry_summary(entry, len(raw_comments), sum(c.get('state') == 'S' for c in raw_comments), pictures['post'].get(str(eid))))
+                continue
+            rendered_count += 1
+            if progress:
+                message = f"Обновляем запись {rendered_count} из {render_total}…" if entry_ids is not None else f"Собираем страницу {rendered_count} из {render_total}…"
+                progress(phase="render", message=message, completed=rendered_count - 1, total=render_total)
             title = plain(entry.get("subject")) or "Без заголовка"
             url = original_url(user, entry)
             entry_comments = [] if is_repost(entry) else threaded(by_entry[eid])
@@ -489,31 +536,42 @@ def build_archive(store: Store, report: dict, *, images=False, userpics=False, c
             report["issues"].append("Скачивание изображений прекращено по общему пределу HTTP-запросов.")
     with store.db:
         media.save_state(store)
-    if progress:
-        progress(phase='render', message='Профиль и переписка', completed=0, total=0)
-    from .personal import render_personal
-    render_personal(store, report)
+    if entry_ids is None:
+        if progress:
+            progress(phase='render', message='Профиль и переписка', completed=0, total=0)
+        from .personal import render_personal
+        render_personal(store, report)
     from .gallery import write_gallery
+    previous_gallery = {path.relative_to(folder).as_posix() for path in folder.glob('materials*.html')}
     write_gallery(store, report)
     from .progress import write_timeline
     write_timeline(store, report)
-    from .calendar import write_calendar
-    write_calendar(store, report)
-    if progress:
-        progress(phase='render', message='Статистика', completed=0, total=0)
-    from .statistics import write_statistics
-    write_statistics(store, report)
+    if entry_ids is None:
+        from .calendar import write_calendar
+        write_calendar(store, report)
+        if progress:
+            progress(phase='render', message='Статистика', completed=0, total=0)
+        from .statistics import write_statistics
+        write_statistics(store, report)
     if progress:
         progress(phase='render', message='JSON', completed=0, total=0)
     export_json(store, split=True)
     atomic_write(folder / "export-report.json", dumps(report))
     # JS file rather than fetch(): search also works when opened through file://.
-    atomic_write(folder / "assets" / "search-data.js", "window.ARCHIVE=" + dumps({"entries": summaries, "documents": search}).replace("<", "\\u003c") + ";")
+    if entry_ids is None:
+        atomic_write(folder / "assets" / "search-data.js", "window.ARCHIVE=" + dumps({"entries": summaries, "documents": search}).replace("<", "\\u003c") + ";")
     atomic_write(folder / "index.html", ENV.get_template("index.html").render(user=user, entries=summaries, report=report))
     atomic_write(folder / "report.html", ENV.get_template("report.html").render(user=user, report=report))
-    atomic_write(folder / "help.html", ENV.get_template("help.html").render(user=user, report=report))
+    if entry_ids is None:
+        atomic_write(folder / "help.html", ENV.get_template("help.html").render(user=user, report=report))
     from .integrity import write_manifest
     if progress:
         progress(phase='render', message='Проверка файлов', completed=0, total=0)
-    write_manifest(folder)
+    changed = None
+    if entry_ids is not None:
+        changed = [*changed_media, *changed_assets, 'index.html', 'report.html', 'export-report.json', 'timeline.html', 'assets/timeline-data.js',
+                   *[f'entries/{eid}.html' for eid in entry_ids], *[f'assets/posts/{eid}.js' for eid in entry_ids],
+                   *previous_gallery, *[path.relative_to(folder).as_posix() for path in folder.glob('materials*.html')],
+                   *[f'data/{name}.json' for name in ('archive', 'activitystreams', 'activitystreams-context', 'entries', 'comments', 'comment-metadata', 'materials')]]
+    write_manifest(folder, changed=changed)
     return report

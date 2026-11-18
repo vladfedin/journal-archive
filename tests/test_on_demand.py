@@ -210,11 +210,11 @@ def test_image_stop_is_not_misreported_as_success(tmp_path, monkeypatch, outcome
 
 def test_authentication_is_optional_and_password_is_not_retained(tmp_path, monkeypatch):
     fixture(tmp_path)
-    from ljarchive.on_demand import NeedsLogin
+    from ljarchive.client import AuthenticationRequired
     calls=[]
     monkeypatch.setattr('ljarchive.client.LiveJournalClient.login', lambda client: calls.append('login'))
     def resolve(manager, entry, modules):
-        if not calls: raise ExportError('ЖЖ отказал в доступе (HTTP 401/403).')
+        if not calls: raise AuthenticationRequired('ЖЖ отказал в доступе (HTTP 401/403).')
         manager.external['https://fixture.livejournal.com/257.html#lj-embed-235'] = {
             'provider':'Яндекс Музыка','kind':'audio_service','embed_url':'https://music.yandex.ru/iframe/album/1',
             'url':'https://music.yandex.ru/album/1','status':'online_only'}
@@ -224,7 +224,7 @@ def test_authentication_is_optional_and_password_is_not_retained(tmp_path, monke
     request={'entry_id':1,'kind':'embed','value':'235'}
     updates=[]
     try:
-        with pytest.raises(NeedsLogin):download_one(store,request,threading.Event(),lambda **k:updates.append(k))
+        with pytest.raises(AuthenticationRequired):download_one(store,request,threading.Event(),lambda **k:updates.append(k))
         request['password']='test-local-secret'
         result=download_one(store,request,threading.Event(),lambda **k:updates.append(k))
         assert result['kind']=='external' and calls==['login']

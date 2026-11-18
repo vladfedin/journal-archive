@@ -30,16 +30,21 @@ def protected_browser():
             calls.append(self.path)
             headers = {}
             if self.path == '/login':
-                status, mime, body = 200, 'text/html', b'<form action="/signed-in"><button>Sign in</button></form>'
+                status, mime, body = 200, 'text/html', b'<link rel="icon" href="data:,"><form action="/signed-in"><button>Sign in</button></form>'
             elif self.path == '/signed-in':
                 headers['Set-Cookie'] = 'session=' + token + '; HttpOnly; SameSite=Lax; Path=/'
-                status, mime, body = 200, 'text/html', b'Signed in'
+                status, mime, body = 200, 'text/html', b'<link rel="icon" href="data:,">Signed in'
             elif self.path == '/redirect':
                 headers['Location'] = '/private.png?auth=' + token
                 status, mime, body = 302, 'text/plain', b''
-            elif self.path.startswith('/private.png'):
+            elif self.path.startswith('/private.png') or self.path == '/login_user.png':
                 allowed = self.headers.get('Cookie') == 'session=' + token
                 status, mime, body = (200, 'image/png', PNG) if allowed else (403, 'text/html', b'Sign in')
+            elif self.path == '/private.html':
+                allowed = self.headers.get('Cookie') == 'session=' + token
+                status, mime, body = (200, 'text/html', b'<div data-rambler-player-id="123">Private player</div><script>fetch("/unexpected")</script>') if allowed else (403, 'text/html', b'Sign in')
+            elif self.path == '/empty-check':
+                status, mime, body = 200, 'text/plain', b''
             elif self.path == '/missing.png':
                 status, mime, body = 404, 'text/html', b'Missing'
             elif self.path == '/denied.png':
@@ -344,3 +349,23 @@ def test_browser_batch_continues_denials_and_keeps_them_closed_on_reload(protect
             assert calls.count('/denied.png') == 3  # Closed browser refusals do not reopen on restart.
         finally: media.close()
     finally: store.close()
+
+
+def test_authenticated_document_and_empty_check_use_browser_without_subrequests(protected_browser):
+    bridge, base, calls, token = protected_browser
+    sign_in(bridge, base, calls); calls.clear()
+    counter = budget(2)
+    body, trace = bridge.document('fixture', base + '/private.html', base + '/', counter, threading.Event())
+    assert b'Private player' in body and trace[-1]['http_status'] == 200
+    empty, trace2 = bridge.document('fixture', base + '/empty-check', base + '/', counter, threading.Event())
+    assert empty == b'' and trace2[-1]['http_status'] == 200
+    assert calls == ['/private.html', '/empty-check'] and counter.used == 2
+    assert token not in str(trace + trace2)
+
+
+def test_image_name_containing_login_is_not_a_login_page(protected_browser):
+    bridge, base, calls, _ = protected_browser
+    sign_in(bridge, base, calls)
+    # The authenticated image can belong to an account/path containing 'login'.
+    body, ext, trace = bridge.image('fixture', base + '/login_user.png', '', budget(), threading.Event())
+    assert body == PNG and ext == '.png' and trace[-1]['http_status'] == 200

@@ -200,12 +200,54 @@ class VideoArchive:
         self.attempted, self.pages = set(), set()
         self.session = requests.Session(); self.session.trust_env = False
         self.last_http = None
+        self.trace, self.stage = [], "source"
 
     def save(self):
         with self.store.db:
             self.store.set('videos', self.records)
             self.store.set('video_embeds', self.embeds)
             self.store.set('external_embeds', self.external)
+
+    def step(self, stage, message, **values):
+        self.stage = stage
+        self.progress(phase='running', stage=stage, message=message, completed=0, total=0, **values)
+
+    def journal_page(self, base, *, params=None):
+        """Reuse the existing web/browser session; a missing player is not a login failure."""
+        from .web_session import cookie_header, AGENT
+        from .browser_bridge import safe_url, BrowserFailure, BrowserLoginRequired
+        def checked(body):
+            if b'action="/login.bml"' in body or b"action='/login.bml'" in body:
+                raise AuthenticationRequired('ЖЖ вернул форму входа.', status=200)
+            return body
+        browser = getattr(self.client, 'browser', None)
+        if browser and browser.ready(self.client.account):
+            url = base + ('?' + urlencode(params) if params else '')
+            try:
+                body, trace = browser.document(self.client.account, url, '', self.client.budget, self.client.cancel)
+                self.trace.extend({**item, 'stage': self.stage} for item in trace)
+                return checked(body)
+            except ExportError as exc:
+                self.trace.extend({**item, 'stage': self.stage} for item in getattr(exc, 'trace', []))
+                if isinstance(exc, BrowserLoginRequired) or (isinstance(exc, BrowserFailure) and exc.reason in ('browser_login', 'browser_closed', 'browser_start')):
+                    raise AuthenticationRequired('Сеанс браузера завершён. Войдите в ЖЖ.') from None
+                raise
+        p = urlsplit(base)
+        headers = {'User-Agent': AGENT}
+        cookie = cookie_header(self.client, base)
+        if not cookie and self.client._cookie:
+            cookie = 'ljsession=' + self.client._cookie
+        if cookie: headers['Cookie'] = cookie
+        trace = {'url': safe_url(base), 'transport': 'http', 'http_status': None, 'stage': self.stage}
+        self.trace.append(trace)
+        try:
+            body = self.client._request('GET', p.path, base_url='https://' + p.hostname,
+                                        category='videos', headers=headers, **({'params': params} if params else {}))
+            trace['http_status'] = 200
+            return checked(body)
+        except (HTTPError, AuthenticationRequired) as exc:
+            trace['http_status'] = exc.status
+            raise
 
     def resolve(self, entry, modules):
         from .render import original_url
@@ -214,8 +256,8 @@ class VideoArchive:
         expected = self.client.user.replace('_', '-') + '.livejournal.com'
         if p.hostname != expected or not re.fullmatch(r'/\d+\.html', p.path):
             raise ExportError('Не удалось определить страницу вставки')
-        headers = {'Cookie': 'ljsession=' + self.client._cookie} if getattr(self.client, '_cookie', None) else {}
-        content = self.client._request('GET', p.path, base_url='https://' + expected, headers=headers)
+        self.step('source', 'Определяем источник вставки…')
+        content = self.journal_page(base)
         page = VideoRefs(base); page.feed(content.decode('utf-8', 'replace')); page.close()
         for module in modules:
             key = embed_key(base, module)
@@ -266,13 +308,18 @@ class VideoArchive:
             budget.announce_wait()
             self.wait(max(budget.delay, budget.not_before - time.time()))
             budget.consume('videos')
-            budget.event('request', 'videos', current, attempt=attempt + 1, max_attempts=6)
+            from .browser_bridge import safe_url
+            trace = {'url': safe_url(current), 'transport': 'http', 'http_status': None, 'stage': self.stage}
+            self.trace.append(trace)
+            budget.event('request', 'videos', current, request_url=safe_url(current), attempt=attempt + 1, max_attempts=6)
             try:
                 r = self.session.request(method, current, data=data, headers=dict(request.headers),
                                          stream=True, timeout=(10, 20), allow_redirects=False)
             except requests.RequestException as exc:
                 raise TransportError('Video connection failed', cause=exc) from exc
             self.last_http = r.status_code
+            trace["http_status"] = r.status_code
+            budget.event("response", "videos", current, http_status=r.status_code, request_url=safe_url(current))
             if r.status_code in (429, 500, 502, 503, 504):
                 budget.not_before = time.time() + backoff(attempt, r.headers.get('Retry-After'), limited=r.status_code == 429)
                 budget.describe_wait(budget.not_before, 'http', 'videos', current, http_status=r.status_code,
@@ -297,8 +344,11 @@ class VideoArchive:
         if url in self.attempted or closed(record): return
         self.attempted.add(url)
         requests_before = self.client.budget.categories.get('videos', 0)
+        self.trace = []
+        self.step('source', 'Определяем источник видео…')
         record.update(status='pending', checked_at=datetime.now(timezone.utc).isoformat(timespec='seconds'))
         self.save()
+        from .browser_bridge import BrowserLoginRequired
         import yt_dlp
         owner = self
         class Downloader(yt_dlp.YoutubeDL):
@@ -319,7 +369,8 @@ class VideoArchive:
         def hook(state):
             self.check()
             if state['status'] == 'downloading':
-                self.progress(phase='videos', message=record.get('title') or 'Видео',
+                self.stage = 'download'
+                self.progress(phase='running', stage='download', progress_unit='bytes', message='Скачиваем видео',
                               completed=state.get('downloaded_bytes', 0), total=state.get('total_bytes') or state.get('total_bytes_estimate') or 0)
         options = {'quiet': True, 'no_warnings': True, 'logger': Logger(), 'noplaylist': True,
                    'cachedir': False, 'retries': 0, 'fragment_retries': 0,
@@ -343,7 +394,9 @@ class VideoArchive:
                 info.update(metadata)
                 record.update(title=info.get('title'), duration=info.get('duration'), provider=info.get('extractor_key'), video_id=info.get('id'))
                 self.save()
+                self.step('download', 'Скачиваем видео…', progress_unit='bytes')
                 downloader.process_info(info)
+                self.step('file', 'Сохраняем видеофайл…')
             paths = [p for p in work.glob('video.*') if p.suffix in VIDEO_SUFFIXES and '.f' not in p.name]
             if len(paths) != 1 or not paths[0].stat().st_size:
                 raise ValueError('Video file was not produced')
@@ -358,12 +411,19 @@ class VideoArchive:
             record.update(status='pending', error={'reason': exc.reason})
         except (Cancelled, RequestLimitReached) as exc:
             record.update(status='pending', error={'reason': 'cancelled' if isinstance(exc, Cancelled) else 'request_limit'})
-        except AuthenticationRequired as exc:
+        except (AuthenticationRequired, BrowserLoginRequired) as exc:
             record.update(status='pending', error={'reason': 'auth_required', 'detail': str(exc)})
         except ExportError as exc:
-            record.update(status='failed', error={'reason': 'http' if isinstance(exc, HTTPError) else 'download',
-                'http_status': exc.status if isinstance(exc, HTTPError) else None, 'detail': str(exc)})
-            fail(record)
+            from .browser_bridge import BrowserFailure
+            if isinstance(exc, BrowserFailure):
+                reason = 'auth_required' if exc.reason in ('browser_login', 'browser_closed', 'browser_start') else exc.reason
+                record.update(status='pending' if reason == 'auth_required' else 'failed',
+                              error={'reason': reason, 'http_status': exc.http_status, 'detail': str(exc)})
+                if reason != 'auth_required': fail(record)
+            else:
+                record.update(status='failed', error={'reason': 'http' if isinstance(exc, HTTPError) else 'download',
+                    'http_status': exc.status if isinstance(exc, HTTPError) else None, 'detail': str(exc)})
+                fail(record)
         except OSError:
             record.update(status='pending', error={'reason': 'storage'})
         except Exception as exc:
@@ -372,11 +432,13 @@ class VideoArchive:
                                                   'type': type(exc).__name__, 'detail': re.sub(r'https?://[^\s]+', '[URL]', str(exc))[:500]})
             fail(record)
         finally:
+            record['stage'] = self.stage
+            record['trace'] = self.trace[-100:]
             record['requests'] = self.client.budget.categories.get('videos', 0) - requests_before
             self.save()
 
     def lj_source(self, url, eid):
-        """Use the current LJ player, including its signed access check; keep tokens in memory."""
+        """Resolve old numeric IDs through the provider before matching the current player."""
         from .render import original_url
         record_id = lj_video_id(url)
         row = self.store.db.execute('SELECT payload FROM entries WHERE id=?', (eid,)).fetchone()
@@ -386,56 +448,41 @@ class VideoArchive:
         p = urlsplit(base)
         if p.hostname != self.client.user.replace('_', '-') + '.livejournal.com' or not re.fullmatch(r'/\d+\.html', p.path):
             raise ExportError('Не удалось определить запись с видео ЖЖ.')
-        from .web_session import cookie_header, AGENT
-        def page():
-            headers = {'User-Agent': AGENT}
-            cookie = cookie_header(self.client, base)
-            if not cookie and self.client._cookie:
-                cookie = 'ljsession=' + self.client._cookie
-            if cookie: headers['Cookie'] = cookie
-            return self.client._request('GET', p.path, base_url='https://' + p.hostname, category='videos', headers=headers)
-        web_attempted = False
-        try:
-            raw = page()
-        except AuthenticationRequired:
-            web_attempted = True
-            if not self.client.ensure_web_session():
-                raise AuthenticationRequired('Для видео ЖЖ требуется вход владельца.') from None
-            raw = page()
-        class Player(HTMLParser):
-            token = None
-            def handle_starttag(self, tag, attrs):
-                a = dict(attrs)
-                if a.get('data-rambler-player-id') == record_id:
-                    self.token = a.get('data-auth-token')
-        player = Player(); player.feed(raw.decode('utf-8', 'replace')); player.close()
-        if not player.token and not web_attempted:
-            if not self.client.ensure_web_session():
-                raise AuthenticationRequired('Для видео ЖЖ требуется вход владельца.')
-            raw = page()
-            player = Player(); player.feed(raw.decode('utf-8', 'replace')); player.close()
-        if not player.token:
-            raise ExportError('После входа ЖЖ не вернул эту видеовставку или её данные доступа.')
         params = {'id' if record_id.isdigit() else 'uuid': int(record_id) if record_id.isdigit() else record_id,
                   'referrer': base}
+        self.step('source', 'Получаем данные видео ЖЖ…')
         with self.open('https://api.vp.rambler.ru/api/v3/records/getPlayerData?' + urlencode({'params': json.dumps(params)})) as response:
             raw = response.read(2 * 1024 * 1024 + 1)
         if len(raw) > 2 * 1024 * 1024:
             raise ValueError('Video metadata too large')
         data = json.loads(raw)
         if not data.get('success'):
-            raise ValueError('Видеосервис ЖЖ не вернул доступный ролик')
+            raise ExportError('Видеосервис ЖЖ не вернул этот ролик.')
         playlist = data.get('result', {}).get('playList', {})
         if (playlist.get('type') != 'offline' or (str(playlist.get('id')) != record_id and playlist.get('uuid') != record_id)):
-            raise ValueError('Video identity or type does not match')
+            raise ExportError('Видеосервис вернул другой ролик или прямой эфир.')
+        identities = {value for value in (record_id, str(playlist.get('id')), playlist.get('uuid')) if value}
+        class Player(HTMLParser):
+            token = None
+            def handle_starttag(self, tag, attrs):
+                a = dict(attrs)
+                if a.get('data-rambler-player-id') in identities and a.get('data-auth-token'):
+                    self.token = a['data-auth-token']
+        self.step('access', 'Проверяем доступ к видео ЖЖ…')
+        raw = self.journal_page(base)
+        player = Player(); player.feed(raw.decode('utf-8', 'replace')); player.close()
+        if not player.token:
+            raise ExportError('Этот видеоплеер не найден в текущей записи.')
         try:
-            self.client._request('GET', '/video/check', category='videos',
-                                 params={'recordId': playlist['id'], 'token': player.token})
+            self.journal_page('https://www.livejournal.com/video/check',
+                              params={'recordId': playlist['id'], 'token': player.token})
+        except AuthenticationRequired:
+            raise ExportError('ЖЖ отказал в доступе к этому видео.') from None
         finally:
             player.token = None
         source = playlist.get('directSource') or playlist.get('source')
         if not isinstance(source, str) or not source.startswith('https://'):
-            raise ValueError('Video stream missing')
+            raise ExportError('Видеосервис не сообщил адрес файла.')
         return source, {'title': playlist.get('title') or 'Видео ЖЖ',
                         'duration': (playlist.get('duration') or 0) / 1000,
                         'extractor_key': 'LiveJournal', 'id': record_id}
@@ -513,17 +560,22 @@ def capture_videos(exporter, entry):
     manager.capture(entry, getattr(exporter, 'videos', False))
 
 
+def video_error_message(record):
+    error = record.get('error') or {}
+    message = {'request_limit': 'Достигнут лимит запросов', 'cancelled': 'Загрузка остановлена',
+        'embed_unresolved': 'Адрес вставки не найден', 'download': 'Видео не скачано',
+        'storage': 'Не удалось сохранить файл на диск', 'auth_required': 'Нужен вход в браузере'}.get(error.get('reason'),
+        'HTTP ' + str(error.get('http_status')) if error.get('reason') == 'http' else 'Видео не скачано')
+    if error.get('detail'): message += ': ' + error['detail']
+    return message
+
+
 def video_report(store, selected=None):
     records = store.get('videos', {})
     rows = {url: r for url, r in records.items() if selected is None or set(r.get('entries', [])) & set(selected)}
     for record in rows.values():
         if record.get('error'):
-            error = record['error']
-            error['message'] = {'request_limit': 'Достигнут лимит запросов', 'cancelled': 'Загрузка остановлена',
-                'embed_unresolved': 'Не удалось получить адрес видео', 'download': 'Не удалось скачать видео',
-                'storage': 'Не удалось сохранить файл на диск', 'auth_required': 'Требуется вход в ЖЖ'}.get(error.get('reason'),
-                'HTTP ' + str(error.get('http_status')) if error.get('reason') == 'http' else 'Не загружено')
-            if error.get('detail'): error['message'] += ': ' + error['detail']
+            record['error']['message'] = video_error_message(record)
     return {'total': len(rows), 'saved': sum(r['status'] == 'saved' for r in rows.values()),
             'missing': {url: r for url, r in rows.items() if r['status'] != 'saved' and not closed(r)},
             'unavailable': {url: r for url, r in rows.items() if r['status'] != 'saved' and closed(r)}}
