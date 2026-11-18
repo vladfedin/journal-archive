@@ -248,6 +248,7 @@ class LiveJournalClient:
                     if response.status_code in (401, 403):
                         raise ExportError("ЖЖ отказал в доступе (HTTP 401/403). Проверьте вход в браузере; при ограничении запросов продолжите позже.")
                     if 300 <= response.status_code < 400 and response.status_code not in accepted_statuses:
+                        self.budget.event('failure', category, base_url, reason='redirects', http_status=response.status_code)
                         raise ExportError("ЖЖ перенаправил запрос. Возможно, требуется вход или подтверждение в браузере.")
                     if response.status_code not in accepted_statuses:
                         raise HTTPError(response.status_code)
@@ -434,9 +435,9 @@ class LiveJournalClient:
         if self._cookie:
             headers["Cookie"] = "ljsession=" + self._cookie
         if not self._reaction_token:
-            raw = self._request("GET", f"/{int(entities[0]['item'])}.html", category="reaction_authors",
-                                base_url=f"https://{self.user.replace('_', '-')}.livejournal.com",
-                                headers=headers)
+            # The JSON-RPC token belongs to the site session, not an entry. Journal
+            # subdomains can redirect private entries even with a valid API session.
+            raw = self._request("GET", "/", category="reaction_authors", headers=headers)
             match = re.search(r'"auth_token"\s*:\s*("(?:[^"\\]|\\.)*")', raw.decode("utf-8", errors="replace"))
             if not match:
                 raise ExportError("ЖЖ не выдал токен для чтения авторов реакций. Попробуйте выгрузку со входом.")

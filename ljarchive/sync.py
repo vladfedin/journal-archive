@@ -390,6 +390,8 @@ class SyncExporter(Exporter):
         missing = [{"id": c["id"], "state": c["state"]} for c in comments if "body" not in c and c["state"] not in ("D", "X")]
         unavailable = self.open_unavailable()
         issues = ([error] if error else []) + self.access_issues()
+        if self.state.get('phase') == 'reactions':
+            issues.extend('Реакции: ' + issue for issue in self.store.get('reaction_issues', []))
         if unavailable:
             issues.append(f"ЖЖ не вернул {len(unavailable)} записей. Ранее сохранённые тексты оставлены в архиве.")
         absent = sorted(set(self.state.get("unavailable", [])) - set(unavailable))

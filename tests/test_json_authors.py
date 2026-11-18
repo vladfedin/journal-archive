@@ -2,7 +2,7 @@ import json
 import subprocess
 import sys
 
-from ljarchive.client import LiveJournalClient, RequestBudget, RequestLimitReached
+from ljarchive.client import ExportError, LiveJournalClient, RequestBudget, RequestLimitReached
 from ljarchive.data import export_json, snapshot
 from ljarchive.demo import create_demo
 from ljarchive.presentation import reaction_view
@@ -115,5 +115,57 @@ def test_author_batch_handles_reordered_missing_and_error_results(monkeypatch):
         assert 'error' in results[0] and 'error' in results[1]
         assert results[2]['users'][0]['username'] == 'third'
         assert 'unsafe server text' not in str(results)
+    finally:
+        client.close()
+
+
+def test_authors_use_site_session_when_private_entry_redirects(monkeypatch):
+    from test_limited_export import Response
+    client = LiveJournalClient('owner', '', budget=RequestBudget(3))
+    client._cookie = 'fixture-session'
+    monkeypatch.setattr(client, '_wait', lambda _: None)
+    calls = []
+    person = {'id': 12, 'username': 'reader', 'type': 0}
+    def request(method, url, **kwargs):
+        calls.append((method, url))
+        assert kwargs['allow_redirects'] is False
+        assert kwargs['headers']['Cookie'] == 'ljsession=fixture-session'
+        if url.startswith('https://owner.livejournal.com/'):
+            return Response(status=302, headers={'Location': 'https://www.livejournal.com/login.bml'})
+        if method == 'GET' and url == 'https://www.livejournal.com/':
+            return Response(content=b'<script>Site={"auth_token":"fixture-read-token"}</script>')
+        assert method == 'POST' and url == 'https://www.livejournal.com/__api/'
+        batch = json.loads(kwargs['data'])
+        assert all(item['params']['auth_token'] == 'fixture-read-token' for item in batch)
+        assert [item['params']['item'] for item in batch] in ([263], [519])
+        return Response(content=json.dumps([{'id': 1, 'result': {'result': [person]}}]).encode())
+    monkeypatch.setattr(client.session, 'request', request)
+    try:
+        for eid in (263, 519):
+            assert client.reaction_authors([{'journal': 1, 'item': eid}]) == [{'users': [person]}]
+        assert calls == [('GET', 'https://www.livejournal.com/'),
+                         ('POST', 'https://www.livejournal.com/__api/'),
+                         ('POST', 'https://www.livejournal.com/__api/')]
+        assert client.budget.categories == {'reaction_authors': 3}
+    finally:
+        client.close()
+
+
+def test_author_token_redirect_is_diagnosed_without_following_or_exposing_location(monkeypatch):
+    from test_limited_export import Response
+    events = []
+    client = LiveJournalClient('owner', '', budget=RequestBudget(5, progress=lambda **v: events.append(v)))
+    monkeypatch.setattr(client, '_wait', lambda _: None)
+    def request(method, url, **kwargs):
+        assert kwargs['allow_redirects'] is False
+        return Response(status=302, headers={'Location': 'https://private.example/?auth=SECRET'})
+    monkeypatch.setattr(client.session, 'request', request)
+    try:
+        with pytest.raises(ExportError, match='перенаправил'):
+            client.reaction_authors([{'journal': 1, 'item': 263}])
+        activity = [item['activity'] for item in events if 'activity' in item]
+        assert activity[-1]['kind'] == 'failure' and activity[-1]['reason'] == 'redirects'
+        assert activity[-1]['http_status'] == 302 and client.budget.used == 1
+        assert all(secret not in json.dumps(events) for secret in ('SECRET', 'private.example'))
     finally:
         client.close()

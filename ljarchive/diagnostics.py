@@ -75,6 +75,11 @@ def build_diagnostics(folder, state, params):
         store = Store.reader(folder)
         try:
             result['counts'] = store.counts()
+            authors = Counter('complete' if row[0] == 'complete' else 'unavailable' if row[1] else 'pending'
+                              for row in store.db.execute("""SELECT json_extract(payload,'$.authors.status'),
+                                  json_extract(payload,'$.authors.closed') FROM reactions"""))
+            result['reactions'] = {'counts_saved': sum(authors.values()),
+                                  'authors': {key: authors[key] for key in ('complete', 'unavailable', 'pending')}}
             settings = {key: store.get(key, {}) for key in ('entry_materials', 'media', 'media_errors', 'videos', 'entry_comments')}
             requests = store.get('last_request_stats', {}).get('request_categories', {})
             if not run['requests']:

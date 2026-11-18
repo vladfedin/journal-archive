@@ -31,7 +31,7 @@ class CommunityWire:
                 'url': f'https://{self.journal}.livejournal.com/{eid * 256 + 7}.html'}
 
     def request(self, method, url, **kwargs):
-        if url.startswith(f'https://{self.journal}.livejournal.com/'):
+        if method == 'GET' and url == 'https://www.livejournal.com/':
             self.calls.append(('reaction_token', {}))
             return Response(content=b'<script>Site={"auth_token":"test-token"}</script>')
         if url == 'https://www.livejournal.com/__api/':

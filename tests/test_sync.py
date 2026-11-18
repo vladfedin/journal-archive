@@ -76,6 +76,34 @@ def run(folder, client, scope=Scope()):
     return SyncExporter(folder, client, scope).run()
 
 
+def test_author_fetch_failure_is_visible_and_resume_keeps_saved_work(tmp_path):
+    class ReactionsJournal(Journal):
+        fail_authors = True
+
+        def reaction_counts(self, entities):
+            self.calls.append(('reactions', entities))
+            return [{**e, 'thread': e.get('thread', 0), 'count': 1, 'groups': [1]} for e in entities]
+
+        def reaction_authors(self, entities):
+            self.calls.append(('authors', entities))
+            if self.fail_authors:
+                raise ExportError('ЖЖ перенаправил запрос.')
+            return [{'users': [{'id': 7, 'username': 'reader', 'type': 0}]} for _ in entities]
+
+    first = run(tmp_path, ReactionsJournal())
+    assert first['status'] == 'partial'
+    assert first['issues'][0] == 'Реакции: ЖЖ перенаправил запрос.'
+    assert first['reactions']['authors_unavailable'] == 0
+    client = ReactionsJournal()
+    client.fail_authors = False
+    resumed = SyncExporter(tmp_path, client, Scope(), resume=True).run()
+    assert resumed['status'] == 'complete' and resumed['reactions']['authors_complete']
+    assert not resumed['reactions']['issues']
+    assert any(method == 'getdaycounts' for method, _ in client.calls)
+    assert any(method == 'authors' for method, _ in client.calls)
+    assert all(method not in ('getevents', 'getcomments', 'reactions') for method, _ in client.calls)
+
+
 def test_resume_reports_local_verification_before_login_and_can_cancel(tmp_path):
     run(tmp_path, Journal())
     events = []

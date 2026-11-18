@@ -42,6 +42,22 @@ def test_unavailable_inventory_is_not_reported_as_empty(tmp_path):
     assert data['inventory_available'] is False and 'counts' not in data
 
 
+def test_reaction_inventory_distinguishes_pending_and_closed_without_names(tmp_path):
+    store = Store(tmp_path)
+    try:
+        with store.db:
+            for eid, authors in enumerate((None, {'status': 'partial'},
+                    {'status': 'unavailable', 'closed': True},
+                    {'status': 'complete', 'users': [{'id': 7, 'username': 'PRIVATE_PERSON'}]}), 1):
+                store.save_reactions('post', eid, {'count': 1, 'groups': [1], 'authors': authors})
+            store.set('reaction_issues', ['PRIVATE_ERROR'])
+        data = build_diagnostics(tmp_path, {}, {})
+        assert data['reactions'] == {'counts_saved': 4, 'authors': {'complete': 1, 'unavailable': 1, 'pending': 2}}
+        assert 'PRIVATE_' not in json.dumps(data)
+    finally:
+        store.close()
+
+
 def test_missing_local_file_and_disabled_option_are_distinct(tmp_path):
     store = Store(tmp_path)
     with store.db:
