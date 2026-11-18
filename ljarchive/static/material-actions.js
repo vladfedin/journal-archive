@@ -53,7 +53,12 @@ document.addEventListener('DOMContentLoaded', () => {
         const item=asset.kind==='image'?el('img'):player(root+asset.path);
         if(asset.kind==='image'){item.src=root+asset.path;item.alt=slot.querySelector('a')?.textContent||'Изображение';}
         const preview=slot.closest('.gallery-card')?.querySelector('.gallery-preview');
-        if(preview)preview.replaceChildren(item);else slot.insertBefore(item,controls);
+        const photoLink = asset.kind === 'image' && preview?.querySelector('a.gallery-empty');
+        if (photoLink) {
+          photoLink.classList.remove('gallery-empty');
+          photoLink.replaceChildren(item);
+        } else if (preview) preview.replaceChildren(item);
+        else slot.insertBefore(item,controls);
       }else{throw Error('Некорректный путь сохранённого материала');}
       slot.closest('.gallery-card')?.querySelector('.material-source')?.remove();slot.querySelector('.material-source')?.remove();
       inserted=true;button.hidden=true;browser.hidden=true;cancel.hidden=true;auth?.remove();slot.querySelector('.material-last-result')?.remove();

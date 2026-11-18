@@ -156,7 +156,7 @@ class Jobs:
             if not path.is_file() or not (folder / 'archive.sqlite3').is_file():
                 return None
             saved_report = json.loads(path.read_text(encoding='utf-8'))
-            if saved_report.get('format_version') == __version__ and saved_report.get('calendar_version') == 2 and saved_report.get('gallery_version') == 1:
+            if saved_report.get('format_version') == __version__ and saved_report.get('calendar_version') == 2 and saved_report.get('gallery_version') == 2:
                 return None
             self.preparations[slug] = {'phase': 'preparing', 'message': 'Чтение архива', 'completed': 0, 'total': 0}
             self.formatting.add(slug)
@@ -197,7 +197,7 @@ class Jobs:
             if not path.is_file() or not (folder / "archive.sqlite3").is_file():
                 return
             report = json.loads(path.read_text(encoding="utf-8"))
-            if report.get("format_version") == __version__ and report.get("calendar_version") == 2 and report.get("gallery_version") == 1:
+            if report.get("format_version") == __version__ and report.get("calendar_version") == 2 and report.get("gallery_version") == 2:
                 return
             from .storage import Store
             from .render import build_archive
@@ -837,7 +837,7 @@ def make_server(output: Path, port=8787):
                     return
                 if len(relative.parts) == 3 and relative.parts[1] == 'assets' and relative.parts[2] in {'statistics.js', 'statistics-live.js', 'discussions.js'}:
                     return self.file(ROOT / 'static' / relative.parts[2])
-                if len(relative.parts) == 3 and relative.parts[1] == "assets" and relative.parts[2] in {"archive.css", "archive.js", "theme.js", "common.js", "timeline.js", "calendar.js", "calendar.css", "material-actions.js", "profile.js", "favicon.svg", "favicon.ico"}:
+                if len(relative.parts) == 3 and relative.parts[1] == "assets" and relative.parts[2] in {"archive.css", "archive.js", "theme.js", "common.js", "timeline.js", "calendar.js", "calendar.css", "material-actions.js", "gallery.js", "profile.js", "favicon.svg", "favicon.ico"}:
                     if active or not target.exists():
                         return self.file(ROOT / "static" / relative.parts[2])
                 live_data = len(relative.parts) == 3 and relative.parts[1] == 'assets' and target.name in ('search-data.js', 'calendar-data.js')

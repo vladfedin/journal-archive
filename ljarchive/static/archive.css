@@ -230,3 +230,21 @@ a.year-mark{display:block;width:fit-content;text-decoration:none}a.year-mark:hov
 .gallery-main .gallery-preview img,.gallery-main .gallery-preview video{width:100%;height:100%;max-height:100%;object-fit:contain}
 .gallery-caption>.muted{margin-top:4px}
 @media(max-width:600px){.gallery-main .material-gallery{gap:14px}.gallery-filters .btn{padding-inline:9px}}
+
+.photo-close{display:none}
+.material-gallery.photo-grid{grid-template-columns:repeat(auto-fill,minmax(124px,1fr));gap:3px}
+.photo-grid .gallery-card{position:relative;border:0;border-radius:0;aspect-ratio:1;overflow:visible;min-height:0}
+.photo-grid .photo-panel{position:absolute;inset:0;background:var(--subtle);overflow:hidden}
+.photo-grid .gallery-preview{height:100%;aspect-ratio:auto}
+.photo-grid .gallery-preview img{object-fit:cover}
+.photo-grid .gallery-preview a{cursor:zoom-in}
+.photo-grid .gallery-caption{display:none}
+.photo-grid .gallery-card:not(.photo-open) .photo-panel:has(.material-source) .gallery-preview{height:44%}
+.photo-grid .gallery-card:not(.photo-open) .photo-panel:has(.material-source) .gallery-caption{display:block;padding:4px 8px;overflow:auto;height:56%}
+.photo-grid .gallery-card:not(.photo-open) .gallery-caption>:not(.material-source){display:none}
+.photo-grid .photo-open .photo-panel{position:fixed;inset:auto;z-index:50;width:min(480px,calc(100vw - 16px));max-height:calc(100dvh - 16px);overflow:auto;background:var(--bg);border:1px solid var(--line);border-radius:10px;box-shadow:0 12px 44px #0005}
+.photo-grid .photo-open .gallery-preview{height:min(48vh,360px);background:var(--subtle)}
+.photo-grid .photo-open .gallery-preview img{object-fit:contain}
+.photo-grid .photo-open .gallery-caption{display:block;height:auto;padding:12px 16px}
+.photo-grid .photo-open .photo-close{display:grid;place-items:center;position:absolute;top:8px;right:8px;border:1px solid var(--line);border-radius:50%;width:34px;height:34px;background:var(--bg);color:var(--ink);font-size:22px;line-height:1}
+@media(max-width:600px){.material-gallery.photo-grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:2px}}

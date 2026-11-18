@@ -360,7 +360,8 @@ def render_feed(entry, user, links, media, comment_ids):
 def build_archive(store: Store, report: dict, *, images=False, userpics=False, client_cancel=None, progress=None, budget=None, media=None, client=None, complete_after_media=False, entry_ids=None, changed_media=()):
     folder, user = store.folder, report["username"]
     entry_ids = None if entry_ids is None else set(entry_ids)
-    update_assets = entry_ids is None or report.get('format_version') != __version__
+    update_assets = (entry_ids is None or report.get('format_version') != __version__
+                     or report.get('gallery_version') != 2)
     changed_assets = []
     cancel = client_cancel or threading.Event()
     media = media or Media(folder, images, cancel, budget=budget, client=client)
@@ -387,7 +388,7 @@ def build_archive(store: Store, report: dict, *, images=False, userpics=False, c
     report['source'] = stored_source(store)
     if entry_ids is None:
         report["calendar_version"] = 2
-        report["gallery_version"] = 1
+        report["gallery_version"] = 2
     report.setdefault("issues", [])
     report["reactions"] = reaction_report(store)
     if report.get("status") == "complete" and not (report["reactions"]["complete"] and report["reactions"]["authors_complete"]):
@@ -436,7 +437,7 @@ def build_archive(store: Store, report: dict, *, images=False, userpics=False, c
     comment_ids = {int(c["id"]) for c in comments}
     (folder / "assets").mkdir(exist_ok=True)
     if update_assets:
-        for asset in ("archive.css", "archive.js", "theme.js", "common.js", "favicon.svg", "favicon.ico", "timeline.js", "statistics.js", "statistics-live.js", "calendar.js", "calendar.css", "material-actions.js", "profile.js"):
+        for asset in ("archive.css", "archive.js", "theme.js", "common.js", "favicon.svg", "favicon.ico", "timeline.js", "statistics.js", "statistics-live.js", "calendar.js", "calendar.css", "material-actions.js", "gallery.js", "profile.js"):
             shutil.copyfile(ROOT / "static" / asset, folder / "assets" / asset)
             changed_assets.append('assets/' + asset)
     search, summaries = [], []
