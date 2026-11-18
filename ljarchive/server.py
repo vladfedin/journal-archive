@@ -221,6 +221,10 @@ class Jobs:
                 state.update(server_time=time.time(), worker_alive=bool(self.thread and self.thread.is_alive()))
             if self.current:
                 state["parameters"] = {key: self.current[key] for key in self.PARAMS if key in self.current}
+                active = next((item for item in reversed(list(self.materials.states.values()))
+                               if item['_identity'][0] == self.current['archive'] and item['_identity'][2] == 'browser_images'), None)
+                if active:
+                    state['material_task'] = self.materials.status(active['id'])
             return state
 
     def tick_activity(self):
@@ -653,6 +657,26 @@ def make_server(output: Path, port=8787):
             if path.startswith('/api/material/'):
                 try: return self.json(jobs.materials.status(path.removeprefix('/api/material/')))
                 except ExportError as exc: return self.json({'error': str(exc)}, 404)
+            if path.startswith('/api/image-failures/'):
+                from .storage import Store
+                from .on_demand import image_failures
+                import sqlite3
+                try:
+                    slug = path.removeprefix('/api/image-failures/')
+                    jobs.task_path(slug)
+                    folder = (jobs.output / slug).resolve()
+                    if not folder.is_relative_to(jobs.output.resolve()):
+                        raise ExportError('Нет доступа к архиву.')
+                    store = Store.reader(folder)
+                    try: result = image_failures(store)
+                    finally: store.close()
+                    with jobs.lock:
+                        active = next((item for item in reversed(list(jobs.materials.states.values()))
+                                       if item['_identity'][0] == slug and item['_identity'][2] == 'browser_images'), None)
+                        task = jobs.materials.status(active['id']) if active else None
+                    return self.json({'items': result, 'task': task})
+                except (ExportError, OSError, sqlite3.Error) as exc:
+                    return self.json({'error': str(exc) if isinstance(exc, ExportError) else 'Архив не найден.'}, 400)
             if path.startswith('/api/preparation/'):
                 try:
                     return self.json(jobs.preparation(path.removeprefix('/api/preparation/')))
@@ -863,6 +887,8 @@ def make_server(output: Path, port=8787):
                     return self.json(jobs.materials.start({**data, 'kind': 'profile', 'entry_id': 0, 'value': 'profile'}), 202)
                 if self.path == '/api/material':
                     return self.json(jobs.materials.start(data), 202)
+                if self.path == '/api/browser-images':
+                    return self.json(jobs.materials.start({**data, 'kind': 'browser_images', 'entry_id': 0, 'value': 'missing'}), 202)
                 if self.path == '/api/material/cancel':
                     return self.json(jobs.materials.stop(data.get('id')))
                 if self.path == "/api/storage/move":

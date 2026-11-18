@@ -12,7 +12,10 @@ from .storage import Store
 REASONS = {'http', 'timeout', 'connection', 'transfer', 'dns', 'invalid_url', 'unsupported_type',
            'too_large', 'empty', 'storage', 'redirects', 'host_paused', 'request_limit', 'cancelled',
            'paused', 'unknown', 'download', 'embed_unresolved', 'not_requested', 'local_missing',
-           'api_limit', 'incomplete', 'restored', 'tls', 'web_login'}
+           'api_limit', 'incomplete', 'restored', 'tls', 'web_login',
+           'browser_missing', 'browser_start', 'browser_closed', 'browser_timeout', 'browser_network',
+           'browser_login', 'browser_type', 'browser_redirect', 'browser_large', 'browser_empty',
+           'browser_http', 'browser_address', 'browser_dns'}
 PHASES = {'idle', 'preparing', 'verify', 'login', 'posts', 'comments', 'reactions', 'videos',
           'materials', 'personal', 'userpics', 'render', 'waiting', 'retrying', 'loading',
           'complete', 'partial', 'cancelled', 'error', 'demo'}
@@ -109,8 +112,10 @@ def build_diagnostics(folder, state, params):
             'status': error.get('status') if error.get('status') in ('pending', 'failed', 'unknown') else 'unknown',
             'attempts': number(error.get('attempts')), 'requests': number(error.get('requests')),
             'closed': bool(error.get('closed')), 'checked_at': date(error.get('checked_at')),
-            'authentication': error.get('authentication') if error.get('authentication') in ('sent', 'missing', 'not_requested', 'not_applicable') else 'unknown',
-            'session_type': error.get('session_type') if error.get('session_type') in ('web', 'api', 'none') else 'unknown',
+            'authentication': error.get('authentication') if error.get('authentication') in ('sent', 'missing', 'not_requested', 'not_applicable', 'browser_managed') else 'unknown',
+            'session_type': error.get('session_type') if error.get('session_type') in ('web', 'api', 'none', 'browser') else 'unknown',
+            'responses': [{'transport': t.get('transport') if t.get('transport') in ('http', 'browser') else 'unknown',
+                           'http_status': number(t.get('http_status')), 'at': number(t.get('at'))} for t in error.get('trace', [])[-8:]],
             'entry_ids': sorted(references.get(url, []))})
     for index, record in enumerate(settings['videos'].values(), 1):
         saved = record.get('path')

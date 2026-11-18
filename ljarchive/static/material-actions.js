@@ -25,9 +25,19 @@ document.addEventListener('DOMContentLoaded', () => {
     if(!eid)return;
     const controls=el('span','material-controls'),button=el('button','btn material-download',kind==='embed'?'Загрузить вставку':'Загрузить');
     button.type='button';const status=el('span','material-status');status.setAttribute('role','status');
+    const browser=el('button','btn material-download','Через браузер');browser.type='button';
+    let browserEligible=false;try{const u=new URL(value);browserEligible=kind==='image'&&['ic.pics.livejournal.com','pics.livejournal.com','l-userpic.livejournal.com','userpic.livejournal.com'].includes(u.hostname);}catch{}
+    browser.hidden=!browserEligible;
     const cancel=el('button','btn text','Отмена');cancel.type='button';cancel.hidden=true;
-    controls.append(button,cancel,status);slot.append(controls);
-    let taskId=null,inserted=false,auth=null;
+    const evidence=el('details','material-evidence');evidence.hidden=true;
+    controls.append(button,browser,cancel,status,evidence);slot.append(controls);
+    let taskId=null,inserted=false,auth=null,browserConfirmed=false,checkBrowser=false;
+    function details(error){
+      if(!error)return;evidence.hidden=false;evidence.replaceChildren(el('summary','','Запросы'));
+      evidence.append(el('p','',error.updated_at?new Date(error.updated_at).toLocaleString('ru-RU'):''));
+      for(const item of error.trace||[])evidence.append(el('p','',`${item.transport==='browser'?'Браузер':'HTTP'} · ${item.http_status||item.network_error||'ответ не получен'} · ${item.url}`));
+      if(!error.trace?.length)evidence.append(el('p','',error.requests===0?'Запрос файла не отправлен':`Запросов: ${error.requests??'нет данных'} · HTTP ${error.http_status??'нет данных'}`));
+    }
     function showAsset(asset){
       if(inserted||!asset)return;
       if(asset.kind==='external'){
@@ -39,7 +49,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if(asset.kind==='image'){item.src=root+asset.path;item.alt=slot.querySelector('a')?.textContent||'Изображение';}
         slot.insertBefore(item,controls);
       }else{throw Error('Некорректный путь сохранённого материала');}
-      inserted=true;button.hidden=true;cancel.hidden=true;auth?.remove();
+      inserted=true;button.hidden=true;browser.hidden=true;cancel.hidden=true;auth?.remove();slot.querySelector('.material-last-result')?.remove();
     }
     function login(){
       if(auth)return;auth=el('form','material-login');
@@ -49,30 +59,39 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     function show(state){
       showAsset(state.asset);
+      details(state.error);
       let text=state.message||'Загрузка…';
       if(state.phase==='waiting'&&state.retry_at){const left=Math.max(0,Math.ceil(state.retry_at-Date.now()/1000));text=`Повтор через ${left} с`;}
       else if(state.total>0)text+=` · ${Math.min(100,Math.floor(100*(state.completed||0)/state.total))}%`;
       if(state.requests_used)text+=` · ${state.requests_used}${state.request_limit?' / '+state.request_limit:''} запросов`;
       status.textContent=text;
-      const done=['complete','error','needs_auth','cancelled'].includes(state.phase);
-      button.disabled=!done;cancel.hidden=done||inserted;
+      const done=['complete','error','needs_auth','needs_browser','cancelled'].includes(state.phase);
+      button.disabled=!done;browser.disabled=!done;cancel.hidden=done||inserted;
       if(state.phase==='complete'){controls.remove();}
       else if(state.phase==='needs_auth'){button.hidden=true;login();}
+      else if(state.phase==='needs_browser'){browserConfirmed=true;checkBrowser=false;browser.textContent='Продолжить';browser.hidden=false;}
       else if(done&&!inserted){button.textContent='Повторить';button.hidden=false;}
+      if(state.phase==='error'&&state.error?.session_type==='browser'){
+        checkBrowser=[401,403].includes(state.error.http_status)||['browser_login','browser_redirect','browser_closed'].includes(state.error.reason);
+        browser.textContent=checkBrowser?'Проверить вход':'Через браузер';
+      }
       return done;
     }
     async function poll(){
       try{const done=show(await api('/api/material/'+taskId));if(!done)setTimeout(poll,1000);}
       catch(error){status.textContent=error.message;button.disabled=false;button.textContent='Повторить';cancel.hidden=true;}
     }
-    async function start(password){
-      button.disabled=true;status.textContent='В очереди…';
+    async function start(password,transport){
+      button.disabled=true;browser.disabled=true;status.textContent='В очереди…';
       const payload={archive:match[1],entry_id:eid,kind,value};if(password)payload.password=password;
+      if(transport){payload.transport=transport;payload.confirmed=browserConfirmed;payload.open_browser=checkBrowser;auth?.remove();auth=null;}
       try{const state=await api('/api/material',payload);taskId=state.id;if(!show(state))setTimeout(poll,600);}
-      catch(error){status.textContent=error.message;button.disabled=false;}
+      catch(error){status.textContent=error.message;button.disabled=false;browser.disabled=false;}
       finally{payload.password='';}
     }
     button.onclick=()=>start();
+    browser.onclick=()=>start(null,'browser');
+    try{details(JSON.parse(slot.dataset.materialError||'null'));}catch{}
     cancel.onclick=async()=>{if(taskId){try{show(await api('/api/material/cancel',{id:taskId}));}catch(error){status.textContent=error.message;}}};
   }
   function scan(){

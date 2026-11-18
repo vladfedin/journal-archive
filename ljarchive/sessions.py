@@ -6,14 +6,17 @@ import time
 
 class Sessions:
     def __init__(self):
+        from .browser_bridge import BrowserBridge
         self._items = {}
         self._lock = threading.Lock()
+        self.browser = BrowserBridge()
 
     @staticmethod
     def key(client):
         return client.account, client.user, client.source['type']
 
     def remember(self, client):
+        client.browser = self.browser
         if not client._cookie or client.source['access']['status'] != 'verified':
             return
         with self._lock:
@@ -27,6 +30,7 @@ class Sessions:
             }
 
     def restore(self, client):
+        client.browser = self.browser
         with self._lock:
             item = self._items.get(self.key(client))
             if not item or item['expires'] <= time.monotonic():
@@ -45,3 +49,4 @@ class Sessions:
     def clear(self):
         with self._lock:
             self._items.clear()
+        self.browser.close()

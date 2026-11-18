@@ -236,9 +236,15 @@ class Content(HTMLParser):
 
     def material_slot(self, kind, value, original, label):
         esc = lambda s: html.escape(str(s), quote=True)
+        error = self.media.errors.get(value) if kind == 'image' else None
+        detail = ''
+        if error:
+            from .media import error_message
+            detail = '<span class="material-last-result">' + esc(error_message(error)) + '</span>'
         return ('<span class="material-slot" data-material-kind="' + kind + '" data-material-value="' + esc(value) +
-                '"><a class="media-link" href="' + esc(original) + '" target="_blank" rel="noreferrer noopener">' +
-                html.escape(label) + '</a></span>')
+                '"' + (' data-material-error="' + esc(dumps(error)) + '"' if error else '') +
+                '><a class="media-link" href="' + esc(original) + '" target="_blank" rel="noreferrer noopener">' +
+                html.escape(label) + '</a>' + detail + '</span>')
 
     def handle_startendtag(self, tag, attrs):
         self.handle_starttag(tag, attrs)
@@ -333,7 +339,7 @@ def render_feed(entry, user, links, media, comment_ids):
     return feed.replace('src="../media/', 'src="media/').replace('data-video-path="../media/', 'data-video-path="media/')
 
 
-def build_archive(store: Store, report: dict, *, images=False, userpics=False, client_cancel=None, progress=None, budget=None, media=None, client=None):
+def build_archive(store: Store, report: dict, *, images=False, userpics=False, client_cancel=None, progress=None, budget=None, media=None, client=None, complete_after_media=False):
     folder, user = store.folder, report["username"]
     cancel = client_cancel or threading.Event()
     media = media or Media(folder, images, cancel, budget=budget, client=client)
@@ -467,6 +473,9 @@ def build_archive(store: Store, report: dict, *, images=False, userpics=False, c
     from .video import video_report
     report['videos'] = video_report(store, selected)
     report["media_complete"] = report["images_unavailable"] == report["images_closed"] and not (report.get('videos_requested') and report['videos']['missing'])
+    if complete_after_media and report['media_complete']:
+        report['status'] = 'complete'
+        report['issues'] = [issue for issue in report['issues'] if issue != 'Не все изображения получены.']
     if report.get('videos_requested') and report['videos']['missing']:
         if report['status'] == 'complete': report['status'] = 'partial'
         issue = 'Не все видео получены. Можно продолжить загрузку.'

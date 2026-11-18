@@ -70,6 +70,10 @@ REASONS = {
 def plain_reason(error):
     """Short reason for people: what happened to the file, without protocol codes."""
     reason, code = error.get("reason"), error.get("http_status")
+    if reason == 'web_login':
+        return f'HTTP {code} при загрузке через HTTP' if code else 'запрос не отправлен после ошибки входа'
+    if reason and reason.startswith('browser_'):
+        return error_message(error)
     if reason == "http":
         if code == 404:
             return "файл не найден"
@@ -88,6 +92,12 @@ def plain_reason(error):
 
 
 def error_message(error):
+    if (error.get('reason') or '').startswith('browser_'):
+        from .browser_bridge import BrowserFailure
+        return str(BrowserFailure(error['reason'], http_status=error.get('http_status')))
+    if error.get('reason') == 'web_login':
+        code = error.get('http_status')
+        return f'HTTP {code} · вход через HTTP не завершён' if code else 'Запрос файла не отправлен: вход через HTTP не завершён'
     if error.get("reason") == "http":
         code = error.get("http_status")
         if code in (401, 403) and (error.get('authentication') == 'missing' or error.get('session_type') in ('api', 'none')):
@@ -131,6 +141,9 @@ class Media:
         self.verified_files = set()
         self.used_urls = {"images": set(), "userpics": set()}
         self.videos, self.video_embeds, self.external_embeds = {}, {}, {}
+        self.traces = {}
+        self.downloads = {}
+        self.browser_only = False
 
     def headers(self, url, referer=None):
         headers = {}
@@ -146,6 +159,7 @@ class Media:
         return headers
 
     def load_state(self, store):
+        self.downloads = {**store.get('media_downloads', {}), **self.downloads}
         self.videos, self.video_embeds = store.get('videos', {}), store.get('video_embeds', {})
         self.external_embeds = store.get('external_embeds', {})
         self.mapping = {**store.get("media", {}), **self.mapping}
@@ -157,6 +171,7 @@ class Media:
                 reopen(error)
 
     def save_state(self, store):
+        store.set('media_downloads', {**store.get('media_downloads', {}), **self.downloads})
         mapping = {**store.get("media", {}), **self.mapping}
         errors = {**store.get("media_errors", {}), **self.errors}
         store.set("media", mapping)
@@ -170,6 +185,8 @@ class Media:
                   'session_type': self.session_types.get(url, 'none'),
                   "category": self.categories.get(url, previous.get("category", "images")),
                   "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+        if url in self.traces:
+            record['trace'] = self.traces[url]
         # A stop, missing login or local failure does not count as remote absence.
         if reason in ('storage', 'tls', 'web_login') or (http_status in (401, 403) and
                 (record['authentication'] == 'missing' or (authenticated_image_host(url) and record['session_type'] != 'web'))):
@@ -208,6 +225,43 @@ class Media:
         self.budget.save_cooldown(self.budget.not_before)
         self.budget.announce_wait()
 
+    def browser_get(self, url, referer, category):
+        from .browser_bridge import BrowserFailure, safe_url
+        from .client import Cancelled
+        browser = self.client.browser
+        before = self.budget.used
+        self.authentication[url], self.session_types[url] = 'browser_managed', 'browser'
+        try:
+            body, ext, trace = browser.image(self.client.account, image_url(url), referer,
+                                             self.budget, self.cancel, category)
+            path = 'media/' + hashlib.sha256(url.encode()).hexdigest() + ext
+            atomic_write(self.folder / path, body)
+            self.mapping[url] = path
+            self.errors.pop(url, None)
+            self.traces[url] = trace
+            self.downloads[url] = {'path': path, 'bytes': len(body), 'transport': 'browser', 'trace': trace,
+                                   'saved_at': datetime.now(timezone.utc).isoformat(timespec='seconds')}
+            self.budget.event('success', category, url, transport='browser', bytes=len(body))
+            return path
+        except BrowserFailure as exc:
+            self.traces[url] = exc.trace
+            # A failed browser session is not evidence that the source is gone.
+            pending = exc.reason in ('browser_closed', 'browser_start', 'browser_login', 'browser_missing') or exc.http_status in (401, 403)
+            self.record_error(url, exc.reason, status='pending' if pending else 'failed', http_status=exc.http_status,
+                              requests_made=self.budget.used - before)
+            self.budget.event('failure', category, url, reason=exc.reason, http_status=exc.http_status,
+                              transport='browser', request_url=safe_url(url))
+        except (Cancelled, RequestLimitReached) as exc:
+            reason = 'cancelled' if isinstance(exc, Cancelled) else 'request_limit'
+            self.traces[url] = getattr(exc, 'trace', [])
+            self.record_error(url, reason, status='pending', http_status=getattr(exc, 'http_status', None),
+                              requests_made=self.budget.used - before)
+            self.stopped, self.stop_reason = True, reason
+        except OSError:
+            self.record_error(url, 'storage', status='pending', requests_made=self.budget.used - before)
+            self.stopped, self.stop_reason = True, 'storage'
+        return None
+
     def get(self, url: str, *, required=False, category="images", referer=None) -> str | None:
         self.used_urls[category].add(url)
         self.categories.setdefault(url, category)
@@ -242,6 +296,10 @@ class Media:
         current = url
         web_retry = False
         trusted_source = authenticated_image_host(image_url(url))
+        browser = getattr(self.client, 'browser', None)
+        if trusted_source and browser and (self.browser_only or browser.ready(self.client.account)):
+            return self.browser_get(url, referer, category)
+        self.traces[url] = []
         visited = set()
         try:
             current = image_url(url)
@@ -282,8 +340,12 @@ class Media:
                     self.record_error(url, "cancelled", status="pending", requests_made=requests_made, checked_at=checked_at)
                     return None
                 self.budget.consume(category)
+                from .browser_bridge import safe_url
+                self.traces[url].append({'url': safe_url(current), 'transport': 'http',
+                                         'http_status': None, 'at': int(time.time())})
                 self.budget.progress(phase='materials', message='Получаем изображение…')
-                self.budget.event("request", category, current, attempt=attempt + 1, max_attempts=ATTEMPTS)
+                self.budget.event("request", category, current, attempt=attempt + 1, max_attempts=ATTEMPTS,
+                                  request_url=safe_url(current))
                 requests_made += 1
                 if attempt:
                     self.budget.progress(phase="materials", message=f"Загрузка изображения · попытка {attempt + 1} из {ATTEMPTS}")
@@ -302,6 +364,7 @@ class Media:
                     raise
                 with response:
                     http_status = response.status_code
+                    self.traces[url][-1]['http_status'] = http_status
                     self.budget.event('response', category, current, http_status=http_status)
                     if self.client and trusted_source and (authenticated_image_host(current) or web_auth_host(current)):
                         # Keep new photo-domain cookies through the redirect chain;

@@ -25,6 +25,7 @@ def snapshot(store):
         "users": [dict(row) for row in store.db.execute("SELECT id,name AS username FROM users ORDER BY id")],
         "media": store.get("media", {}),
         "media_errors": store.get("media_errors", {}),
+        "media_downloads": store.get("media_downloads", {}),
         "videos": store.get("videos", {}),
         "video_embeds": store.get("video_embeds", {}),
         "external_embeds": store.get("external_embeds", {}),

@@ -175,7 +175,7 @@ def main():
                 page.locator('#diagnostics-close').click()
                 expect(page.locator('#job-recovery .is-open h3')).to_have_text('Докачиваем')
                 expect(page.locator('#job-recovery [data-recovery-kind=images] .gap-count')).to_have_text('12')
-                expect(page.locator('#job-recovery .is-closed h3')).to_have_text('Недоступно в ЖЖ')
+                expect(page.locator('#job-recovery .is-closed h3')).to_have_text('Автоповторы завершены')
                 expect(page.locator('#job-action')).to_have_text('Остановить')
                 recovery['rows'][0].update(resolved=10, remaining=2)
                 recovery['checked_at'] = '2026-11-17T12:01:00Z'

@@ -75,7 +75,7 @@ jobs:
         run: |
           import subprocess
           import sys
-          for script in ('tests/browser_smoke.py', 'tests/browser_calendar.py'):
+          for script in ('tests/browser_smoke.py', 'tests/browser_calendar.py', 'tests/browser_image_recovery.py'):
               result = subprocess.run([sys.executable, script],
                                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                       encoding='utf-8', errors='replace')

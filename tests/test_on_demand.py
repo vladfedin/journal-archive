@@ -117,6 +117,29 @@ def test_queue_waits_for_export_and_deduplicates_clicks(local_server, monkeypatc
     assert source['media'][URL] == result['asset']['path']
 
 
+@pytest.mark.parametrize('content_complete', [True, False])
+def test_last_image_finishes_only_a_media_only_partial_archive(local_server, monkeypatch, content_complete):
+    server, _ = local_server
+    folder = server.jobs.output / 'fixture'; fixture(folder)
+    store = Store(folder)
+    with store.db:
+        entry = store.entries()[0]; entry.pop('anum', None); entry['event'] = f'<img src="{URL}">'
+        store.save_entry(entry)
+        store.set('posts_done', True); store.set('bodies_done', content_complete)
+        store.set('entry_materials', {'1': {'urls': [URL]}})
+    store.close()
+    report = json.loads((folder / 'export-report.json').read_text())
+    report.update(status='partial', images_requested=True, issues=['Не все изображения получены.'])
+    (folder / 'export-report.json').write_text(json.dumps(report))
+    image_network(monkeypatch)
+    task = server.jobs.materials.start({'archive': 'fixture', 'entry_id': 1, 'kind': 'image', 'value': URL})
+    assert wait(server.jobs.materials, task['id'])['phase'] == 'complete'
+    updated = json.loads((folder / 'export-report.json').read_text())
+    assert updated['media_complete']
+    assert updated['status'] == ('complete' if content_complete else 'partial')
+    if content_complete: assert 'Не все изображения получены.' not in updated['issues']
+
+
 def test_material_api_rejects_foreign_urls_cross_origin_and_bad_ids(local_server):
     server, base = local_server
     fixture(server.jobs.output/'fixture')

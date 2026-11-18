@@ -49,7 +49,7 @@ function gapsView(data,{attempt=false,running=false,plan=false}={}){
     const why=(r.reasons||[]).filter(x=>!x.final);if(why.length)notes.push(reasonsText(why,r.remaining));
     return gapItem(r,r.remaining,notes.join(' · '),attempt&&r.before?(r.before-Math.min(r.before,r.remaining))/r.before:null);})));
   if(shut.length){
-    const section=group('Недоступно в ЖЖ','is-closed',shut.map(r=>gapItem(r,r.unavailable,reasonsText((r.reasons||[]).filter(x=>x.final),r.unavailable))));
+    const section=group('Автоповторы завершены','is-closed',shut.map(r=>gapItem(r,r.unavailable,reasonsText((r.reasons||[]).filter(x=>x.final),r.unavailable))));
     const tries=data.max_attempts||3;
     section.append(el('p','gaps-note',`После ${tries} попыток автоматические повторы завершены. Полученное сохранено, изображения остались ссылками на оригинал. Кнопка «Загрузить» или обновление записи по ссылке запустит новую проверку.`));
     box.append(section);
@@ -128,15 +128,17 @@ function nowContent(s,clock){
   return [s.message];
 }
 function showStatus(s){lastState=s;if(!s.phase||s.phase==='idle'||s.job_id&&s.job_id===dismissedJob)return;$('job').hidden=false;$('job-title').textContent=s.username||'';
+  const material=s.material_task,materialRunning=material&&!['complete','error','needs_browser','cancelled'].includes(material.phase);
   const clock=s.server_time||Date.now()/1000,done=terminal.has(s.phase),stalled=!done&&s.worker_alive===false;
   const request=s.request||{},activity=s.last_activity||{},silent=!done&&network.has(s.phase)&&request.at&&request.at>(s.last_response_at||s.last_success_at||0)&&activity.kind==='request'&&clock-request.at>60;
   let stage=s.cancelling?'Останавливаем…':stalled?'Загрузка прервалась':s.request_limit_reached?'Достигнут лимит запросов':done?finished[s.phase]||labels[s.phase]:doing[s.phase]||'Загружаем';
   if(s.phase==='waiting'&&!s.cancelling&&!stalled)stage=s.retry_at>clock?'Пауза до '+new Date(s.retry_at*1000).toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'}):'Продолжаем после паузы';
+  if(materialRunning)stage=material.phase==='waiting'?'Пауза перед запросом':'Скачиваем изображения';
   // Only this sentence is announced; it changes with the stage, not every second.
   if($('job-stage').textContent!==stage)$('job-stage').textContent=stage;
   $('job-state').dataset.tone=stalled||s.phase==='error'?'error':s.phase==='waiting'||silent?'wait':['complete','demo'].includes(s.phase)&&!s.request_limit_reached?'done':done?'warn':'run';
   $('job-kind').hidden=s.operation!=='resume';$('job-kind').textContent='докачка пропусков';
-  const now=nowContent(s,clock);if(silent)now.unshift(`Ожидаем ответ${request.host?' от '+request.host:''} · ${minutes(clock-request.at)}. `);
+  const now=material?[material.message||'']:nowContent(s,clock);if(material?.total)now.push(` · ${material.completed||0} / ${material.total}`);if(silent&&!material)now.unshift(`Ожидаем ответ${request.host?' от '+request.host:''} · ${minutes(clock-request.at)}. `);
   else if(!done&&network.has(s.phase)&&activity.kind==='failure'&&activity.reason==='web_login')now.splice(0,now.length,'Не удалось подтвердить вход для изображений. Полученное сохраняется.');
   else if(!done&&network.has(s.phase)&&activity.kind==='redirect')now.unshift('ЖЖ перенаправляет запрос · '+(activity.http_status||302)+'. ');
   $('job-now').hidden=!now.length;$('job-message').replaceChildren(...now);$('job-now').classList.toggle('is-problem',['error','partial'].includes(s.phase)||stalled);
@@ -155,10 +157,13 @@ function showStatus(s){lastState=s;if(!s.phase||s.phase==='idle'||s.job_id&&s.jo
   $('job-diagnostics').hidden=!s.slug||s.slug==='_demo';
   $('job-recovery').hidden=!s.recovery;
   const recoveryKey=JSON.stringify([s.job_id,s.operation,done,s.recovery]);if($('job-recovery').dataset.key!==recoveryKey){$('job-recovery').dataset.key=recoveryKey;$('job-recovery-content').replaceChildren(gapsView(s.recovery,{attempt:s.operation==='resume',running:!done}));}
+  let imageAction=$('job-images');if(!imageAction){imageAction=el('button','btn','Изображения: файлы и докачка');imageAction.type='button';imageAction.id='job-images';$('job-recovery').append(imageAction);}
+  imageAction.hidden=!s.slug||!s.recovery?.rows?.some(r=>r.key==='images'&&(r.remaining||r.unavailable));imageAction.onclick=()=>window.ArchiveImages.open(s.slug);
   $('job-hint').hidden=done||!!s.cancelling;
   $('job-action').disabled=!!s.cancelling;$('job-action').textContent=!done?'Остановить':ready?'Скрыть':s.phase==='cancelled'||s.phase==='error'?'Продолжить':'Докачать пропуски';
   $('job-action').className='btn'+(ready?' text':done?' primary':'');
-  setBusy(!done);
+  if(materialRunning){$('job-action').disabled=true;$('job-state').dataset.tone='run';}
+  setBusy(!done||materialRunning);
 }
 async function library(){const data=await api('/api/archives');storageStatus(data.relocation);const key=JSON.stringify(data);if(key===libraryKey){setBusy(busy);return;}libraryKey=key;
   const open=new Set(Array.from(document.querySelectorAll('#archives details[open]'),menu=>menu.closest('tr').dataset.archive));
@@ -172,6 +177,7 @@ async function library(){const data=await api('/api/archives');storageStatus(dat
     const more=el('details','more'),summary=el('summary','','⋯');summary.setAttribute('aria-label','Действия с архивом '+archive.username);const menu=el('div','menu');
     const settings=el('button','','Параметры');settings.type='button';settings.onclick=()=>showParameters(archive);menu.append(settings);
     const diagnostics=el('button','','Диагностика');diagnostics.type='button';diagnostics.onclick=()=>showDiagnostics(archive.slug);menu.append(diagnostics);
+    const images=el('button','','Изображения');images.type='button';images.onclick=()=>{more.open=false;window.ArchiveImages.open(archive.slug);};menu.append(images);
     if(archive.resumable){const resume=el('button','',resumeLabel(archive));resume.type='button';resume.dataset.resume='';resume.onclick=()=>openDialog('resume',archive);menu.append(resume);}
     const update=el('button','','Обновить');update.type='button';update.dataset.update='';update.onclick=()=>openDialog('update',archive);menu.append(update);
     if(archive.url){menu.append(el('hr'));for(const [text,url] of [['Скачать JSON',archive.activitystreams_url],['Исходный JSON',archive.json_url],['Скачать ZIP',archive.zip_url],['Статистика',archive.url.replace('index.html','statistics.html')],['Календарь',archive.url.replace('index.html','calendar.html')],['Хронология',archive.url.replace('index.html','timeline.html')],['Профиль',archive.url.replace('index.html','account.html')],['Переписка',archive.url.replace('index.html','messages.html')],['Состояние архива',archive.report_url]]){const a=el('a','',text);a.href=url;menu.append(a);}}
