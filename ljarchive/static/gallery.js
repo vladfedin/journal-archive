@@ -28,7 +28,7 @@
     const rect = tile.getBoundingClientRect();
     tile.classList.add('photo-open');
     const panel = tile.querySelector('.photo-panel');
-    panel.style.width = Math.min(document.documentElement.clientWidth - 16, Math.max(480, rect.width * 1.25)) + 'px';
+    panel.style.width = Math.min(document.documentElement.clientWidth - 16, Math.max(960, rect.width * 5)) + 'px';
     const place = (center, size, viewport) => Math.max(8, Math.min(viewport - size - 8, center - size / 2));
     panel.style.left = place(rect.left + rect.width / 2, panel.offsetWidth, document.documentElement.clientWidth) + 'px';
     panel.style.top = place(rect.top + rect.height / 2, panel.offsetHeight, innerHeight) + 'px';

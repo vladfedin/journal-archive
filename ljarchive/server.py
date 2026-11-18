@@ -156,7 +156,7 @@ class Jobs:
             if not path.is_file() or not (folder / 'archive.sqlite3').is_file():
                 return None
             saved_report = json.loads(path.read_text(encoding='utf-8'))
-            if saved_report.get('format_version') == __version__ and saved_report.get('calendar_version') == 2 and saved_report.get('gallery_version') == 3:
+            if saved_report.get('format_version') == __version__ and saved_report.get('calendar_version') == 2 and saved_report.get('gallery_version') == 4:
                 return None
             self.preparations[slug] = {'phase': 'preparing', 'message': 'Чтение архива', 'completed': 0, 'total': 0}
             self.formatting.add(slug)
@@ -197,7 +197,7 @@ class Jobs:
             if not path.is_file() or not (folder / "archive.sqlite3").is_file():
                 return
             report = json.loads(path.read_text(encoding="utf-8"))
-            if report.get("format_version") == __version__ and report.get("calendar_version") == 2 and report.get("gallery_version") == 3:
+            if report.get("format_version") == __version__ and report.get("calendar_version") == 2 and report.get("gallery_version") == 4:
                 return
             from .storage import Store
             from .render import build_archive
