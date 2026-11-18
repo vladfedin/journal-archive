@@ -361,7 +361,7 @@ def build_archive(store: Store, report: dict, *, images=False, userpics=False, c
     folder, user = store.folder, report["username"]
     entry_ids = None if entry_ids is None else set(entry_ids)
     update_assets = (entry_ids is None or report.get('format_version') != __version__
-                     or report.get('gallery_version') != 2)
+                     or report.get('gallery_version') != 3)
     changed_assets = []
     cancel = client_cancel or threading.Event()
     media = media or Media(folder, images, cancel, budget=budget, client=client)
@@ -388,7 +388,7 @@ def build_archive(store: Store, report: dict, *, images=False, userpics=False, c
     report['source'] = stored_source(store)
     if entry_ids is None:
         report["calendar_version"] = 2
-        report["gallery_version"] = 2
+        report["gallery_version"] = 3
     report.setdefault("issues", [])
     report["reactions"] = reaction_report(store)
     if report.get("status") == "complete" and not (report["reactions"]["complete"] and report["reactions"]["authors_complete"]):

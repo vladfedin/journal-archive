@@ -45,7 +45,8 @@ def test_gallery_pagination_does_not_leave_obsolete_pages(tmp_path):
             store.set('username', 'fixture')
             store.save_entry({'itemid': 1, 'event': ''.join(f'<img src="https://example.org/{n}.png">' for n in range(49))})
         write_gallery(store, {'username': 'fixture'})
-        assert (tmp_path / 'materials-image-2.html').exists()
+        assert (tmp_path / 'materials-image.html').read_text().count('class="gallery-card"') == 49
+        (tmp_path / 'materials-image-2.html').write_text('obsolete')
         with store.db: store.save_entry({'itemid': 1, 'event': ''})
         write_gallery(store, {'username': 'fixture'})
         assert not (tmp_path / 'materials-image-2.html').exists()
@@ -139,8 +140,8 @@ def test_gallery_tag_pages_use_matching_comment_and_include_every_page(tmp_path)
             store.save_entry({'itemid': 2, 'eventtime': '2025-01-01', 'event': f'<img src="{shared}">'})
         write_gallery(store, {'username': 'fixture'})
         first = (tmp_path / (stem + '.html')).read_text()
-        second = (tmp_path / (stem + '-2.html')).read_text()
-        assert first.count('class="gallery-card"') == 48 and second.count('class="gallery-card"') == 1
+        assert not (tmp_path / (stem + '-2.html')).exists()
+        assert first.count('class="gallery-card"') == 49
         assert 'href="entries/1.html#comment-3" class="gallery-empty"' in first
         assert '5\xa0апреля 2021' in first
         assert avatar not in (tmp_path/'materials.html').read_text()

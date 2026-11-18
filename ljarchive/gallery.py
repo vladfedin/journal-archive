@@ -131,21 +131,11 @@ def write_gallery(store, report):
         atomic_write(store.folder / name, template.render(user=report['username'], report=report,
                      filters=filters, popular=popular, topic_count=len(topics), **context))
 
-    def paginate(stem, kind, items, topic=None):
-        pages = max(1, (len(items) + 47) // 48)
-        def filename(page):
-            return stem + (f'-{page}' if page > 1 else '') + '.html'
-        for page in range(1, pages + 1):
-            render_page(filename(page), rows=items[(page-1)*48:page*48], kind=kind,
-                        topic=topic, page=page, pages=pages,
-                        previous=filename(page-1) if page > 1 else None,
-                        following=filename(page+1) if page < pages else None)
-
     for kind, _, items in groups:
-        paginate('materials-' + kind, kind, items)
-    paginate('materials', 'image', images)
+        render_page(f'materials-{kind}.html', rows=items, kind=kind)
+    render_page('materials.html', rows=images, kind='image')
     for topic in topics:
-        paginate(topic['stem'], 'image', by_tag[topic['tag']], topic)
+        render_page(topic['stem'] + '.html', rows=by_tag[topic['tag']], kind='image', topic=topic)
     render_page('materials-tags.html', kind='image', directory=True, topics=topics)
     for old in store.folder.glob('materials*.html'):
         if re.fullmatch(r'materials(?:-(?:image|video|userpic|tags|tag-(?:none|[0-9a-f]{24})))?(?:-\d+)?\.html', old.name) and old.name not in produced:

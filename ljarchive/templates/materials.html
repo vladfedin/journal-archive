@@ -2,8 +2,8 @@
 {% set archive_section = 'materials' %}
 {% block title %}Материалы · {{ user }}{% endblock %}
 {% block head %}{% if kind in ('image', 'userpic') and not directory %}<script defer src="{{ assets }}gallery.js"></script>{% endif %}{% endblock %}
-{% block body %}<main class="main archive-main gallery-main"><h1>Материалы</h1>
-{% include 'archive-nav.html' %}
+{% block body %}<main class="main archive-main gallery-main"><header class="gallery-heading"><h1>Материалы</h1>
+{% include 'archive-nav.html' %}</header>
 <nav class="gallery-filters" aria-label="Тип материала">{% for filter in filters %}<a class="btn{% if filter.kind == kind %} selected{% endif %}" href="{{ filter.href }}"{% if filter.kind == kind %} aria-current="page"{% endif %}>{{ filter.label }} <span class="muted">{{ filter.count }}</span></a>{% endfor %}</nav>
 {% if directory %}
 <section><h2>Теги записей</h2><div class="gallery-topics">{% for tag in topics %}<a href="{{ tag.stem }}.html">{{ tag.label }} <small>{{ tag.count }}</small></a>{% endfor %}</div></section>
@@ -13,6 +13,12 @@
 {% if topic %}<a href="materials.html" class="active-topic" aria-label="Сбросить фильтр {{ topic.label }}">{{ topic.label }} ×</a><span class="muted">Найдено · {{ topic.count }}</span>
 {% else %}{% for tag in popular %}<a href="{{ tag.stem }}.html">{{ tag.label }} <small>{{ tag.count }}</small></a>{% endfor %}{% endif %}
 {% if topic_count > popular|length or topic %}<a class="all-topics" href="materials-tags.html">Все теги →</a>{% endif %}</nav>{% endif %}
+{% if kind != 'video' %}
+<section class="slide-view" hidden tabindex="-1" aria-label="Слайдшоу">
+  <div class="slide-frame"><img alt=""><button type="button" data-slide="prev" aria-label="Предыдущий кадр">‹</button><button type="button" data-slide="next" aria-label="Следующий кадр">›</button><button type="button" data-slide="close" aria-label="Закрыть слайдшоу">×</button></div>
+  <div class="slide-footer"><div><a class="slide-source"></a><small class="slide-meta"></small></div><span class="slide-count"></span><button type="button" data-slide="play">Автопоказ</button></div>
+</section>
+{% endif %}
 <div class="material-gallery"{% if kind in ('image', 'userpic') %} data-photos{% endif %}>{% for item in rows %}{% set ref = item.selected_ref or item.references|first %}
 <article class="gallery-card"{% if ref %} data-entry-id="{{ ref.entry_id }}"{% endif %}>
 {% if kind != 'video' %}<div class="photo-panel"><button class="photo-close" type="button" aria-label="Закрыть просмотр">×</button>{% endif %}
@@ -21,5 +27,4 @@
 {% if item.references|length > 1 %}<details><summary>Где встречается · {{ item.references|length }}</summary><ul>{% for source in item.references %}<li><a href="{{ source.href }}">{{ source.title }}{% if source.comment_id %} · комментарий{% endif %}</a><small>{{ source.date|ru_date(false) }}</small></li>{% endfor %}</ul></details>{% endif %}
 {% if item.path %}{% if item.kind == 'video' %}<small class="material-result">Сохранено{% if item.bytes %} · {{ '%.1f'|format(item.bytes / 1000000)|replace('.', ',') }} МБ{% endif %}</small>{% if item.error.trace %}<details class="material-evidence"><summary>Подробности</summary>{% for request in item.error.trace %}<p>{{ {'source':'Источник','access':'Доступ','download':'Скачивание','file':'Файл'}.get(request.stage, '') }} · {{ 'Браузер' if request.transport == 'browser' else 'HTTP' }} · {{ request.http_status or 'нет ответа' }} · {{ request.url }}</p>{% endfor %}</details>{% endif %}{% endif %}<a class="small" href="{{ item.path }}" target="_blank" rel="noopener">Файл ↗</a>{% elif ref and item.kind != 'userpic' %}<span class="material-slot" data-material-kind="{{ item.kind }}" data-material-value="{{ item.url }}"{% if item.error %} data-material-error="{{ item.error|tojson|forceescape }}"{% endif %}>{% if item.message %}<small class="material-last-result">{{ item.message }}</small>{% endif %}</span>{% endif %}
 </div>{% if kind != 'video' %}</div>{% endif %}</article>{% else %}<p class="muted">{{ 'В записях и комментариях пока нет изображений.' if kind == 'image' else 'Материалов пока нет.' }}</p>{% endfor %}</div>
-{% if pages > 1 %}<nav class="gallery-pages" aria-label="Страницы материалов">{% if previous %}<a class="btn" href="{{ previous }}">← Назад</a>{% endif %}<span>{{ page }} / {{ pages }}</span>{% if following %}<a class="btn" href="{{ following }}">Далее →</a>{% endif %}</nav>
-{% endif %}{% endif %}</main>{% endblock %}
+{% endif %}</main>{% endblock %}
