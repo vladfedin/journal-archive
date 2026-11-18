@@ -41,6 +41,14 @@ def main():
                 page.on('pageerror', lambda error: errors.append(str(error)))
                 page.goto(base)
                 expect(page.locator('#empty')).to_be_visible()
+                compose = 'https://www.livejournal.com/inbox/compose.bml?user=staerum'
+                page.context.route(compose, lambda route: route.fulfill(content_type='text/html', body=''))
+                with page.expect_popup() as contact_tab:
+                    page.get_by_role('link', name='Написать автору', exact=True).click()
+                expect(contact_tab.value).to_have_url(compose)
+                contact_tab.value.close()
+                expect(page).to_have_url(base + '/')
+                page.context.unroute(compose)
                 page.locator('.heading [data-new]').click()
                 expect(page.locator('#username')).to_be_focused()
                 expect(page.locator('[data-scope=full]')).to_have_attribute('aria-pressed', 'true')
@@ -395,6 +403,7 @@ def main():
                 expect(page.locator('#comment-4')).to_be_visible()
                 page.goto((root / 'example_journal/help.html').as_uri())
                 expect(page.locator('h1')).to_have_text('Помощь')
+                expect(page.get_by_role('link', name='Написать автору', exact=True)).to_have_attribute('href', compose)
                 page.goto(base)
                 page.locator('#archives summary').click()
                 with page.expect_download() as downloaded:
