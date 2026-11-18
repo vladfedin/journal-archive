@@ -130,7 +130,7 @@ class BrowserBridge:
         self.profile = tempfile.TemporaryDirectory(prefix='journal-archive-browser-', ignore_cleanup_errors=True)
         args = [str(executable), '--remote-debugging-address=127.0.0.1', '--remote-debugging-port=0',
                 '--user-data-dir=' + self.profile.name, '--no-first-run', '--no-default-browser-check',
-                '--disable-background-networking', '--disable-sync', 'about:blank']
+                '--disable-background-networking', '--disable-sync', '--no-startup-window']
         if self.headless:
             args.insert(1, '--headless=new')
         try:
@@ -176,8 +176,10 @@ class BrowserBridge:
             })['targetId']
             self.contexts[account] = {'context': context, 'target': target, 'confirmed': False}
             # The bootstrap window is not the login window and carries no session.
+            private_contexts = {item['context'] for item in self.contexts.values()}
             for tab in self._call('Target.getTargets').get('targetInfos', []):
-                if tab.get('type') == 'page' and not tab.get('browserContextId') and tab.get('url') == 'about:blank':
+                if (tab.get('type') == 'page' and tab.get('browserContextId') not in private_contexts
+                        and tab.get('url') == 'about:blank'):
                     self._call('Target.closeTarget', {'targetId': tab['targetId']})
 
     def confirm(self, account):

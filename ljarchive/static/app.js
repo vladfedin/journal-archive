@@ -133,7 +133,7 @@ function showStatus(s){lastState=s;if(!s.phase||s.phase==='idle'||s.job_id&&s.jo
   const request=s.request||{},activity=s.last_activity||{},silent=!done&&network.has(s.phase)&&request.at&&request.at>(s.last_response_at||s.last_success_at||0)&&activity.kind==='request'&&clock-request.at>60;
   let stage=s.cancelling?'Останавливаем…':stalled?'Загрузка прервалась':s.request_limit_reached?'Достигнут лимит запросов':done?finished[s.phase]||labels[s.phase]:doing[s.phase]||'Загружаем';
   if(s.phase==='waiting'&&!s.cancelling&&!stalled)stage=s.retry_at>clock?'Пауза до '+new Date(s.retry_at*1000).toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'}):'Продолжаем после паузы';
-  if(materialRunning)stage=material.phase==='waiting'?'Пауза перед запросом':'Скачиваем изображения';
+  if(materialRunning)stage=material.phase==='waiting'?'Пауза перед запросом':material.phase==='saving'?'Обновляем страницы архива':'Скачиваем изображения';
   // Only this sentence is announced; it changes with the stage, not every second.
   if($('job-stage').textContent!==stage)$('job-stage').textContent=stage;
   $('job-state').dataset.tone=stalled||s.phase==='error'?'error':s.phase==='waiting'||silent?'wait':['complete','demo'].includes(s.phase)&&!s.request_limit_reached?'done':done?'warn':'run';

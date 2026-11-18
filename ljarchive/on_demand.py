@@ -393,7 +393,10 @@ class MaterialQueue:
                             and all(map(image_issue, issues)) and current['discovery_complete'] and not current['remaining']
                             and not report.get('request_limit_reached') and not any(report.get(key) for key in
                             ('pending_days', 'pending_comment_entry_ids', 'orphan_entry_ids', 'unknown_encoding_entry_ids')))
-                build_archive(store, report, images=False, complete_after_media=complete)
+                update(phase='saving', message='Обновляем страницы архива…')
+                def rendering(**values):
+                    update(**{**values, 'phase': 'saving'})
+                build_archive(store, report, images=False, complete_after_media=complete, progress=rendering)
                 with self.jobs.lock:
                     if self.jobs.current and self.jobs.current.get('archive') == request['archive']:
                         values = {'recovery': current}
@@ -412,7 +415,8 @@ class MaterialQueue:
                 refresh()
                 message = (f"Сохранено {asset['saved']} из {asset['total']} · с ошибками {asset['failed']}" if asset['kind'] == 'images'
                            else 'Сохранено' if asset['kind'] != 'external' else 'Онлайн-плеер')
-                update(phase='complete', message=message, asset=asset)
+                counts = {'completed': asset['total'], 'total': asset['total']} if asset['kind'] == 'images' else {}
+                update(phase='complete', message=message, asset=asset, **counts)
                 with self.jobs.lock:
                     if request['kind'] == 'browser_images' and self.jobs.current and self.jobs.current.get('archive') == request['archive']:
                         self.jobs.progress(message=message)
@@ -426,10 +430,10 @@ class MaterialQueue:
                     except Exception: pass  # Captured sections remain committed to SQLite.
                 update(phase='cancelled', message='Загрузка остановлена')
             except ExportError as exc:
-                update(phase='error', message=str(exc))
                 if store:
                     try: refresh()
                     except Exception: pass  # Error metadata is already committed to SQLite.
+                update(phase='error', message=str(exc))
             except Exception:
                 update(phase='error', message='Не удалось сохранить материал. Можно повторить загрузку.')
             finally:

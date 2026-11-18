@@ -117,6 +117,20 @@ def test_queue_waits_for_export_and_deduplicates_clicks(local_server, monkeypatc
     assert source['media'][URL] == result['asset']['path']
 
 
+def test_queue_failure_remains_terminal_after_rebuilding_pages(local_server, monkeypatch):
+    server, _ = local_server
+    fixture(server.jobs.output / 'fixture')
+    def refuse(*args, **kwargs): raise ExportError('Fixture HTTP 403')
+    monkeypatch.setattr('ljarchive.on_demand.download_one', refuse)
+    request = {'archive': 'fixture', 'entry_id': 1, 'kind': 'image', 'value': URL}
+    task = server.jobs.materials.start(request)
+    result = wait(server.jobs.materials, task['id'])
+    assert result['phase'] == 'error' and result['message'] == 'Fixture HTTP 403'
+    again = server.jobs.materials.start(request)
+    assert again['id'] != task['id']
+    assert wait(server.jobs.materials, again['id'])['phase'] == 'error'
+
+
 @pytest.mark.parametrize('content_complete', [True, False])
 def test_last_image_finishes_only_a_media_only_partial_archive(local_server, monkeypatch, content_complete):
     server, _ = local_server

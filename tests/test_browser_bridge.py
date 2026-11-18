@@ -65,6 +65,8 @@ def protected_browser():
     bridge = BrowserBridge(executable=executable, headless=True, validate_url=validate, login_url=base + '/login')
     try:
         bridge.open_login('fixture')
+        pages = [tab for tab in bridge._call('Target.getTargets')['targetInfos'] if tab['type'] == 'page']
+        assert len(pages) == 1 and pages[0]['targetId'] == bridge.contexts['fixture']['target']
         yield bridge, base, calls, token
     finally:
         bridge.close(); server.shutdown(); server.server_close(); thread.join()
