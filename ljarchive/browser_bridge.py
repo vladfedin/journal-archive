@@ -151,10 +151,14 @@ class BrowserBridge:
             self.process = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                             stderr=subprocess.DEVNULL)
             port_file = Path(self.profile.name) / 'DevToolsActivePort'
-            deadline = time.monotonic() + 12
+            # A cold Windows browser can take longer than subsequent launches.
+            started = time.monotonic()
+            deadline = started + 30
+            endpoint_seen = False
             while time.monotonic() < deadline and self.process.poll() is None:
                 endpoint = debugging_endpoint(port_file)
                 if endpoint:
+                    endpoint_seen = True
                     try:
                         self.socket = connect(endpoint, proxy=None, max_size=32 * 1024 * 1024,
                                               open_timeout=max(.01, min(2, deadline - time.monotonic())))
@@ -165,8 +169,10 @@ class BrowserBridge:
         except Exception as exc:
             self.close()
             raise BrowserFailure('browser_start') from exc
+        elapsed, returncode = time.monotonic() - started, self.process.poll()
         self.close()
-        raise BrowserFailure('browser_start')
+        raise BrowserFailure('browser_start') from RuntimeError(
+            f'Browser startup: {elapsed:.1f}s; exit={returncode}; endpoint_seen={endpoint_seen}')
 
     def ready(self, account):
         return bool(self.process and self.process.poll() is None and self.contexts.get(account, {}).get('confirmed'))

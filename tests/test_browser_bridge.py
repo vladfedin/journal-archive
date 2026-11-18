@@ -15,6 +15,35 @@ from ljarchive.client import Cancelled, RequestBudget, RequestLimitReached
 PNG = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aWQAAAABJRU5ErkJggg==')
 
 
+@pytest.mark.parametrize('ready_at', [0, 15, 100])
+def test_browser_startup_allows_cold_start_but_remains_bounded(monkeypatch, ready_at):
+    from types import SimpleNamespace
+    import ljarchive.browser_bridge as module
+    elapsed = [0.0]
+    def sleep(seconds): elapsed[0] += seconds
+    monkeypatch.setattr(module, 'time', SimpleNamespace(monotonic=lambda: elapsed[0], sleep=sleep))
+    process = SimpleNamespace(poll=lambda: None, wait=lambda **kwargs: 0)
+    socket = SimpleNamespace(close=lambda: None)
+    monkeypatch.setattr(module.subprocess, 'Popen', lambda *args, **kwargs: process)
+    monkeypatch.setattr(module, 'debugging_endpoint', lambda path: 'fixture' if elapsed[0] >= ready_at else None)
+    monkeypatch.setattr(module, 'connect', lambda *args, **kwargs: socket)
+    bridge = BrowserBridge(executable='fixture')
+    monkeypatch.setattr(bridge, '_call', lambda *args, **kwargs: {})
+    try:
+        if ready_at < 30:
+            bridge._launch()
+            assert bridge.socket is socket and ready_at <= elapsed[0] < ready_at + .2
+        else:
+            with pytest.raises(BrowserFailure) as failure:
+                bridge._launch()
+            assert failure.value.reason == 'browser_start'
+            assert 30 <= elapsed[0] < 30.2
+            assert 'endpoint_seen=False' in str(failure.value.__cause__)
+            assert bridge.profile is bridge.process is None
+    finally:
+        bridge.close()
+
+
 @pytest.fixture
 def protected_browser():
     executable = browser_executable()

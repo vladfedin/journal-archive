@@ -62,7 +62,10 @@ jobs:
               for case in ET.parse(report).iter('testcase'):
                   for issue in case:
                       if issue.tag in ('failure', 'error'):
-                          print('::error::' + escape(case.get('name', '') + '\n' + (issue.text or issue.get('message', ''))))
+                          # Annotations are limited to 4096 characters. Keep the
+                          # actual exception instead of only the fixture source.
+                          detail = issue.text or issue.get('message', '')
+                          print('::error::' + escape(case.get('name', '')[:200] + '\n' + detail[-3800:]))
       - name: Install browser test tools
         if: runner.os == 'Linux'
         run: |
