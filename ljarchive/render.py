@@ -188,7 +188,7 @@ class Content(HTMLParser):
             self.preserve_depth += 1
         attrs = dict(attrs)
         if tag == 'video':
-            from .video import canonical_video, embed_key, external_embed
+            from .video import canonical_video, embed_key, external_embed, lj_video_id
             module = attrs.get('data-lj-module', '')
             if module.isdigit():
                 widget = self.media.external_embeds.get(embed_key(self.base, module))
@@ -198,6 +198,7 @@ class Content(HTMLParser):
                     self.out.append(self.material_slot('embed', module, self.base, 'Встроенный материал ↗'))
                 return
             url = canonical_video(attrs.get('src'), self.base)
+            original = self.base if url and lj_video_id(url) else url
             record = self.media.videos.get(url, {})
             path = record.get('path')
             local = self.media.folder / path if path else None
@@ -205,10 +206,10 @@ class Content(HTMLParser):
                     and local.resolve().is_relative_to(self.media.folder.resolve())):
                 self.out.append('<video controls preload="none" src="../' + html.escape(path, quote=True) + '"></video>')
             elif url:
-                self.out.append(self.material_slot('video', url, url, 'Видео в оригинале ↗'))
+                self.out.append(self.material_slot('video', url, original, 'Видео в оригинале ↗'))
                 return
             if url:
-                self.out.append('<a class="video-original" href="' + html.escape(url, quote=True) +
+                self.out.append('<a class="video-original" href="' + html.escape(original, quote=True) +
                                 '" target="_blank" rel="noreferrer noopener">Видео в оригинале ↗</a>')
             return
         if tag == "img":
@@ -390,7 +391,7 @@ def build_archive(store: Store, report: dict, *, images=False, userpics=False, c
             links[(url.hostname, url.path)] = str(entry["itemid"]) + ".html"
     comment_ids = {int(c["id"]) for c in comments}
     (folder / "assets").mkdir(exist_ok=True)
-    for asset in ("archive.css", "archive.js", "theme.js", "common.js", "favicon.svg", "favicon.ico", "timeline.js", "statistics.js", "statistics-live.js", "calendar.js", "calendar.css", "material-actions.js"):
+    for asset in ("archive.css", "archive.js", "theme.js", "common.js", "favicon.svg", "favicon.ico", "timeline.js", "statistics.js", "statistics-live.js", "calendar.js", "calendar.css", "material-actions.js", "profile.js"):
         shutil.copyfile(ROOT / "static" / asset, folder / "assets" / asset)
     search, summaries = [], []
     from .comment_state import comment_view
@@ -483,6 +484,8 @@ def build_archive(store: Store, report: dict, *, images=False, userpics=False, c
         progress(phase='render', message='Профиль и переписка', completed=0, total=0)
     from .personal import render_personal
     render_personal(store, report)
+    from .gallery import write_gallery
+    write_gallery(store, report)
     from .progress import write_timeline
     write_timeline(store, report)
     from .calendar import write_calendar

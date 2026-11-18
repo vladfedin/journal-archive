@@ -555,3 +555,5 @@ if __name__ == '__main__':
     main()
     from browser_materials import main as check_materials
     check_materials()
+    from browser_library import main as check_library
+    check_library()

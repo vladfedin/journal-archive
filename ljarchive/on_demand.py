@@ -46,6 +46,11 @@ def inventory(store, eid):
 
 def validate(store, data):
     eid, kind, value = data.get('entry_id'), data.get('kind'), data.get('value')
+    if kind == 'profile' and type(eid) is int and eid == 0 and value == 'profile':
+        from .sources import stored_source
+        if stored_source(store)['type'] != 'own':
+            raise ExportError('Личный профиль доступен только в архиве своего журнала.')
+        return None
     if type(eid) is not int or eid <= 0 or kind not in ('image', 'video', 'embed') or not isinstance(value, str) or len(value) > 4096:
         raise ExportError('Некорректный материал.')
     entry, allowed = inventory(store, eid)
@@ -129,12 +134,17 @@ def download_one(store, data, cancel, update, sessions=None):
             else:
                 asset = None
             if asset is None:
+                from .video import lj_video_id
+                if lj_video_id(value) and data.get('password'):
+                    client.login()
                 if value in manager.records:
                     reopen(manager.records[value])
                 manager.download(value, eid)
                 if cancel.is_set(): raise Cancelled('Загрузка остановлена.')
                 record = manager.records[value]
                 if record['status'] != 'saved':
+                    if record.get('error', {}).get('reason') == 'auth_required' and not data.get('password'):
+                        raise NeedsLogin('Для видео ЖЖ требуется вход владельца.')
                     from .video import video_report
                     message = video_report(store)['missing'].get(value, {}).get('error', {}).get('message', 'Видео не получено.')
                     raise ExportError(message)
@@ -246,7 +256,7 @@ class MaterialQueue:
                 threading.Event().wait(0.5)
                 continue
             def update(**values):
-                if values.get('phase') in ('videos', 'login', 'materials', 'retrying', 'loading'): values['phase'] = 'running'
+                if values.get('phase') in ('videos', 'login', 'materials', 'personal', 'retrying', 'loading'): values['phase'] = 'running'
                 with self.jobs.lock:
                     event = values.pop('activity', None)
                     if event and event.get('kind') == 'request' and self.states[task_id].get('phase') == 'waiting':
@@ -257,6 +267,9 @@ class MaterialQueue:
                     self.states[task_id].update(values)
             store = None
             def refresh():
+                if request['kind'] == 'profile':
+                    from .personal import refresh_profile
+                    return refresh_profile(store)
                 path = store.folder / 'export-report.json'
                 report = json.loads(path.read_text(encoding='utf-8')) if path.exists() else {
                     'username': store.get('username'), 'status': 'partial', 'created_at': store.get('started_at', ''),
@@ -264,12 +277,19 @@ class MaterialQueue:
                 build_archive(store, report, images=False)
             try:
                 store = Store(self.jobs.output / request['archive'])
-                asset = download_one(store, request, self.cancel, update, sessions=self.jobs.sessions)
+                if request['kind'] == 'profile':
+                    from .personal import download_profile
+                    asset = download_profile(store, request, self.cancel, update, sessions=self.jobs.sessions)
+                else:
+                    asset = download_one(store, request, self.cancel, update, sessions=self.jobs.sessions)
                 refresh()
                 update(phase='complete', message='Сохранено' if asset['kind'] != 'external' else 'Онлайн-плеер', asset=asset)
             except NeedsLogin as exc:
                 update(phase='needs_auth', message=str(exc))
             except (Cancelled, VideoStop):
+                if store and request['kind'] == 'profile':
+                    try: refresh()
+                    except Exception: pass  # Captured sections remain committed to SQLite.
                 update(phase='cancelled', message='Загрузка остановлена')
             except ExportError as exc:
                 update(phase='error', message=str(exc))

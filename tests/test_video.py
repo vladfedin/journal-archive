@@ -13,6 +13,58 @@ from ljarchive.storage import Store
 from ljarchive.video import VideoArchive, VideoRefs, canonical_video, embed_key
 
 
+@pytest.mark.parametrize('record', ['12345', 'record::12345678-1234-1234-1234-123456789abc'])
+def test_native_lj_video_is_indexed_and_rendered_without_remote_player(tmp_path, record):
+    from ljarchive.video import lj_video_url
+    body = f'<p>Before</p><div data-rambler-player-id="{record}" data-auth-token="SECRET"></div><p>After</p>'
+    refs = VideoRefs('https://fixture.livejournal.com/263.html'); refs.feed(body); refs.close()
+    assert refs.urls == {lj_video_url(record)}
+    media = Media(tmp_path, False, threading.Event())
+    try:
+        result = str(safe_content(body, 'https://fixture.livejournal.com/263.html', {}, media, set()))
+        assert 'data-material-kind="video"' in result and 'record_id=' in result
+        assert 'SECRET' not in result and 'iframe' not in result and 'Before' in result and 'After' in result
+    finally: media.close()
+
+
+def test_native_video_checks_lj_access_before_returning_stream_and_never_stores_token(tmp_path, monkeypatch):
+    import io
+    from ljarchive.video import lj_video_url
+    from ljarchive.client import ExportError
+    video = manager(tmp_path, monkeypatch)
+    with video.store.db: video.store.save_entry({'itemid': 1, 'anum': 7})
+    calls = []
+    def request(method, path, **kwargs):
+        calls.append(path)
+        if path == '/263.html':
+            return b'<div data-rambler-player-id="12345" data-auth-token="SECRET"></div>'
+        assert path == '/video/check'
+        assert kwargs['params'] == {'recordId': 12345, 'token': 'SECRET'}
+        return b'OK'
+    def opened(url):
+        assert url.startswith('https://api.vp.rambler.ru/api/v3/records/getPlayerData?')
+        assert 'SECRET' not in url
+        return io.BytesIO(json.dumps({'success': True, 'result': {'playList': {
+            'id': 12345, 'type': 'offline', 'title': 'Video', 'duration': 7000,
+            'source': 'https://cdn.example/video.m3u8'}}}).encode())
+    monkeypatch.setattr(video.client, '_request', request)
+    monkeypatch.setattr(video, 'open', opened)
+    try:
+        source, metadata = video.lj_source(lj_video_url('12345'), 1)
+        assert source == 'https://cdn.example/video.m3u8' and metadata['extractor_key'] == 'LiveJournal'
+        assert calls == ['/263.html', '/video/check']
+        assert 'SECRET' not in json.dumps(video.store.get('videos', {}))
+        def denied(method, path, **kw):
+            if path == '/video/check': raise ExportError('ЖЖ отказал в доступе (HTTP 401/403).')
+            return request(method, path, **kw)
+        monkeypatch.setattr(video.client, '_request', denied)
+        video.download(lj_video_url('12345'), 1)
+        record = video.records[lj_video_url('12345')]
+        assert record['status'] == 'pending' and record['error']['reason'] == 'auth_required'
+        assert not record.get('attempts') and 'SECRET' not in json.dumps(video.records)
+    finally: close(video)
+
+
 @pytest.fixture
 def video_source():
     payload = (Path(__file__).parent / 'fixtures/video.mp4').read_bytes()
@@ -21,6 +73,11 @@ def video_source():
         def log_message(self, *_): pass
         def do_GET(self):
             calls.append((self.path, self.headers.get('Range')))
+            if self.path == '/manifest.m3u8':
+                body = b'#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:1,\nvideo.mp4\n#EXT-X-ENDLIST\n'
+                self.send_response(200); self.send_header('Content-Type', 'application/vnd.apple.mpegurl')
+                self.send_header('Content-Length', str(len(body))); self.end_headers(); self.wfile.write(body)
+                return
             start = int(self.headers.get('Range', 'bytes=0-').split('=')[1].split('-')[0])
             self.send_response(206 if start else 200)
             self.send_header('Content-Type', 'video/mp4')
@@ -80,6 +137,20 @@ def test_video_limit_and_cancel_do_not_turn_into_success(tmp_path, monkeypatch, 
     try:
         video.download(url, 1)
         assert not calls and video.records[url]['error']['reason'] == 'cancelled'
+    finally: close(video)
+
+
+def test_native_hls_segments_use_the_same_budget(tmp_path, monkeypatch, video_source):
+    from ljarchive.video import lj_video_url
+    url, calls, _ = video_source
+    video = manager(tmp_path, monkeypatch, limit=2)
+    monkeypatch.setattr(video, 'lj_source', lambda *a: (url.rsplit('/', 1)[0] + '/manifest.m3u8', {'id': '123', 'title': 'Native video'}))
+    try:
+        video.download(lj_video_url('123'), 1)
+        row = video.records[lj_video_url('123')]
+        assert row['status'] == 'pending' and row['error']['reason'] == 'request_limit'
+        assert video.client.budget.used == len(calls) == 2
+        assert not row.get('attempts')
     finally: close(video)
 
 

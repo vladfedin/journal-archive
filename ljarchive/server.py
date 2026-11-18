@@ -737,7 +737,7 @@ def make_server(output: Path, port=8787):
                     return
                 if len(relative.parts) == 3 and relative.parts[1] == 'assets' and relative.parts[2] in {'statistics.js', 'statistics-live.js', 'discussions.js'}:
                     return self.file(ROOT / 'static' / relative.parts[2])
-                if len(relative.parts) == 3 and relative.parts[1] == "assets" and relative.parts[2] in {"archive.css", "archive.js", "theme.js", "common.js", "timeline.js", "calendar.js", "calendar.css", "material-actions.js", "favicon.svg", "favicon.ico"}:
+                if len(relative.parts) == 3 and relative.parts[1] == "assets" and relative.parts[2] in {"archive.css", "archive.js", "theme.js", "common.js", "timeline.js", "calendar.js", "calendar.css", "material-actions.js", "profile.js", "favicon.svg", "favicon.ico"}:
                     if active or not target.exists():
                         return self.file(ROOT / "static" / relative.parts[2])
                 live_data = len(relative.parts) == 3 and relative.parts[1] == 'assets' and target.name in ('search-data.js', 'calendar-data.js')
@@ -857,6 +857,8 @@ def make_server(output: Path, port=8787):
             except (ValueError, UnicodeDecodeError):
                 return self.json({"error": "Некорректный JSON."}, 400)
             try:
+                if self.path == '/api/profile':
+                    return self.json(jobs.materials.start({**data, 'kind': 'profile', 'entry_id': 0, 'value': 'profile'}), 202)
                 if self.path == '/api/material':
                     return self.json(jobs.materials.start(data), 202)
                 if self.path == '/api/material/cancel':

@@ -3,14 +3,17 @@
 window.ArchiveTimeline=class {
   constructor(root,base=''){
     root.timelineView?.destroy();root.timelineView=this;
-    this.root=root;this.base=base;this.items=[];this.active=null;this.slot=12;this.bands=[];
+    this.root=root;this.base=base;this.items=[];this.active=null;this.slot=12;this.bands=[];this.scale='time';
     this.node=(tag,cls,text)=>{const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n;};
     const node=this.node,button=(text,label,action)=>{const b=node('button','btn text',text);b.type='button';b.setAttribute('aria-label',label);b.onclick=action;return b;};
     root.setAttribute('aria-live','off');this.head=node('div','timeline-head');this.count=node('span','muted small');
     this.year=node('select','input timeline-year');this.year.setAttribute('aria-label','Год');
     this.current=button('К текущей','К загружаемой записи',()=>this.jump(this.items.findIndex(i=>i.id===this.active)));
     this.gap=button('Пропуски','Следующая запись с пропусками',()=>{const after=(this.lastGap??Math.floor(this.viewport.scrollLeft/this.slot))+1;let next=this.items.findIndex((i,n)=>n>=after&&i.state==='partial');if(next<0)next=this.items.findIndex(i=>i.state==='partial');this.lastGap=next;this.jump(next);this.track.querySelector(`[data-timeline-index="${next}"]`)?.focus({preventScroll:true});});
-    this.head.append(this.count,this.year,this.gap,this.current);
+    this.scaleControl=node('select','input timeline-scale');this.scaleControl.setAttribute('aria-label','Масштаб общей карты');
+    this.scaleControl.append(new Option('По времени','time'),new Option('По записям','posts'));
+    this.scaleControl.onchange=()=>{this.scale=this.scaleControl.value;this.caption.firstChild.textContent=this.scale==='time'?'Равные годы · паузы видны':'Равная ширина на запись';this.invalidate();};
+    this.head.append(this.count,this.scaleControl,this.year,this.gap,this.current);
     this.year.onchange=()=>{const band=this.bands.find(b=>b.label===this.year.value);if(band?.count)this.jump(band.start,false);};
     this.overview=node('canvas','timeline-overview');this.overview.setAttribute('aria-hidden','true');this.cache=document.createElement('canvas');
     this.caption=node('div','timeline-caption');this.caption.append(node('span','','Один участок — год'));this.windowLabel=node('span');this.caption.append(this.windowLabel);
@@ -65,9 +68,18 @@ window.ArchiveTimeline=class {
     const value=this.year.value;this.year.replaceChildren(...this.bands.map(b=>{const o=new Option(b.label+(b.count?'':' · 0'),b.label);o.disabled=!b.count;return o;}));if(this.bands.some(b=>b.label===value))this.year.value=value;
     this.gap.hidden=!data.partial;this.current.hidden=!active;this.track.style.width=Math.max(1,this.items.length*this.slot)+'px';if(anchor?.id){const index=this.items.findIndex(i=>i.id===anchor.id);if(index>=0)this.viewport.scrollLeft=index*this.slot+offset;}this.invalidate();
   }
-  bandAt(ratio){return this.bands[Math.min(this.bands.length-1,Math.max(0,Math.floor(ratio*this.bands.length)))];}
-  indexAt(ratio){if(!this.bands.length)return 0;const pos=Math.max(0,Math.min(.999999,ratio))*this.bands.length,b=Math.floor(pos),band=this.bands[b];if(band.count)return band.start+Math.floor((pos-b)*band.count);return this.bands.slice(b+1).find(y=>y.count)?.start??Math.max(0,this.items.length-1);}
-  position(index,end=false){if(!this.items.length)return 0;const i=Math.max(0,Math.min(this.items.length-1,Math.floor(index-(end?1:0)))),b=this.bandForItem[i],band=this.bands[b];return (b+(i-band.start+(end?1:0))/band.count)/this.bands.length;}
+  bandAt(ratio){return this.scale==='posts'?this.bands[this.bandForItem[Math.max(0,Math.min(this.items.length-1,Math.floor(ratio*this.items.length)))]]:this.bands[Math.min(this.bands.length-1,Math.max(0,Math.floor(ratio*this.bands.length)))];}
+  fraction(index,end=false){
+    const item=this.items[index],band=this.bands[this.bandForItem[index]];
+    if(this.scale==='time'&&band.label!=='Без даты'){
+      const m=/^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2}))?/.exec(item.date||'');
+      if(m){const year=Number(m[1]),begin=Date.UTC(year,0,1),span=Date.UTC(year+1,0,1)-begin;
+        return Math.max(0,Math.min(1,(Date.UTC(year,Number(m[2])-1,Number(m[3]),Number(m[4]||12),Number(m[5]||0))+(end?1000:0)-begin)/span));}
+    }
+    return (index-band.start+(end?1:0))/band.count;
+  }
+  indexAt(ratio){if(!this.bands.length)return 0;if(this.scale==='posts')return Math.max(0,Math.min(this.items.length-1,Math.floor(ratio*this.items.length)));const pos=Math.max(0,Math.min(.999999,ratio))*this.bands.length,b=Math.floor(pos),band=this.bands[b];if(band.count){let lo=band.start,hi=lo+band.count;while(lo<hi){const mid=(lo+hi)>>1;if(this.fraction(mid)<pos-b)lo=mid+1;else hi=mid;}return Math.min(band.start+band.count-1,lo);}return this.bands.slice(b+1).find(y=>y.count)?.start??Math.max(0,this.items.length-1);}
+  position(index,end=false){if(!this.items.length)return 0;if(this.scale==='posts')return Math.max(0,Math.min(this.items.length,index))/this.items.length;const i=Math.max(0,Math.min(this.items.length-1,Math.floor(index-(end?1:0))));return (this.bandForItem[i]+this.fraction(i,end))/this.bands.length;}
   static plural(n,forms){const a=Math.abs(n)%100,b=a%10;return forms[a>10&&a<20?2:b===1?0:b>1&&b<5?1:2];}
   static count(n,forms){return `${Number(n||0).toLocaleString('ru-RU')} ${window.ArchiveTimeline.plural(Number(n||0),forms)}`;}
   static date(value){const m=/^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2}))?/.exec(value||'');if(!m)return 'дата неизвестна';const month='января февраля марта апреля мая июня июля августа сентября октября ноября декабря'.split(' ')[Number(m[2])-1];return `${Number(m[3])} ${month} ${m[1]}${m[4]?`, ${m[4]}:${m[5]}`:''}`;}
@@ -125,13 +137,15 @@ window.ArchiveTimeline=class {
       const style=getComputedStyle(this.root),color=name=>style.getPropertyValue('--timeline-'+name).trim();this.palette={ready:color('ready'),pending:color('pending'),loading:color('loading'),partial:color('partial'),repost:color('repost'),window:color('window')};
       let lastLabel=-100;ctx.font='11px '+style.fontFamily;ctx.textAlign='center';
       // Shading first, labels second: a wide label is never painted over by the next year's band.
-      this.bands.forEach((band,n)=>{const x=n*width/this.bands.length,w=width/this.bands.length;if(n%2===0){ctx.fillStyle=color('band');ctx.fillRect(x,0,w,74);}ctx.fillStyle=style.getPropertyValue('--line');ctx.fillRect(Math.floor(x),0,1,74);});
-      this.bands.forEach((band,n)=>{const x=n*width/this.bands.length,w=width/this.bands.length,labelWidth=ctx.measureText(band.label).width,center=Math.max(labelWidth/2+1,Math.min(width-labelWidth/2-1,x+w/2));if(center-labelWidth/2>lastLabel+5){ctx.fillStyle=style.color;ctx.fillText(band.label,center,15);lastLabel=center+labelWidth/2;}});
+      const bandBox=(band,n)=>this.scale==='posts'?[band.start*width/Math.max(1,this.items.length),band.count*width/Math.max(1,this.items.length)]:[n*width/this.bands.length,width/this.bands.length];
+      this.bands.forEach((band,n)=>{const [x,w]=bandBox(band,n);if(!w)return;if(n%2===0){ctx.fillStyle=color('band');ctx.fillRect(x,0,w,74);}ctx.fillStyle=style.getPropertyValue('--line');ctx.fillRect(Math.floor(x),0,1,74);});
+      this.bands.forEach((band,n)=>{const [x,w]=bandBox(band,n);if(!w)return;const labelWidth=ctx.measureText(band.label).width,center=Math.max(labelWidth/2+1,Math.min(width-labelWidth/2-1,x+w/2));if(center-labelWidth/2>lastLabel+5){ctx.fillStyle=style.color;ctx.fillText(band.label,center,15);lastLabel=center+labelWidth/2;}});
       // One bin per CSS pixel; a gap wins over completed records sharing that pixel.
       const bins=Array.from({length:width},()=>({state:'ready',height:0,count:0,states:{}})),priority={ready:0,repost:1,pending:2,loading:3,partial:4};
       this.items.forEach((item,i)=>{const x=Math.min(width-1,Math.floor((this.position(i)+this.position(i+1,true))/2*width)),bin=bins[x],status=item.repost&&item.state==='ready'?'repost':item.state;bin.count++;bin.states[status]=(bin.states[status]||0)+1;if(priority[status]>priority[bin.state])bin.state=status;bin.height=Math.max(bin.height,item.id?Math.min(43,5+Math.log2(1+(item.expected_comments||item.comments||0))*4):4);});
       // Keep the mix visible at high density; every nonempty state gets at least one pixel vertically.
-      bins.forEach((bin,x)=>{let y=73,remaining=bin.height;const states=['partial','loading','pending','repost','ready'].filter(s=>bin.states[s]);states.forEach((state,i)=>{const h=i===states.length-1?remaining:Math.min(remaining-(states.length-i-1),Math.max(1,bin.height*bin.states[state]/bin.count));ctx.fillStyle=this.palette[state]||this.palette.pending;ctx.fillRect(x,y-h,1,h);y-=h;remaining-=h;});});this.overviewBins=bins;
+      const peak=Math.max(1,...bins.map(b=>b.count));
+      bins.forEach((bin,x)=>{bin.height=Math.max(bin.height,bin.count?8+35*Math.log1p(bin.count)/Math.log1p(peak):0);let y=73,remaining=bin.height;ctx.globalAlpha=.4+.6*Math.sqrt(bin.count/peak);const states=['partial','loading','pending','repost','ready'].filter(s=>bin.states[s]);states.forEach((state,i)=>{const h=i===states.length-1?remaining:Math.min(remaining-(states.length-i-1),Math.max(1,bin.height*bin.states[state]/bin.count));ctx.fillStyle=this.palette[state]||this.palette.pending;ctx.fillRect(x,y-h,1,h);y-=h;remaining-=h;});});ctx.globalAlpha=1;this.overviewBins=bins;
     }
     if(this.overview.width!==this.cache.width||this.overview.height!==this.cache.height){this.overview.width=this.cache.width;this.overview.height=this.cache.height;}
     const ctx=this.overview.getContext('2d');ctx.setTransform(1,0,0,1,0,0);ctx.clearRect(0,0,this.overview.width,this.overview.height);ctx.drawImage(this.cache,0,0);ctx.scale(dpr,dpr);if(!this.items.length)return;

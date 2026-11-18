@@ -12,7 +12,8 @@ import time
 from datetime import datetime, timezone
 from html.parser import HTMLParser
 from pathlib import Path
-from urllib.parse import parse_qs, urljoin, urlsplit, urlunsplit
+from urllib.parse import parse_qs, urlencode, urljoin, urlsplit, urlunsplit
+import json
 
 import requests
 
@@ -24,6 +25,20 @@ from .gaps import ATTEMPTS, closed, fail, reopen
 VIDEO_SUFFIXES = {'.mp4', '.webm', '.ogv', '.mov', '.m4v'}
 
 
+def lj_video_url(record):
+    if isinstance(record, str) and re.fullmatch(r'(?:[0-9]+|record::[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12})', record):
+        return 'https://vc.videos.livejournal.com/index/player?' + urlencode({'record_id': record})
+    return None
+
+
+def lj_video_id(url):
+    p = urlsplit(url)
+    if p.scheme == 'https' and p.hostname == 'vc.videos.livejournal.com' and p.path == '/index/player' and not p.username and not p.password and p.port in (None, 443):
+        value = parse_qs(p.query).get('record_id', [''])[0]
+        return value if lj_video_url(value) else None
+    return None
+
+
 def canonical_video(value, base=''):
     url = urljoin(base, html.unescape(value or ''))
     try:
@@ -32,6 +47,8 @@ def canonical_video(value, base=''):
             return None
         host = (p.hostname or '').lower()
         q = parse_qs(p.query)
+        if host == 'vc.videos.livejournal.com' and p.path == '/index/player':
+            return lj_video_url(q.get('record_id', [''])[0])
         video_id = None
         if host in ('youtube.com', 'www.youtube.com', 'm.youtube.com', 'www.youtube-nocookie.com', 'youtube-nocookie.com'):
             video_id = q.get('v', [None])[0] if p.path == '/watch' else p.path.rstrip('/').split('/')[-1]
@@ -83,6 +100,8 @@ class VideoRefs(HTMLParser):
 
     def handle_starttag(self, tag, attrs):
         a = dict(attrs)
+        if tag == 'div' and (url := lj_video_url(a.get('data-rambler-player-id'))):
+            self.urls.add(url)
         if tag == 'lj-embed' and str(a.get('id', '')).isdigit():
             self.modules.add(a['id'])
         if tag in ('iframe', 'embed', 'video', 'source', 'object', 'a'):
@@ -129,6 +148,8 @@ def video_markup(source, base, media):
                     self.out.append('<video data-lj-module="' + html.escape(str(a.get('id', '')), quote=True) + '" src="' + html.escape(base, quote=True) + '"></video>')
             elif tag in ('iframe', 'video', 'object'):
                 self.capture, self.attrs = tag, a
+            elif tag == 'div' and (url := lj_video_url(a.get('data-rambler-player-id'))):
+                self.out.append('<video src="' + html.escape(url, quote=True) + '"></video><div>')
             elif tag == 'embed':
                 self.emit(a.get('src', ''))
             else:
@@ -311,10 +332,15 @@ class VideoArchive:
                    'match_filter': lambda info, **kw: 'Прямой эфир не архивируется' if info.get('is_live') or info.get('live_status') == 'is_upcoming' else None}
         try:
             self.last_http = None
+            native = lj_video_id(url)
+            source, metadata = self.lj_source(url, eid) if native else (url, {})
+            if native:
+                options.update(format='b[height<=?720]/b', hls_prefer_native=True, fixup='force')
             with Downloader(options) as downloader:
-                info = downloader.extract_info(url, download=False)
+                info = downloader.extract_info(source, download=False)
                 if not info or info.get('_type') in ('playlist', 'multi_video'):
                     raise ValueError('Not a single video')
+                info.update(metadata)
                 record.update(title=info.get('title'), duration=info.get('duration'), provider=info.get('extractor_key'), video_id=info.get('id'))
                 self.save()
                 downloader.process_info(info)
@@ -330,6 +356,10 @@ class VideoArchive:
             reopen(record)
         except VideoStop as exc:
             record.update(status='pending', error={'reason': exc.reason})
+        except (Cancelled, RequestLimitReached) as exc:
+            record.update(status='pending', error={'reason': 'cancelled' if isinstance(exc, Cancelled) else 'request_limit'})
+        except ExportError as exc:
+            record.update(status='pending', error={'reason': 'auth_required', 'detail': str(exc)})
         except OSError:
             record.update(status='pending', error={'reason': 'storage'})
         except Exception as exc:
@@ -340,6 +370,66 @@ class VideoArchive:
         finally:
             record['requests'] = self.client.budget.categories.get('videos', 0) - requests_before
             self.save()
+
+    def lj_source(self, url, eid):
+        """Use the current LJ player, including its signed access check; keep tokens in memory."""
+        from .render import original_url
+        record_id = lj_video_id(url)
+        row = self.store.db.execute('SELECT payload FROM entries WHERE id=?', (eid,)).fetchone()
+        if not row:
+            raise ExportError('Не найдена запись для проверки доступа к видео ЖЖ.')
+        base = original_url(self.client.user, json.loads(row[0]))
+        p = urlsplit(base)
+        if p.hostname != self.client.user.replace('_', '-') + '.livejournal.com' or not re.fullmatch(r'/\d+\.html', p.path):
+            raise ExportError('Не удалось определить запись с видео ЖЖ.')
+        from .web_session import cookie_header, AGENT
+        def page():
+            headers = {'User-Agent': AGENT}
+            cookie = cookie_header(self.client, base)
+            if not cookie and self.client._cookie:
+                cookie = 'ljsession=' + self.client._cookie
+            if cookie: headers['Cookie'] = cookie
+            return self.client._request('GET', p.path, base_url='https://' + p.hostname, category='videos', headers=headers)
+        try:
+            raw = page()
+        except (Cancelled, RequestLimitReached):
+            raise
+        except ExportError:
+            if not self.client.ensure_web_session():
+                raise ExportError('Для видео ЖЖ требуется вход владельца.') from None
+            raw = page()
+        class Player(HTMLParser):
+            token = None
+            def handle_starttag(self, tag, attrs):
+                a = dict(attrs)
+                if a.get('data-rambler-player-id') == record_id:
+                    self.token = a.get('data-auth-token')
+        player = Player(); player.feed(raw.decode('utf-8', 'replace')); player.close()
+        if not player.token:
+            raise ExportError('ЖЖ не выдал доступ к этой видеовставке. Повторите со входом владельца.')
+        params = {'id' if record_id.isdigit() else 'uuid': int(record_id) if record_id.isdigit() else record_id,
+                  'referrer': base}
+        with self.open('https://api.vp.rambler.ru/api/v3/records/getPlayerData?' + urlencode({'params': json.dumps(params)})) as response:
+            raw = response.read(2 * 1024 * 1024 + 1)
+        if len(raw) > 2 * 1024 * 1024:
+            raise ValueError('Video metadata too large')
+        data = json.loads(raw)
+        if not data.get('success'):
+            raise ValueError('Видеосервис ЖЖ не вернул доступный ролик')
+        playlist = data.get('result', {}).get('playList', {})
+        if (playlist.get('type') != 'offline' or (str(playlist.get('id')) != record_id and playlist.get('uuid') != record_id)):
+            raise ValueError('Video identity or type does not match')
+        try:
+            self.client._request('GET', '/video/check', category='videos',
+                                 params={'recordId': playlist['id'], 'token': player.token})
+        finally:
+            player.token = None
+        source = playlist.get('directSource') or playlist.get('source')
+        if not isinstance(source, str) or not source.startswith('https://'):
+            raise ValueError('Video stream missing')
+        return source, {'title': playlist.get('title') or 'Видео ЖЖ',
+                        'duration': (playlist.get('duration') or 0) / 1000,
+                        'extractor_key': 'LiveJournal', 'id': record_id}
 
     def capture(self, entry, enabled):
         from .render import original_url, text_value

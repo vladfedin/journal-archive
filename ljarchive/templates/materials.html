@@ -1,0 +1,15 @@
+{% extends 'base.html' %}
+{% set archive_section = 'materials' %}
+{% block title %}Материалы · {{ user }}{% endblock %}
+{% block body %}<main class="main archive-main"><h1>Материалы</h1>
+{% include 'archive-nav.html' %}
+<nav class="gallery-filters" aria-label="Тип материала">{% for filter in filters %}<a class="btn{% if filter.kind == kind %} selected{% endif %}" href="{{ filter.href }}"{% if filter.kind == kind %} aria-current="page"{% endif %}>{{ filter.label }} <span class="muted">{{ filter.count }}</span></a>{% endfor %}</nav>
+<div class="material-gallery">{% for item in rows %}{% set ref = item.references|first %}
+<article class="gallery-card"{% if ref %} data-entry-id="{{ ref.entry_id }}"{% endif %}>
+<div class="gallery-preview">{% if item.path %}{% if item.kind == 'video' %}<video controls preload="none" src="{{ item.path }}"></video>{% else %}<a href="{{ ref.href if ref else 'account.html' }}"><img loading="lazy" src="{{ item.path }}" alt="{{ item.title }}"></a>{% endif %}{% else %}<a href="{{ ref.href if ref else 'account.html' }}" class="gallery-empty">{{ 'Видео' if item.kind == 'video' else 'Юзерпик' if item.kind == 'userpic' else 'Изображение' }}<small>{{ 'Недоступно' if item.status == 'unavailable' else 'Не загружено' }}</small></a>{% endif %}</div>
+<div class="gallery-caption">{% if ref %}<a href="{{ ref.href }}">{{ ref.title }}</a><small class="muted">{{ ref.date|ru_date(false) }}{% if ref.comment_id %} · комментарий{% endif %}</small>{% else %}<span>{{ item.title }}</span>{% endif %}
+{% if item.references|length > 1 %}<details><summary>Где встречается · {{ item.references|length }}</summary><ul>{% for source in item.references %}<li><a href="{{ source.href }}">{{ source.title }}{% if source.comment_id %} · комментарий{% endif %}</a><small>{{ source.date|ru_date(false) }}</small></li>{% endfor %}</ul></details>{% endif %}
+{% if item.path %}<a class="small" href="{{ item.path }}" target="_blank" rel="noopener">Файл ↗</a>{% elif ref and item.kind != 'userpic' %}<span class="material-slot" data-material-kind="{{ item.kind }}" data-material-value="{{ item.url }}"></span>{% endif %}
+</div></article>{% else %}<p class="muted">Материалов пока нет.</p>{% endfor %}</div>
+<nav class="gallery-pages" aria-label="Страницы материалов">{% if previous %}<a class="btn" href="{{ previous }}">← Назад</a>{% endif %}<span>{{ page }} / {{ pages }}</span>{% if following %}<a class="btn" href="{{ following }}">Далее →</a>{% endif %}</nav>
+</main>{% endblock %}

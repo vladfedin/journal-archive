@@ -4,7 +4,7 @@ import time
 from html.parser import HTMLParser
 from urllib.parse import urlsplit
 
-from .client import APIError, HTTPError, IncompleteData
+from .client import APIError, HTTPError, IncompleteData, ExportError, Cancelled, RequestLimitReached
 from .storage import dumps
 
 
@@ -56,7 +56,7 @@ def account_data(store):
 class Personal:
     def __init__(self, exporter):
         self.exporter, self.store, self.client = exporter, exporter.store, exporter.client
-        self.cycle = self.store.get('started_at')
+        self.cycle = getattr(exporter, 'personal_cycle', None) or self.store.get('started_at')
 
     def section(self, key):
         row = self.store.db.execute('SELECT payload FROM account_sections WHERE id=?', (key,)).fetchone()
@@ -90,6 +90,12 @@ class Personal:
                 raise
             self.save(key, status='unavailable', error=str(exc), source=source)
         except IncompleteData as exc:
+            self.save(key, status='partial', error=str(exc), source=source)
+        except (Cancelled, RequestLimitReached):
+            raise
+        except ExportError as exc:
+            if not getattr(self.exporter, 'continue_personal_errors', False):
+                raise
             self.save(key, status='partial', error=str(exc), source=source)
 
     def friends(self):
@@ -243,7 +249,7 @@ class Personal:
         from .progress import Images
         media = getattr(self.exporter, '_media', None)
         if media is None:
-            media = self.exporter._media = Media(self.store.folder, self.exporter.images, self.client.cancel, self.client.budget)
+            media = self.exporter._media = Media(self.store.folder, self.exporter.images, self.client.cancel, self.client.budget, client=self.client)
             media.load_state(self.store)
         urls, embeds = set(), set()
         if account:
@@ -266,6 +272,103 @@ class Personal:
             media.get(url, required=category == 'userpics', category=category)
             with self.store.db:
                 media.save_state(self.store)
+
+
+def profile_fields(sections):
+    labels = {'nick': 'Имя пользователя', 'name': 'Имя', 'birthday': 'День рождения',
+              'dateOfBirth': 'Дата рождения', 'interest': 'Интересы', 'based_near': 'Местоположение',
+              'homepage': 'Сайт', 'schoolHomepage': 'Учёба', 'workplaceHomepage': 'Работа',
+              'icqChatID': 'ICQ', 'jabberID': 'Jabber', 'mbox': 'Почта'}
+    fields = []
+    for field in (sections.get('foaf', {}).get('data') or {}).get('fields', []):
+        key = field['name'].split('}')[-1]
+        value = field.get('value') or field.get('attributes', {}).get('{http://purl.org/dc/elements/1.1/}title') or field.get('attributes', {}).get('{http://www.w3.org/1999/02/22-rdf-syntax-ns#}resource')
+        if value:
+            fields.append({'label': labels.get(key, key), 'value': value})
+    return fields
+
+
+def preference_rows(sections):
+    import re
+    labels = {'TimeZone_timezone': 'Часовой пояс', 'Privacy_comments': 'Кто может комментировать',
+              'CommentScreening_comments': 'Скрытие комментариев', 'AdultContent_content': 'Возрастная категория'}
+    rows = {}
+    for key, section in sections.items():
+        if not key.startswith('settings_'):
+            continue
+        group = []
+        for control in (section.get('data') or {}).get('controls', []):
+            name = control['name'].removeprefix('LJ__Setting__')
+            if control['type'] == 'select':
+                value = ', '.join(str(o['label']) for o in control['options'] if o.get('selected')) or '—'
+            elif control['type'] == 'radio':
+                if not control.get('checked'):
+                    continue
+                value = str(control.get('value', ''))
+            else:
+                value = 'Да' if control.get('checked') else 'Нет'
+            group.append({'label': labels.get(name, re.sub(r'(?<=[a-z])(?=[A-Z])', ' ', name).replace('_', ' · ')), 'value': value})
+        rows[key] = group
+    return rows
+
+
+def download_profile(store, data, cancel, update, sessions=None):
+    from types import SimpleNamespace
+    import secrets
+    from .client import LiveJournalClient, RequestBudget
+    from .on_demand import NeedsLogin
+    from .sources import stored_source, bind_source
+    from .retry import restored_deadline
+    identity = stored_source(store)
+    if identity['type'] != 'own':
+        raise ExportError('Личный профиль доступен только в архиве своего журнала.')
+    if not data.get('password'):
+        raise NeedsLogin('Введите пароль ЖЖ для загрузки профиля.')
+    budget = RequestBudget(data.get('max_requests', 50), progress=update)
+    client = LiveJournalClient(identity['login_username'], data['password'], budget=budget,
+                               delay=data.get('delay', 3), cancel=cancel, progress=update,
+                               session_ready=sessions.remember if sessions else None)
+    client.not_before = budget.not_before = restored_deadline(store)
+    def checkpoint(deadline):
+        with store.db:
+            store.set('request_not_before', deadline)
+            store.set('request_wait', budget.wait_info)
+    client.save_cooldown = budget.save_cooldown = checkpoint
+    exporter = SimpleNamespace(store=store, client=client, images=False,
+        personal_cycle=secrets.token_hex(12), continue_personal_errors=True,
+        update=lambda phase, message, **values: update(phase=phase, message=message, **values))
+    try:
+        client.login()
+        with store.db:
+            bind_source(store, client)
+            store.set('userpic_catalog', client.userpics)
+            store.set('personal_requested', {**store.get('personal_requested', {}), 'account': True})
+        Personal(exporter).run(True, False)
+        sections = account_data(store)['sections']
+        complete = all(s['status'] in ('captured', 'source_exhausted') for key, s in sections.items() if not key.startswith('messages_'))
+        return {'kind': 'profile', 'complete': complete}
+    finally:
+        if getattr(exporter, '_media', None): exporter._media.close()
+        client.close()
+        data.pop('password', None)
+
+
+def refresh_profile(store):
+    from .gallery import write_gallery
+    from .render import ENV
+    from .data import export_json
+    from .integrity import write_manifest
+    from .storage import atomic_write
+    path = store.folder / 'export-report.json'
+    report = json.loads(path.read_text(encoding='utf-8')) if path.is_file() else {
+        'username': store.get('username'), 'status': 'partial', 'entries_saved': store.counts()['entries'],
+        'comments_saved': store.counts()['comments'], 'missing_comments': []}
+    render_personal(store, report)
+    write_gallery(store, report)
+    export_json(store, split=True)
+    atomic_write(path, dumps(report))
+    atomic_write(store.folder / 'report.html', ENV.get_template('report.html').render(user=report['username'], report=report))
+    write_manifest(store.folder)
 
 
 def render_personal(store, report):
@@ -306,7 +409,7 @@ def render_personal(store, report):
     report['personal']['complete'] = not missing and all(mapping.get(u) for u in required_urls)
     if not report['personal']['complete'] and report['status'] == 'complete':
         report['status'] = 'partial'
-        report['issues'].append('Личные данные сохранены частично. Подробности — в разделе «Профиль».')
+        report.setdefault('issues', []).append('Личные данные сохранены частично. Подробности — в разделе «Профиль».')
     profile = (sections.get('profile', {}).get('data') or {})
     friends = sections.get('friends', {}).get('data') or {}
     pictures = [{'url': u, 'path': mapping.get(u)} for u in sorted(urls)]
@@ -315,7 +418,8 @@ def render_personal(store, report):
               'messages_incoming': 'Входящие', 'messages_outgoing': 'Исходящие'}
     states = {'captured': 'Сохранено', 'source_exhausted': 'Выдача ЖЖ сохранена', 'partial': 'Есть пропуски', 'unavailable': 'Недоступно'}
     atomic_write(store.folder / 'account.html', ENV.get_template('account.html').render(user=report['username'], report=report,
-                 sections=sections, profile=profile, friends=friends, pictures=pictures, labels=labels, states=states))
+                 sections=sections, profile=profile, friends=friends, pictures=pictures, labels=labels, states=states,
+                 requested=requested, fields=profile_fields(sections), preferences=preference_rows(sections)))
     media = Media(store.folder, False, threading.Event())
     media.mapping = mapping
     messages = sorted(data['messages'], key=lambda i: (i.get('when', 0), i.get('qid', 0)), reverse=True)
