@@ -31,7 +31,7 @@ def main():
                 store.set('media_errors', {u: {'status': 'pending', 'reason': 'web_login', 'http_status': 302, 'requests': 4, 'session_type': 'web'} for u in urls})
             build_archive(store, {'username': 'fixture', 'status': 'partial', 'created_at': '2026-01-01T00:00:00Z', 'entries_saved': 1, 'comments_saved': 0, 'missing_comments': []})
             recovery = summary(inventory(store)); store.close()
-            server = make_server(root, 0); server.jobs.sessions.browser = bridge
+            server = make_server(root, 0); server.jobs.sessions._browsers['fixture'] = bridge
             server.jobs.current = {'archive': 'fixture', 'username': 'fixture', 'delay': 1, 'max_requests': 10}
             server.jobs.state = {'phase': 'partial', 'slug': 'fixture', 'username': 'fixture', 'job_id': 'image-ui', 'recovery': recovery, 'archive_url': '/archive/fixture/index.html'}
             thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
@@ -47,7 +47,7 @@ def main():
                 expect(modal.locator('.image-failure')).to_have_count(4)
                 modal.get_by_role('button', name='Докачать через браузер').click()
                 expect(modal.get_by_role('button', name='Продолжить', exact=True)).to_be_enabled(timeout=10000)
-                expect(modal).to_contain_text('Войдите в ЖЖ')
+                expect(modal).to_contain_text('Проверьте вход')
                 sign_in(bridge, source, calls)
                 calls.clear()
                 modal.get_by_role('button', name='Продолжить', exact=True).click()

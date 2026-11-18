@@ -74,12 +74,12 @@ def browser_login(client, data, sessions):
     if not sessions:
         raise ExportError('Откройте архив через локальное приложение.')
     if data.get('open_browser'):
-        sessions.browser.open_login(client.account)
+        client.browser.open_login(client.account)
         raise BrowserLoginRequired()
     if data.get('confirmed'):
-        sessions.browser.confirm(client.account)
-    if not sessions.browser.ready(client.account):
-        sessions.browser.open_login(client.account)
+        client.browser.confirm(client.account)
+    if not client.browser.ready(client.account):
+        client.browser.open_login(client.account)
         raise BrowserLoginRequired()
 
 
@@ -152,7 +152,7 @@ def download_browser_images(store, data, cancel, update, sessions):
                     raise ExportError(error_message(media.errors.get(value, {})))
                 reason = media.errors.get(value, {}).get('reason')
                 consecutive = consecutive + 1 if reason in ('browser_network', 'browser_timeout', 'browser_dns') else 0
-                if not path and (reason in ('browser_closed', 'browser_login', 'browser_start', 'browser_missing') or
+                if not path and (reason in ('browser_closed', 'browser_login', 'browser_start', 'browser_profile', 'browser_missing') or
                                  media.errors.get(value, {}).get('http_status') == 429 or consecutive >= 3):
                     # Session loss, rate limits and a broken connection affect the
                     # queue; a file-specific 401/403/404 does not.
@@ -230,7 +230,7 @@ def download_one(store, data, cancel, update, sessions=None):
                         raise
                     except AuthenticationRequired:
                         if sessions:
-                            sessions.browser.open_login(client.account)
+                            client.browser.open_login(client.account)
                             raise BrowserLoginRequired() from None
                         raise
                 if key in manager.external:
@@ -262,7 +262,7 @@ def download_one(store, data, cancel, update, sessions=None):
                                   'requests': record.get('requests', 0), 'stage': record.get('stage'),
                                   'updated_at': record.get('checked_at')})
                     if record.get('error', {}).get('reason') == 'auth_required' and sessions:
-                        sessions.browser.open_login(client.account)
+                        client.browser.open_login(client.account)
                         raise BrowserLoginRequired()
                     from .video import video_report
                     message = video_report(store)['missing'].get(value, {}).get('error', {}).get('message', 'Видео не получено.')

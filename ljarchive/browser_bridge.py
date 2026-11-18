@@ -1,7 +1,6 @@
 """Retrieve LJ images in a separate, interactive Chrome/Edge session.
 
-Authentication stays in an off-the-record browser context. No cookies are
-exported, and the user's normal browser profile is never opened or copied.
+The browser manages site data in a dedicated local profile per LJ account.
 """
 from __future__ import annotations
 
@@ -14,7 +13,6 @@ import re
 import shutil
 import socket
 import subprocess
-import tempfile
 import threading
 import time
 from urllib.parse import urlsplit, urlunsplit
@@ -39,7 +37,7 @@ def safe_url(url):
 
 class BrowserLoginRequired(ExportError):
     def __init__(self):
-        super().__init__('Войдите в ЖЖ в открытом окне, затем нажмите «Продолжить».')
+        super().__init__('Проверьте вход в открытом окне ЖЖ и нажмите «Продолжить».')
 
 
 class BrowserFailure(ExportError):
@@ -48,6 +46,7 @@ class BrowserFailure(ExportError):
         message = {
             'browser_missing': 'Для загрузки через браузер установите Chrome или Edge.',
             'browser_start': 'Не удалось запустить Chrome или Edge.',
+            'browser_profile': 'Не удалось открыть профиль браузера. Проверьте доступ к папке и закройте другие экземпляры Архива ЖЖ.',
             'browser_closed': 'Окно браузера закрыто. Откройте его ещё раз.',
             'browser_timeout': 'Браузер не завершил запрос за 45 секунд.',
             'browser_network': 'Браузер сообщил об ошибке соединения.',
@@ -95,13 +94,14 @@ def debugging_endpoint(path):
 
 
 class BrowserBridge:
-    def __init__(self, *, executable=None, headless=False, validate_url=None,
+    def __init__(self, account, profile_dir, *, executable=None, headless=False, validate_url=None,
                  login_url='https://www.livejournal.com/login.bml'):
         # Overrides are for local integration tests, never accepted from HTTP.
         self.executable, self.headless, self.validate_url = executable, headless, validate_url
         self.login_url = login_url
-        self.process = self.socket = self.profile = None
-        self.contexts = {}
+        self.account, self.profile_dir = account, Path(profile_dir)
+        self.process = self.socket = self.profile_lock = None
+        self.target, self.confirmed = None, False
         self.serial = 0
         self.events = deque()
         self.last_request = 0
@@ -141,16 +141,23 @@ class BrowserBridge:
         executable = self.executable or browser_executable()
         if not executable:
             raise BrowserFailure('browser_missing')
-        self.profile = tempfile.TemporaryDirectory(prefix='journal-archive-browser-', ignore_cleanup_errors=True)
+        from .storage import exclusive_lock
+        try:
+            self.profile_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+            self.profile_lock = exclusive_lock(self.profile_dir / 'archive-browser.lock')
+        except OSError as exc:
+            raise BrowserFailure('browser_profile') from exc
         args = [str(executable), '--remote-debugging-address=127.0.0.1', '--remote-debugging-port=0',
-                '--user-data-dir=' + self.profile.name, '--no-first-run', '--no-default-browser-check',
+                '--user-data-dir=' + str(self.profile_dir), '--no-first-run', '--no-default-browser-check',
                 '--disable-background-networking', '--disable-sync', '--no-startup-window']
         if self.headless:
             args.insert(1, '--headless=new')
         try:
+            port_file = self.profile_dir / 'DevToolsActivePort'
+            # A previous process may have left this file behind.
+            port_file.unlink(missing_ok=True)
             self.process = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                             stderr=subprocess.DEVNULL)
-            port_file = Path(self.profile.name) / 'DevToolsActivePort'
             # A cold Windows browser can take longer than subsequent launches.
             started = time.monotonic()
             deadline = started + 30
@@ -175,41 +182,33 @@ class BrowserBridge:
             f'Browser startup: {elapsed:.1f}s; exit={returncode}; endpoint_seen={endpoint_seen}')
 
     def ready(self, account):
-        return bool(self.process and self.process.poll() is None and self.contexts.get(account, {}).get('confirmed'))
+        return bool(account == self.account and self.confirmed and self.process and self.process.poll() is None)
 
     def open_login(self, account):
+        if account != self.account:
+            raise BrowserFailure('browser_profile')
         with self.lock:
             self._launch()
-            old = self.contexts.get(account)
-            if old:
+            self.confirmed = False
+            if self.target:
                 try:
-                    self._call('Target.activateTarget', {'targetId': old['target']})
+                    self._call('Target.activateTarget', {'targetId': self.target})
                     return
                 except BrowserFailure:
-                    self.contexts.pop(account, None)
-                    try:
-                        self._call('Target.disposeBrowserContext', {'browserContextId': old['context']})
-                    except BrowserFailure:
-                        pass
-            context = self._call('Target.createBrowserContext', {'disposeOnDetach': True})['browserContextId']
-            target = self._call('Target.createTarget', {
-                'url': self.login_url, 'browserContextId': context,
-                'newWindow': True,
+                    self.target = None
+            self.target = self._call('Target.createTarget', {
+                'url': self.login_url, 'newWindow': True,
             })['targetId']
-            self.contexts[account] = {'context': context, 'target': target, 'confirmed': False}
-            # The bootstrap window is not the login window and carries no session.
-            private_contexts = {item['context'] for item in self.contexts.values()}
             for tab in self._call('Target.getTargets').get('targetInfos', []):
-                if (tab.get('type') == 'page' and tab.get('browserContextId') not in private_contexts
-                        and tab.get('url') == 'about:blank'):
+                if tab.get('type') == 'page' and tab.get('url') == 'about:blank' and tab['targetId'] != self.target:
                     self._call('Target.closeTarget', {'targetId': tab['targetId']})
 
     def confirm(self, account):
         with self.lock:
-            if not self.process or self.process.poll() is not None or account not in self.contexts:
+            if account != self.account or not self.process or self.process.poll() is not None or not self.target:
                 self.open_login(account)
                 raise BrowserLoginRequired()
-            self.contexts[account]['confirmed'] = True
+            self.confirmed = True
 
     def image(self, account, url, referer, budget, cancel, category='images'):
         from .media import TYPES
@@ -235,7 +234,7 @@ class BrowserBridge:
             except (ValueError, OSError) as exc:
                 raise BrowserFailure('browser_address') from exc
             target = self._call('Target.createTarget', {
-                'url': 'about:blank', 'browserContextId': self.contexts[account]['context'], 'background': True,
+                'url': 'about:blank', 'background': True,
             })['targetId']
             trace, status, session = [], None, None
             try:
@@ -378,8 +377,8 @@ class BrowserBridge:
                     except subprocess.TimeoutExpired:
                         self.process.kill()
                         self.process.wait(timeout=3)
-            if self.profile:
-                self.profile.cleanup()
-            self.socket = self.process = self.profile = None
-            self.contexts.clear()
+            if self.profile_lock:
+                self.profile_lock.close()
+            self.socket = self.process = self.profile_lock = None
+            self.target, self.confirmed = None, False
             self.events.clear()

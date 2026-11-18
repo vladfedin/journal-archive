@@ -32,7 +32,7 @@ def test_cancel_login_and_stale_confirmation_cannot_resume_another_job(tmp_path,
     saved_job(tmp_path)
     jobs = Jobs(tmp_path)
     calls = []
-    jobs.sessions.browser = SimpleNamespace(ready=lambda account: False, open_login=lambda account: calls.append('open'), confirm=lambda account: calls.append('confirm'))
+    jobs.sessions._browsers['fixture'] = SimpleNamespace(ready=lambda account: False, open_login=lambda account: calls.append('open'), confirm=lambda account: calls.append('confirm'))
     monkeypatch.setattr('ljarchive.server.sync', lambda *a, **k: calls.append('sync') or {'status': 'complete', 'entries_saved': 0, 'comments_saved': 0})
     password = secrets.token_hex(16)
     jobs.start({'resume': 'fixture', 'password': password})

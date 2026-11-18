@@ -98,3 +98,15 @@ def test_move_endpoint_uses_local_auth_and_preserves_links(local_server, tmp_pat
         assert session.get(base+'/api/archives').json()['output']==str(target)
         assert session.get(base+'/archive/example_journal/index.html').status_code==200
         assert session.get(base+'/api/app').json()['output']==str(target)
+
+
+def test_profile_data_stays_outside_library_on_start_and_move(tmp_path, monkeypatch):
+    profiles = tmp_path/'app'/'browser-profiles'
+    monkeypatch.setattr('ljarchive.paths.browser_profiles', lambda: profiles)
+    source = tmp_path/'archives'
+    for path in (profiles, profiles.parent, profiles/'lj-reader'):
+        with pytest.raises(ExportError, match='профилей'):
+            Jobs(path)
+        with pytest.raises(ExportError, match='профилей'):
+            target_path(source, str(path))
+    assert resolve_output(source) == source

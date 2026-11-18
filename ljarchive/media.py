@@ -284,7 +284,7 @@ class Media:
             self.traces[url] = exc.trace
             # A resource can deny access even with a working browser session.
             # Count that answer; only an actual session failure needs another login.
-            pending = exc.reason in ('browser_closed', 'browser_start', 'browser_login', 'browser_missing')
+            pending = exc.reason in ('browser_closed', 'browser_start', 'browser_profile', 'browser_login', 'browser_missing')
             self.record_error(url, exc.reason, status='pending' if pending else 'failed', http_status=exc.http_status,
                               requests_made=self.budget.used - before)
             record = settle_browser_answer(url, self.errors[url])

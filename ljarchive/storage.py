@@ -25,25 +25,33 @@ def atomic_write(path: Path, data: str | bytes):
     os.replace(tmp, path)
 
 
+def exclusive_lock(path):
+    lock = path.open("a+b")
+    try:
+        if os.name == "nt":
+            import msvcrt
+            lock.seek(0)
+            if not lock.read(1):
+                lock.write(b"0")
+                lock.flush()
+            lock.seek(0)
+            msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        lock.close()
+        raise
+    return lock
+
+
 class Store:
     def __init__(self, folder: Path):
         self.folder = folder
         folder.mkdir(parents=True, exist_ok=True, mode=0o700)
-        self._lock = (folder / "archive.lock").open("a+b")
         try:
-            if os.name == "nt":
-                import msvcrt
-                self._lock.seek(0)
-                if not self._lock.read(1):
-                    self._lock.write(b"0")
-                    self._lock.flush()
-                self._lock.seek(0)
-                msvcrt.locking(self._lock.fileno(), msvcrt.LK_NBLCK, 1)
-            else:
-                import fcntl
-                fcntl.flock(self._lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self._lock = exclusive_lock(folder / "archive.lock")
         except OSError as exc:
-            self._lock.close()
             raise ExportError("Этот архив уже открыт другим процессом. Дождитесь завершения другой выгрузки.") from exc
         self.db = sqlite3.connect(folder / "archive.sqlite3")
         self.db.row_factory = sqlite3.Row

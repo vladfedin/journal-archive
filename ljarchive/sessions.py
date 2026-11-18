@@ -6,17 +6,26 @@ import time
 
 class Sessions:
     def __init__(self):
-        from .browser_bridge import BrowserBridge
         self._items = {}
         self._lock = threading.Lock()
-        self.browser = BrowserBridge()
+        self._browsers = {}
+
+    def browser_for(self, account):
+        from .browser_bridge import BrowserBridge
+        from .client import username
+        from .paths import browser_profiles
+        account = username(account)
+        with self._lock:
+            if account not in self._browsers:
+                self._browsers[account] = BrowserBridge(account, browser_profiles() / ('lj-' + account))
+            return self._browsers[account]
 
     @staticmethod
     def key(client):
         return client.account, client.user, client.source['type']
 
     def remember(self, client):
-        client.browser = self.browser
+        client.browser = self.browser_for(client.account)
         if not client._cookie or client.source['access']['status'] != 'verified':
             return
         with self._lock:
@@ -30,7 +39,7 @@ class Sessions:
             }
 
     def restore(self, client):
-        client.browser = self.browser
+        client.browser = self.browser_for(client.account)
         with self._lock:
             item = self._items.get(self.key(client))
             if not item or item['expires'] <= time.monotonic():
@@ -49,4 +58,7 @@ class Sessions:
     def clear(self):
         with self._lock:
             self._items.clear()
-        self.browser.close()
+            browsers = list(self._browsers.values())
+            self._browsers.clear()
+        for browser in browsers:
+            browser.close()

@@ -13,7 +13,7 @@ REASONS = {'http', 'timeout', 'connection', 'transfer', 'dns', 'invalid_url', 'u
            'too_large', 'empty', 'storage', 'redirects', 'host_paused', 'request_limit', 'cancelled',
            'paused', 'unknown', 'download', 'embed_unresolved', 'not_requested', 'local_missing',
            'api_limit', 'incomplete', 'restored', 'tls', 'web_login',
-           'browser_missing', 'browser_start', 'browser_closed', 'browser_timeout', 'browser_network',
+           'browser_missing', 'browser_start', 'browser_profile', 'browser_closed', 'browser_timeout', 'browser_network',
            'browser_login', 'browser_type', 'browser_redirect', 'browser_large', 'browser_empty',
            'browser_http', 'browser_address', 'browser_dns'}
 PHASES = {'idle', 'preparing', 'verify', 'login', 'browser_login', 'posts', 'comments', 'reactions', 'videos',

@@ -14,6 +14,13 @@ def redirect_file(folder):
     return folder.with_name('.' + folder.name + '-location.json')
 
 
+def check_profile_location(folder):
+    from .paths import browser_profiles
+    profiles = browser_profiles().resolve()
+    if profiles.is_relative_to(folder) or folder.is_relative_to(profiles):
+        raise ExportError('Выберите папку архивов отдельно от профилей браузера.')
+
+
 def resolve_output(folder):
     folder = Path(folder).resolve()
     visited = set()
@@ -30,6 +37,7 @@ def resolve_output(folder):
                 raise ExportError('Папка архивов после переноса недоступна. Подключите диск или верните папку на прежнее место.')
         except (ValueError, KeyError, TypeError, OSError) as exc:
             raise ExportError('Не удалось прочитать сохранённый путь к архивам.') from exc
+    check_profile_location(folder)
     return folder
 
 
@@ -37,6 +45,7 @@ def target_path(source, value):
     if not isinstance(value, str) or not value.strip() or not Path(value).expanduser().is_absolute():
         raise ExportError('Укажите полный путь к новой папке.')
     target = Path(value).expanduser().resolve()
+    check_profile_location(target)
     if target == source or target.is_relative_to(source) or source.is_relative_to(target):
         raise ExportError('Выберите отдельную папку вне текущей папки архивов.')
     if target.exists() and (not target.is_dir() or any(target.iterdir())):

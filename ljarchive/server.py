@@ -428,7 +428,7 @@ class Jobs:
 
     def wait_for_browser(self, account, *, force=False):
         from .browser_bridge import BrowserLoginRequired
-        browser = self.sessions.browser
+        browser = self.sessions.browser_for(account)
         if not force and browser.ready(account):
             return
         while True:
@@ -436,7 +436,7 @@ class Jobs:
                 raise Cancelled('Загрузка остановлена.')
             self.browser_confirmation.clear()
             browser.open_login(account)
-            self.progress(phase='browser_login', message='Войдите в ЖЖ в открывшемся окне и нажмите «Продолжить».')
+            self.progress(phase='browser_login', message='Проверьте вход в открытом окне ЖЖ и нажмите «Продолжить».')
             while not self.browser_confirmation.wait(.2):
                 if self.cancel.is_set():
                     raise Cancelled('Загрузка остановлена.')

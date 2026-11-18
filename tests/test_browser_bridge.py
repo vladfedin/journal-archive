@@ -4,6 +4,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import os
 from pathlib import Path
 import secrets
+import tempfile
 import threading
 import time
 
@@ -16,7 +17,7 @@ PNG = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4
 
 
 @pytest.mark.parametrize('ready_at', [0, 15, 100])
-def test_browser_startup_allows_cold_start_but_remains_bounded(monkeypatch, ready_at):
+def test_browser_startup_allows_cold_start_but_remains_bounded(monkeypatch, ready_at, tmp_path):
     from types import SimpleNamespace
     import ljarchive.browser_bridge as module
     elapsed = [0.0]
@@ -27,7 +28,7 @@ def test_browser_startup_allows_cold_start_but_remains_bounded(monkeypatch, read
     monkeypatch.setattr(module.subprocess, 'Popen', lambda *args, **kwargs: process)
     monkeypatch.setattr(module, 'debugging_endpoint', lambda path: 'fixture' if elapsed[0] >= ready_at else None)
     monkeypatch.setattr(module, 'connect', lambda *args, **kwargs: socket)
-    bridge = BrowserBridge(executable='fixture')
+    bridge = BrowserBridge('fixture', tmp_path, executable='fixture')
     monkeypatch.setattr(bridge, '_call', lambda *args, **kwargs: {})
     try:
         if ready_at < 30:
@@ -39,7 +40,7 @@ def test_browser_startup_allows_cold_start_but_remains_bounded(monkeypatch, read
             assert failure.value.reason == 'browser_start'
             assert 30 <= elapsed[0] < 30.2
             assert 'endpoint_seen=False' in str(failure.value.__cause__)
-            assert bridge.profile is bridge.process is None
+            assert bridge.profile_lock is bridge.process is None
     finally:
         bridge.close()
 
@@ -61,8 +62,11 @@ def protected_browser():
             if self.path == '/login':
                 status, mime, body = 200, 'text/html', b'<link rel="icon" href="data:,"><form action="/signed-in"><button>Sign in</button></form>'
             elif self.path == '/signed-in':
-                headers['Set-Cookie'] = 'session=' + token + '; HttpOnly; SameSite=Lax; Path=/'
+                headers['Set-Cookie'] = 'session=' + token + '; Max-Age=3600; HttpOnly; SameSite=Lax; Path=/'
                 status, mime, body = 200, 'text/html', b'<link rel="icon" href="data:,">Signed in'
+            elif self.path == '/signed-out':
+                headers['Set-Cookie'] = 'session=; Max-Age=0; Path=/'
+                status, mime, body = 200, 'text/plain', b'Signed out'
             elif self.path == '/redirect':
                 headers['Location'] = '/private.png?auth=' + token
                 status, mime, body = 302, 'text/plain', b''
@@ -100,18 +104,19 @@ def protected_browser():
     def validate(url):
         if not url.startswith(base + '/'):
             raise ValueError('outside fixture')
-    bridge = BrowserBridge(executable=executable, headless=True, validate_url=validate, login_url=base + '/login')
+    directory = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+    bridge = BrowserBridge('fixture', Path(directory.name) / 'lj-fixture', executable=executable, headless=True, validate_url=validate, login_url=base + '/login')
     try:
         bridge.open_login('fixture')
         pages = [tab for tab in bridge._call('Target.getTargets')['targetInfos'] if tab['type'] == 'page']
-        assert len(pages) == 1 and pages[0]['targetId'] == bridge.contexts['fixture']['target']
+        assert len(pages) == 1 and pages[0]['targetId'] == bridge.target
         yield bridge, base, calls, token
     finally:
-        bridge.close(); server.shutdown(); server.server_close(); thread.join()
+        bridge.close(); server.shutdown(); server.server_close(); thread.join(); directory.cleanup()
 
 
 def sign_in(bridge, base, calls):
-    tab = bridge.contexts['fixture']['target']
+    tab = bridge.target
     session = bridge._call('Target.attachToTarget', {'targetId': tab, 'flatten': True})['sessionId']
     bridge._call('Page.navigate', {'url': base + '/signed-in'}, session)
     deadline = time.monotonic() + 5
@@ -145,11 +150,38 @@ def test_real_browser_uses_login_and_redirects_without_exporting_credentials(pro
     assert counter.used == 2
     assert [item['http_status'] for item in trace] == [302, 200]
     assert token not in str(trace) and all('?' not in item['url'] for item in trace)
-    # A different archive account cannot reuse this login.
-    bridge.open_login('different'); bridge.confirm('different')
-    with pytest.raises(BrowserFailure) as other:
-        bridge.image('different', base + '/private.png', '', budget(), threading.Event())
-    assert other.value.http_status == 403
+    with pytest.raises(BrowserFailure):
+        bridge.open_login('different')
+
+
+def test_browser_profile_restores_remembered_login_only_for_same_account(protected_browser, monkeypatch):
+    from ljarchive.sessions import Sessions
+    bridge, base, calls, _ = protected_browser
+    sign_in(bridge, base, calls)
+    bridge.close()
+    monkeypatch.setattr('ljarchive.paths.browser_profiles', lambda: bridge.profile_dir.parent)
+    sessions = Sessions()
+    try:
+        for name, allowed in [('fixture', True), ('different', False), ('fixture', False)]:
+            restored = sessions.browser_for(name)
+            restored.executable = bridge.executable
+            restored.headless, restored.login_url, restored.validate_url = True, base + '/login', bridge.validate_url
+            assert not restored.ready(name)
+            calls.clear()
+            restored.open_login(name)
+            restored.confirm(name)
+            if allowed:
+                assert restored.image(name, base + '/private.png', base + '/', budget(), threading.Event())[0] == PNG
+                body, _ = restored.document(name, base + '/signed-out', base + '/', budget(), threading.Event())
+                assert body == b'Signed out'
+                restored.close()
+            else:
+                with pytest.raises(BrowserFailure) as denied:
+                    restored.image(name, base + '/private.png', base + '/', budget(), threading.Event())
+                assert denied.value.http_status == 403
+            assert '/signed-in' not in calls
+    finally:
+        sessions.clear()
 
 
 def test_browser_waits_for_a_temporarily_locked_port_file(protected_browser, monkeypatch):
@@ -174,7 +206,7 @@ def test_browser_waits_for_a_temporarily_locked_port_file(protected_browser, mon
         return connect(*args, **kwargs)
     monkeypatch.setattr(module, 'connect', not_listening)
     bridge.open_login('fixture')
-    assert len(attempts) >= 5 and len(connections) == 2 and bridge.contexts['fixture']['target']
+    assert len(attempts) >= 5 and len(connections) == 2 and bridge.target
 
 
 def test_real_browser_obeys_budget_cancel_and_http_errors(protected_browser):
@@ -219,7 +251,7 @@ def test_download_target_blocks_html_script_even_when_controller_is_delayed(prot
     sign_in(bridge, base, calls)
     # A real page in the login window can still run scripts. This also proves
     # that the fixture would observe the WebSocket handshake if it escaped.
-    target = bridge.contexts['fixture']['target']
+    target = bridge.target
     session = bridge._call('Target.attachToTarget', {'targetId': target, 'flatten': True})['sessionId']
     bridge._call('Page.navigate', {'url': base + '/active.html'}, session)
     deadline = time.monotonic() + 5
@@ -254,7 +286,7 @@ def test_browser_download_persists_file_json_and_html_then_skips_it(protected_br
     from ljarchive.render import build_archive
     bridge, base, calls, token = protected_browser
     sign_in(bridge, base, calls)
-    sessions = Sessions(); sessions.browser = bridge
+    sessions = Sessions(); sessions._browsers['fixture'] = bridge
     monkeypatch.setattr('ljarchive.media.authenticated_image_host', lambda u: u.startswith(base + '/'))
     monkeypatch.setattr('ljarchive.on_demand.authenticated_image_host', lambda u: u.startswith(base + '/'))
     store = Store(tmp_path)
@@ -298,7 +330,7 @@ def test_browser_access_denial_and_dns_are_not_password_or_disk_errors(protected
     from ljarchive.storage import Store
     bridge, base, _, _ = protected_browser
     bridge.confirm('fixture')
-    sessions = Sessions(); sessions.browser = bridge
+    sessions = Sessions(); sessions._browsers['fixture'] = bridge
     monkeypatch.setattr('ljarchive.media.authenticated_image_host', lambda u: u.startswith(base + '/'))
     monkeypatch.setattr('ljarchive.on_demand.authenticated_image_host', lambda u: u.startswith(base + '/'))
     store = Store(tmp_path); url = base + '/private.png'
@@ -354,7 +386,7 @@ def test_browser_batch_continues_denials_and_keeps_them_closed_on_reload(protect
     from ljarchive.media import Media
     bridge, base, calls, _ = protected_browser
     sign_in(bridge, base, calls); calls.clear()
-    sessions = Sessions(); sessions.browser = bridge
+    sessions = Sessions(); sessions._browsers['fixture'] = bridge
     monkeypatch.setattr('ljarchive.media.authenticated_image_host', lambda u: u.startswith(base + '/'))
     monkeypatch.setattr('ljarchive.on_demand.authenticated_image_host', lambda u: u.startswith(base + '/'))
     urls = [base + p for p in ('/denied.png', '/private.png', '/unauthorized.png')]

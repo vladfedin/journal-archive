@@ -37,7 +37,7 @@ def main():
             build_archive(store, report); store.close()
             params = {'username': 'fixture', 'archive': 'fixture', 'images': True, 'delay': 1, 'max_requests': 10, 'mode': 'full', 'entry_limit': None}
             atomic_write(root / '.jobs/fixture.json', dumps({'parameters': params, 'state': {'phase': 'partial', 'slug': 'fixture', 'username': 'fixture', 'job_id': 'before', 'archive_url': '/archive/fixture/index.html'}}))
-            server = make_server(root, 0); server.jobs.sessions.browser = bridge
+            server = make_server(root, 0); server.jobs.sessions._browsers['fixture'] = bridge
             thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
             base = f'http://127.0.0.1:{server.server_port}'
             resumed = []
