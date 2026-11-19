@@ -5,7 +5,7 @@ from urllib.parse import urlsplit
 
 from .entries import is_repost
 from .media import Media
-from .render import ENV, entry_summary, original_url, plain, render_feed
+from .render import ENV, entry_summary, order_feed, original_url, plain, render_feed
 from .storage import dumps
 from .userpics import describe
 
@@ -21,7 +21,7 @@ def summaries(store):
         eid = int(entry['itemid'])
         count, screened = (0, 0) if is_repost(entry) else counts.get(eid, (0, 0))
         result.append(entry_summary(entry, count, screened or 0, pictures.get(str(eid))))
-    result.sort(key=lambda e: (e['date'], e['id']), reverse=True)
+    order_feed(result, store.sticky_entry_id())
     return entries, result
 
 

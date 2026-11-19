@@ -165,7 +165,9 @@ document.addEventListener("DOMContentLoaded", () => {
         const seen = new Set();
         rows = rows.filter(row => { if (seen.has(row.e.id)) return false; seen.add(row.e.id); return true; });
       }
-      rows.sort((a, b) => ((b.e.date.localeCompare(a.e.date) || b.e.id - a.e.id) * ($("sort").value === "old" ? -1 : 1)));
+      const pinFirst = !terms.length && !period && !year && !tag && !security;
+      rows.sort((a, b) => (pinFirst && Number(!!b.e.sticky) - Number(!!a.e.sticky)) ||
+        (b.e.date.localeCompare(a.e.date) || b.e.id - a.e.id) * ($("sort").value === "old" ? -1 : 1));
       const pages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE)); page = Math.min(page, pages);
       const active = FILTERS.filter(key => $(key).value).length;
       $("results-count").textContent = terms.length ? plural(rows.length, "совпадение", "совпадения", "совпадений") : plural(rows.length, "запись", "записи", "записей");
@@ -178,12 +180,13 @@ document.addEventListener("DOMContentLoaded", () => {
       if (!rows.length) { const empty = el("div", "empty-state"); empty.append(el("p", "", "Ничего не найдено")); list.append(empty); }
       let lastYear;
       for (const {e, d} of rows.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)) {
-        if(e.year && e.year!==lastYear){const mark=el("a","year-mark",e.year);mark.href="calendar.html?year="+encodeURIComponent(e.year);mark.setAttribute("aria-label","Календарь за "+e.year);list.append(mark);lastYear=e.year;}
+        if(!(pinFirst && e.sticky) && e.year && e.year!==lastYear){const mark=el("a","year-mark",e.year);mark.href="calendar.html?year="+encodeURIComponent(e.year);mark.setAttribute("aria-label","Календарь за "+e.year);list.append(mark);lastYear=e.year;}
         const card = el("article", "entry-row entry-card"), meta = el("div", "entry-meta"), title = el("h2"), link = el("a", "", e.title);
         if(e.author)meta.append(el("span", "author", e.author));
         card.dataset.entryId=e.id;
         const time = el("time", "", ruDate(e.date)); if (e.date) time.dateTime = e.date;
         link.href = d?.url || e.url; title.append(link); meta.append(time);
+        if (e.sticky) meta.append(el("span", "state", "Закреплено"));
         if (e.repost) meta.append(el("span", "state repost-label", "Перепост"));
         if (e.security !== "public") meta.append(el("span", "state", e.security_label));
         if (view === "full" && e.userpic?.path) {

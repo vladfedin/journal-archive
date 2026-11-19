@@ -23,7 +23,7 @@ from .gaps import closed
 from .storage import Store, atomic_write, dumps
 
 # Bump when previously generated offline pages or assets need rebuilding.
-ARCHIVE_FORMAT_VERSION = "0.8.14.1"
+ARCHIVE_FORMAT_VERSION = "0.8.14.2"
 ROOT = Path(__file__).parent
 ENV = Environment(loader=FileSystemLoader(ROOT / "templates"), autoescape=select_autoescape(["html"]))
 TAGS = frozenset("p br div span a b strong i em u s del blockquote pre code ul ol li h1 h2 h3 h4 h5 h6 hr img video table thead tbody tr td th caption dl dt dd sub sup details summary figure figcaption".split())
@@ -354,6 +354,12 @@ def entry_summary(entry, comments, screened, picture):
             'url': f'entries/{eid}.html', 'reactions': reaction_view(entry.get('reactions'))}
 
 
+def order_feed(rows, sticky_entry_id):
+    for row in rows:
+        row['sticky'] = row['id'] == sticky_entry_id
+    rows.sort(key=lambda row: (row['sticky'], row['date'], row['id']), reverse=True)
+
+
 def render_feed(entry, user, links, media, comment_ids):
     props = entry.get('props') if isinstance(entry.get('props'), dict) else {}
     current = [(label, plain(props[key])) for key, label in CURRENT if plain(props.get(key)).strip()]
@@ -586,6 +592,7 @@ def build_archive(store: Store, report: dict, *, images=False, userpics=False, c
     if progress:
         progress(phase='render', message='JSON', completed=0, total=0)
     export_json(store, split=True)
+    order_feed(summaries, store.sticky_entry_id())
     atomic_write(folder / "export-report.json", dumps(report))
     atomic_write(folder / 'assets/feed-data.js', 'window.ARCHIVE=' + dumps({'entries': summaries}).replace('<', '\\u003c') + ';')
     # JS file rather than fetch(): search also works when opened through file://.

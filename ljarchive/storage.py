@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .client import ExportError
+from .entries import is_sticky
 
 
 def dumps(value) -> str:
@@ -73,6 +74,8 @@ class Store:
                 PRIMARY KEY(kind,object_id,digest));
         """)
         with self.db:
+            if self.get('sticky_entry_id') is None:
+                self.set('sticky_entry_id', self.sticky_entry_id())
             if self.get('username') and not self.get('source'):
                 from .sources import stored_source
                 self.set('source', stored_source(self))
@@ -87,7 +90,36 @@ class Store:
     def set(self, key, value):
         self.db.execute("INSERT OR REPLACE INTO settings VALUES (?,?)", (key, dumps(value)))
 
+    def sticky_entry_id(self):
+        saved = self.get('sticky_entry_id')
+        if saved is not None:
+            return saved
+        # Old archives can contain observations from several selective updates.
+        # Hash rowids reflect save order. A local not_returned annotation can
+        # obscure that order, and an observed unpin supersedes an older mark.
+        rows = self.db.execute("""WITH marked(id) AS (
+                SELECT id FROM entries WHERE json_extract(payload,'$.props.sticky') IN (1, '1')
+                UNION SELECT object_id FROM versions WHERE kind='post'
+                    AND json_extract(payload,'$.props.sticky') IN (1, '1'))
+            SELECT e.id, h.rowid AS saved_order, json_extract(e.payload,'$.props.sticky') AS sticky,
+                json_extract(e.payload,'$.source_status') AS source_status
+            FROM marked JOIN entries e ON e.id=marked.id
+            LEFT JOIN record_hashes h ON h.kind='post' AND h.object_id=e.id
+            ORDER BY h.rowid DESC""").fetchall()
+        if not rows or rows[0]['sticky'] not in (1, '1'):
+            return 0
+        if len(rows) > 1 and (rows[0]['source_status'] == 'not_returned' or rows[-1]['saved_order'] is None):
+            return 0
+        return rows[0]['id']
+
     def save_entry(self, item):
+        # getevents marks the journal's current pin. A partial update can move
+        # it without refreshing the source record for the previously pinned post.
+        if item.get('source_status') != 'not_returned':
+            if is_sticky(item):
+                self.set('sticky_entry_id', int(item['itemid']))
+            elif self.get('sticky_entry_id') == int(item['itemid']):
+                self.set('sticky_entry_id', 0)
         self._version("post", "entries", int(item["itemid"]), item)
         self.db.execute("INSERT OR REPLACE INTO entries VALUES (?,?)", (int(item["itemid"]), dumps(item)))
 

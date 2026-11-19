@@ -14,6 +14,11 @@ def is_repost(entry):
     return entry.get('repost') in (1, '1', True)
 
 
+def is_sticky(entry):
+    props = entry.get('props')
+    return isinstance(props, dict) and props.get('sticky') in (1, '1', True)
+
+
 def repost_url(entry):
     if not is_repost(entry):
         return None
