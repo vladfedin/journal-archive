@@ -12,11 +12,11 @@ window.ArchiveTimeline=class {
     this.gap=button('Пропуски','Следующая запись с пропусками',()=>{const after=(this.lastGap??Math.floor(this.viewport.scrollLeft/this.slot))+1;let next=this.items.findIndex((i,n)=>n>=after&&i.state==='partial');if(next<0)next=this.items.findIndex(i=>i.state==='partial');this.lastGap=next;this.jump(next);this.track.querySelector(`[data-timeline-index="${next}"]`)?.focus({preventScroll:true});});
     this.scaleControl=node('select','input timeline-scale');this.scaleControl.setAttribute('aria-label','Масштаб общей карты');
     this.scaleControl.append(new Option('По времени','time'),new Option('По записям','posts'));
-    this.scaleControl.onchange=()=>{this.scale=this.scaleControl.value;this.caption.firstChild.textContent=this.scale==='time'?'Равные годы · паузы видны':'Равная ширина на запись';this.invalidate();};
+    this.scaleControl.onchange=()=>{this.scale=this.scaleControl.value;this.invalidate();};
     this.head.append(this.count,this.scaleControl,this.year,this.gap,this.current);
     this.year.onchange=()=>{const band=this.bands.find(b=>b.label===this.year.value);if(band?.count)this.jump(band.start,false);};
     this.overview=node('canvas','timeline-overview');this.overview.setAttribute('aria-hidden','true');this.cache=document.createElement('canvas');
-    this.caption=node('div','timeline-caption');this.caption.append(node('span','','Один участок — год'));this.windowLabel=node('span');this.caption.append(this.windowLabel);
+    this.caption=node('div','timeline-caption');this.windowLabel=node('span');this.caption.append(this.windowLabel);
     this.detailHead=node('div','timeline-detail-head');const range=node('div');this.range=node('strong');this.rangeCount=node('span','muted small');range.append(this.range,this.rangeCount);
     const nav=node('div','timeline-nav');this.prev=button('←','Предыдущие записи',()=>this.shift(-1));this.next=button('→','Следующие записи',()=>this.shift(1));
     const help=node('details','timeline-help'),summary=node('summary','','?');summary.setAttribute('aria-label','Как читать хронологию');

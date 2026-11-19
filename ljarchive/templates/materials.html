@@ -2,7 +2,7 @@
 {% set archive_section = 'materials' %}
 {% block title %}Материалы · {{ user }}{% endblock %}
 {% block head %}{% if kind in ('image', 'userpic') and not directory %}<script defer src="{{ assets }}gallery.js"></script>{% endif %}{% endblock %}
-{% block body %}<main class="main archive-main gallery-main"><header class="gallery-heading"><h1>Материалы</h1>
+{% block body %}<main class="main archive-main gallery-main"><header class="gallery-heading"><h1 class="section-title"><span data-icon="materials" aria-hidden="true"></span>Материалы</h1>
 {% include 'archive-nav.html' %}</header>
 <nav class="gallery-filters" aria-label="Тип материала">{% for filter in filters %}<a class="btn{% if filter.kind == kind %} selected{% endif %}" href="{{ filter.href }}"{% if filter.kind == kind %} aria-current="page"{% endif %}>{{ filter.label }} <span class="muted">{{ filter.count }}</span></a>{% endfor %}</nav>
 {% if directory %}

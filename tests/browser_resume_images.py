@@ -68,6 +68,7 @@ def main():
                 page = browser.new_page(viewport={'width': 1000, 'height': 850})
                 errors = []; page.on('pageerror', lambda e: errors.append(str(e)))
                 page.goto(base)
+                page.get_by_text('Технические сведения', exact=True).click()
                 page.locator('#job-action').click()
                 page.locator('#password').fill(password)
                 page.locator('#submit-export').click()
@@ -92,7 +93,7 @@ def main():
                 assert state['phase'] == 'complete' and state['job_id'] == job_id
                 expect(page.locator('#contact-dialog')).to_be_visible()
                 page.keyboard.press('Escape')
-                page.get_by_text('Подробности докачки', exact=True).click()
+                page.get_by_text('Технические сведения', exact=True).click()
                 expect(page.locator('#job-photo-result')).to_be_visible()
                 expect(page.locator('#job-photo-result')).to_contain_text('сохранено 1 · недоступно 1')
                 assert resumed == [True] and state['requests_used'] == 2

@@ -282,12 +282,9 @@ function showStatus(s){lastState=s;showContact(s);if(!s.phase||s.phase==='idle'|
   $('job-report').hidden=!s.archive_url;if(s.archive_url)$('job-report').href=s.archive_url.replace(/index\.html$/,'report.html');
   $('job-settings').hidden=!s.parameters;
   $('job-diagnostics').hidden=!s.slug||s.slug==='_demo';
-  const recoveryBox=$('job-recovery'),recoveryMode=String(!done);
-  if(recoveryBox.dataset.running!==recoveryMode){
-    recoveryBox.dataset.running=recoveryMode;
-    recoveryBox.open=!done;
-  }
-  recoveryBox.hidden=!s.recovery&&!s.archive_url;
+  const recoveryBox=$('job-recovery');
+  if(recoveryBox.dataset.job!==s.job_id){recoveryBox.open=false;recoveryBox.dataset.job=s.job_id||'';}
+  recoveryBox.hidden=!s.recovery&&!s.archive_url&&!s.parameters&&$('job-diagnostics').hidden&&s.phase!=='partial';
   $('job-recovery-content').hidden=!s.recovery;
   $('job-skips').hidden=!s.archive_url;
   if(s.archive_url)$('job-skips').href=s.archive_url.replace(/index\.html$/,'report.html#skipped');
@@ -295,6 +292,8 @@ function showStatus(s){lastState=s;showContact(s);if(!s.phase||s.phase==='idle'|
   let imageAction=$('job-images');if(!imageAction){imageAction=el('button','btn','Изображения: файлы и докачка');imageAction.type='button';imageAction.id='job-images';$('job-recovery').append(imageAction);}
   imageAction.hidden=!s.slug||!s.recovery?.rows?.some(r=>r.key==='images'&&(r.remaining||r.unavailable));imageAction.onclick=()=>window.ArchiveImages.open(s.slug);
   $('job-hint').hidden=done||!!s.cancelling;
+  const actionSlot=$(s.phase==='partial'?'job-tech-actions':'job-run-actions');
+  if($('job-action').parentNode!==actionSlot)actionSlot.append($('job-action'));
   $('job-action').disabled=!!s.cancelling;$('job-action').textContent=!done?'Остановить':ready?'Скрыть':s.phase==='cancelled'||s.phase==='error'?'Продолжить':'Докачать пропуски';
   $('job-action').className='btn'+(ready?' text':done?' primary':'');
   $('job-browser-cancel').hidden=s.phase!=='browser_login';$('job-browser-cancel').disabled=!!s.cancelling;
@@ -310,16 +309,22 @@ async function library(){const data=await api('/api/archives');storageStatus(dat
     const mode=archive.parameters?.mode;const description=archive.entry_limit?`Тест · ${archive.entry_limit} записей`:mode==='period'?[day(archive.parameters.date_from),day(archive.parameters.date_to)].filter(Boolean).join(' — '):'';
     if(description)name.append(el('span','journal-scope',description));row.append(name,el('td','mono',String(archive.entries_saved||0)),el('td','mono',String(archive.comments_saved||0)),el('td','mono',day(archive.created_at)));
     const state=el('td'),status=el(archive.report_url?'a':'span','status'+(archive.status==='complete'||archive.finished_with_skips?'':' partial'),archive.finished_with_skips?'Готов':labels[archive.status]||'Не завершён');if(archive.report_url)status.href=archive.report_url;state.append(status);row.append(state);
-    const cell=el('td'),actions=el('div','row-actions');if(archive.url){const open=el('a','btn','Открыть');open.href=archive.url;actions.append(open);}
+    const cell=el('td'),actions=el('div','row-actions');if(archive.url){
+      const shortcuts=el('span','library-shortcuts');
+      for(const [label,icon,href] of [['Открыть архив','open',archive.url],['Статистика','statistics',archive.url.replace('index.html','statistics.html')]]){
+        const a=el('a','icon');a.href=href;a.title=label;a.setAttribute('aria-label',label);a.innerHTML=svg(icon);shortcuts.append(a);
+      }
+      link.after(shortcuts);
+    }
     const more=el('details','more'),summary=el('summary','','⋯');summary.setAttribute('aria-label','Действия с архивом '+archive.username);const menu=el('div','menu');
     const settings=el('button','','Параметры');settings.type='button';settings.onclick=()=>showParameters(archive);menu.append(settings);
     const diagnostics=el('button','','Диагностика');diagnostics.type='button';diagnostics.onclick=()=>showDiagnostics(archive.slug);menu.append(diagnostics);
     const images=el('button','','Изображения');images.type='button';images.onclick=()=>{more.open=false;window.ArchiveImages.open(archive.slug);};menu.append(images);
     if(archive.resumable){const resume=el('button','',resumeLabel(archive));resume.type='button';resume.dataset.resume='';resume.onclick=()=>openDialog('resume',archive);menu.append(resume);}
     const update=el('button','','Обновить');update.type='button';update.dataset.update='';update.onclick=()=>openDialog('update',archive);menu.append(update);
-    if(archive.url){menu.append(el('hr'));for(const [text,url] of [['Скачать JSON',archive.activitystreams_url],['Исходный JSON',archive.json_url],['Скачать ZIP',archive.zip_url],['Статистика',archive.url.replace('index.html','statistics.html')],['Календарь',archive.url.replace('index.html','calendar.html')],['Хронология',archive.url.replace('index.html','timeline.html')],['Профиль',archive.url.replace('index.html','account.html')],['Переписка',archive.url.replace('index.html','messages.html')],['Состояние архива',archive.report_url]]){const a=el('a','',text);a.href=url;menu.append(a);}}
+    if(archive.url){menu.append(el('hr'));for(const [text,url] of [['Скачать JSON',archive.activitystreams_url],['Исходный JSON',archive.json_url],['Скачать ZIP',archive.zip_url],['Календарь',archive.url.replace('index.html','calendar.html')],['Хронология',archive.url.replace('index.html','timeline.html')],['Профиль',archive.url.replace('index.html','account.html')],['Переписка',archive.url.replace('index.html','messages.html')],['Состояние архива',archive.report_url]]){const a=el('a','',text);a.href=url;menu.append(a);}}
     more.open=open.has(archive.slug);more.append(summary,menu);actions.append(more);cell.append(actions);row.append(cell);
-    row.querySelectorAll('a,button,summary').forEach(action=>action.dataset.action=action.textContent);
+    row.querySelectorAll('a,button,summary').forEach(action=>action.dataset.action=action.textContent||action.getAttribute('aria-label'));
     $('archives').append(row);
     if(archive.slug===focusSlug)Array.from(row.querySelectorAll('[data-action]')).find(action=>action.dataset.action===focusAction)?.focus({preventScroll:true});
   }setBusy(busy);

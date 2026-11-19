@@ -1,7 +1,7 @@
 {% extends 'base.html' %}
 {% block title %}Состояние архива · {{ user }}{% endblock %}
 {% block body %}
-<main class="main reading"><nav class="reading-nav"><a href="index.html">← Все записи</a></nav><h1>Состояние архива</h1><p class="muted small">{{ user }} · {{ report.created_at|ru_date }}</p>
+<main class="main reading"><nav class="reading-nav"><a href="index.html">← Все записи</a></nav><h1 class="section-title"><span data-icon="report" aria-hidden="true"></span>Состояние архива</h1><p class="muted small">{{ user }} · {{ report.created_at|ru_date }}</p>
 <div class="report-grid"><div><strong>{{ report.entries_saved }}</strong><span>записей</span></div><div><strong>{{ report.comments_saved }}</strong><span>комментариев</span></div><div><strong>{{ report.images_saved|default(0) }}</strong><span>изображений</span></div></div>
 {% if (report.status == 'complete' or report.finished_with_skips) and not report.request_limit_reached %}<p>Архив готов</p>{% else %}<div class="report-note"><strong>{% if report.status == 'demo' %}Пример · вымышленные данные{% elif report.request_limit_reached %}Достигнут лимит запросов{% elif report.status == 'cancelled' %}Загрузка остановлена{% else %}Загрузка не завершена{% endif %}</strong>{% if report.personal and report.personal.interruption %}<p>{{ report.personal.interruption.message }}</p>{% elif report.issues %}<p>{{ report.issues[0] }}</p>{% endif %}</div>{% endif %}
 <details class="form-advanced" id="skipped"><summary>Подробности проверки</summary>

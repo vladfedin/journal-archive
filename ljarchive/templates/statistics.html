@@ -4,7 +4,7 @@
 {% block head %}<script defer src="assets/statistics-data.js"></script><script defer src="assets/statistics.js"></script><script defer src="assets/statistics-live.js"></script>{% endblock %}
 {% block body %}
 <main class="main stats-main">
-<div class="heading"><h1>Статистика</h1><a href="data/statistics.json" download>JSON ↓</a></div>
+<div class="heading"><h1 class="section-title"><span data-icon="statistics" aria-hidden="true"></span>Статистика</h1><a href="data/statistics.json" download>JSON ↓</a></div>
 {% include 'archive-nav.html' %}
 <p id="stats-live" class="fine" role="status"></p><p id="stats-summary" class="muted">{{ stats.totals.people|plural('участник','участника','участников') }} · {{ stats.totals.comments|plural('комментарий','комментария','комментариев') }}{% if stats.years %} · {{ stats.years|first }}–{{ stats.years|last }}{% endif %}</p>
 {% if report.status == "demo" %}<p class="inline-status">Пример · вымышленные данные</p>{% else %}<p id="stats-coverage" class="inline-status"{% if stats.coverage.discussions_complete and stats.coverage.posts_complete %} hidden{% endif %}><a href="report.html">Архив неполный</a> · статистика по полученным данным</p>{% endif %}

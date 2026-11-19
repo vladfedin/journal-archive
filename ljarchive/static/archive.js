@@ -69,6 +69,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const singleTabClick = (event, link) => link && event.button === 0 && !event.defaultPrevented &&
     !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey && !link.target;
   const routeKey = "ljarchive.feed-to-entry";
+  const returnKey = "ljarchive.entry-to-feed";
   const returnLink = document.querySelector('.reading-nav a[href="../index.html"]');
   if (returnLink) {
     // The referrer is sometimes empty for file://. Transfer the source for
@@ -78,15 +79,19 @@ document.addEventListener("DOMContentLoaded", () => {
       const route = JSON.parse(sessionStorage.getItem(routeKey));
       sessionStorage.removeItem(routeKey);
       if (route?.to === location.href && route.from === returnLink.href) {
-        fromFeed = true;
-        history.replaceState({...history.state, fromJournalFeed: true}, "");
+        fromFeed = route.position;
+        history.replaceState({...history.state, fromJournalFeed: fromFeed, entryUrl: location.href}, "");
       }
     } catch {}
     if (fromFeed) returnLink.addEventListener("click", event => {
-      if (singleTabClick(event, returnLink) && history.length > 1) {
+      if (!singleTabClick(event, returnLink)) return;
+      // A comment permalink can add another history entry within this post.
+      if (history.state?.entryUrl === location.href && history.length > 1) {
         event.preventDefault();
         history.back();
+        return;
       }
+      try { sessionStorage.setItem(returnKey, JSON.stringify({to: returnLink.href, position: fromFeed})); } catch {}
     });
   }
 
@@ -117,6 +122,11 @@ document.addEventListener("DOMContentLoaded", () => {
     const tags = [...tagCounts.keys()].sort((a, b) => a.localeCompare(b, "ru"));
     for (const tag of tags) { const o = el("option", "", tag); o.value = tag; $("tag").append(o); }
     let restore = history.state?.journalFeed;
+    try {
+      const returning = JSON.parse(sessionStorage.getItem(returnKey));
+      sessionStorage.removeItem(returnKey);
+      if (returning?.to === location.href) restore = returning.position;
+    } catch {}
     history.scrollRestoration = "manual";
     const params = new URLSearchParams(restore?.filters ?? location.search);
     for (const key of ["year", "tag", "security", "sort"]) if (params.has(key)) $(key).value = params.get(key);
@@ -128,6 +138,14 @@ document.addEventListener("DOMContentLoaded", () => {
     let selectedDate = /^\d{4}-\d{2}-\d{2}$/.test(params.get('date')||'') ? params.get('date') : '';
     let selectedMonth = !selectedDate && /^\d{4}-\d{2}$/.test(params.get('month')||'') ? params.get('month') : '';
     const bodies = new Map(), pending = new Map();
+    let alignReadingPosition = null, resizeWatch = null;
+    function releasePosition() {
+      alignReadingPosition = null;
+      resizeWatch?.disconnect();
+    }
+    for (const event of ["pointerdown", "wheel", "touchstart", "keydown"]) {
+      window.addEventListener(event, releasePosition, {passive: true, capture: true});
+    }
     window.ArchivePost = (id, html) => {
       bodies.set(id, html);
       pending.get(id)?.(html);
@@ -139,6 +157,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const show = html => {
         container.style.minHeight = "";
         container.innerHTML = html;
+        alignReadingPosition?.();
       };
       if (bodies.has(entry.id)) { show(bodies.get(entry.id)); return; }
       const script = document.createElement("script");
@@ -207,7 +226,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const state = {filters, shown, y: scrollY};
       if (view === "full") {
         state.width = list.clientWidth;
-        state.heights = Array.from(list.querySelectorAll(".feed-body"), body => Math.ceil(body.getBoundingClientRect().height));
+        state.heights = Array.from(list.querySelectorAll(".feed-body"), body => body.getBoundingClientRect().height);
       }
       if (card) {
         state.row = Number(card.dataset.row);
@@ -215,6 +234,7 @@ document.addEventListener("DOMContentLoaded", () => {
         state.offset = card.getBoundingClientRect().top;
       }
       try { history.replaceState({...history.state, journalFeed: state}, ""); } catch {}
+      return state;
     }
     function visibleCard() {
       return document.elementFromPoint(innerWidth / 2, innerHeight / 2)?.closest("#entry-list article");
@@ -225,13 +245,14 @@ document.addEventListener("DOMContentLoaded", () => {
       if (!singleTabClick(event, link)) return;
       const card = link.closest("article");
       if (!card || !link.matches("h2 a, .count-link")) return;
-      remember(card);
+      const position = remember(card);
       try {
-        sessionStorage.setItem(routeKey, JSON.stringify({from: new URL("index.html", location.href).href, to: link.href}));
+        sessionStorage.setItem(routeKey, JSON.stringify({from: new URL("index.html", location.href).href, to: link.href, position}));
       } catch {}
     });
 
     function render() {
+      releasePosition();
       observer?.disconnect();
       lazyBodies?.disconnect();
       more.hidden = true;
@@ -282,7 +303,15 @@ document.addEventListener("DOMContentLoaded", () => {
       if (previous) {
         const card = list.querySelector(`[data-row="${Number(previous.row)}"]`);
         if (card && card.querySelector("h2 a").getAttribute("href") === previous.href) {
-          window.scrollBy({top: card.getBoundingClientRect().top - previous.offset, behavior: "instant"});
+          alignReadingPosition = () => {
+            const delta = card.getBoundingClientRect().top - previous.offset;
+            if (Math.abs(delta) > 1) window.scrollBy({top: delta, behavior: "instant"});
+          };
+          alignReadingPosition();
+          if (window.ResizeObserver) {
+            resizeWatch = new ResizeObserver(() => alignReadingPosition?.());
+            resizeWatch.observe(list);
+          }
         } else {
           window.scrollTo({top: previous.y, behavior: "instant"});
         }

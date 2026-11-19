@@ -1,17 +1,25 @@
 <!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Архивы · Архив ЖЖ</title><link rel="icon" href="/static/favicon.ico" sizes="16x16 32x32 48x48"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml" sizes="any"><link rel="stylesheet" href="/static/archive.css"><script src="/static/theme.js"></script><script defer src="/static/common.js"></script><script defer src="/static/timeline.js"></script><script defer src="/static/image-recovery.js"></script><script defer src="/static/app.js"></script></head><body data-page="library">
 <header class="header"><div class="header-inner"><a class="brand" href="/"><span class="mark" data-icon="archive"></span>Архив ЖЖ</a><nav class="nav" aria-label="Разделы"><a href="/" aria-current="page">Архивы</a><a href="/search">Поиск</a><a href="/help">Помощь</a><button class="icon" id="theme-toggle" aria-label="Тёмная тема" hidden><span></span></button></nav></div></header>
 <main class="main">
-<div class="heading"><h1>Архивы</h1><button class="btn primary" data-new><span data-icon="plus"></span>Новый архив</button></div>
+<div class="heading"><h1 class="section-title"><span data-icon="archive" aria-hidden="true"></span>Архивы</h1><button class="btn primary" data-new><span data-icon="plus"></span>Новый архив</button></div>
 <section class="job" id="job" hidden aria-labelledby="job-title">
-<div class="job-head"><div class="job-heading"><h2 class="job-journal"><span class="journal-name" id="job-title"></span><span class="job-kind" id="job-kind" hidden></span></h2>
+<div class="job-head"><div class="job-heading"><div class="journal-bar"><h2 class="job-journal"><span class="journal-name" id="job-title"></span><span class="job-kind" id="job-kind" hidden></span></h2>
+<a class="btn" id="open-result" hidden><span data-icon="open" aria-hidden="true"></span>Открыть архив</a><a class="btn" id="job-statistics" hidden><span data-icon="statistics" aria-hidden="true"></span>Статистика</a></div>
 <p class="job-state" id="job-state"><span class="job-dot" aria-hidden="true"></span><span id="job-stage" role="status"></span></p></div>
-<div class="job-actions"><div class="job-buttons"><a class="btn" id="open-result" hidden>Открыть архив</a><button type="button" class="btn" id="job-browser-cancel" hidden>Остановить</button><button type="button" class="btn" id="job-action">Остановить</button></div><p class="job-hint" id="job-hint" hidden>Полученное сохраняется. Продолжить можно позже.</p></div></div>
+<div class="job-actions"><div class="job-buttons" id="job-run-actions"><button type="button" class="btn" id="job-browser-cancel" hidden>Остановить</button><button type="button" class="btn" id="job-action">Остановить</button></div><p class="job-hint" id="job-hint" hidden>Полученное сохраняется. Продолжить можно позже.</p></div></div>
 <p class="job-now" id="job-now" hidden><span id="job-message"></span></p>
 <p class="job-meta" id="job-meta"></p>
 <progress id="progress" aria-label="Ход загрузки"></progress>
 <div id="job-timeline" class="timeline" hidden></div>
-<details class="gaps" id="job-recovery" hidden><summary>Подробности докачки</summary><p id="job-photo-result" hidden></p><div id="job-recovery-content"></div><a id="job-skips" hidden>Пропущенные материалы и обсуждения</a></details>
-<p class="job-foot"><a id="job-report" hidden>Состояние архива</a><a id="job-statistics" hidden>Статистика</a><button type="button" class="link-button" id="job-settings" hidden>Параметры загрузки</button><button type="button" class="link-button" id="job-diagnostics">Диагностика</button></p>
+<details class="gaps job-technical" id="job-recovery" hidden>
+<summary><span data-icon="technical" aria-hidden="true"></span>Технические сведения</summary>
+<div class="tech-actions" id="job-tech-actions">
+<a class="btn" id="job-report" hidden><span data-icon="report" aria-hidden="true"></span>Состояние архива</a>
+<button class="btn" type="button" id="job-settings" hidden><span data-icon="settings" aria-hidden="true"></span>Параметры загрузки</button>
+<button class="btn" type="button" id="job-diagnostics"><span data-icon="diagnostics" aria-hidden="true"></span>Диагностика</button>
+</div>
+<p id="job-photo-result" hidden></p><div id="job-recovery-content"></div>
+<a id="job-skips" hidden>Пропущенные материалы и обсуждения</a></details>
 </section>
 <p id="app-error" class="notice" role="alert" hidden></p>
 <div id="empty" class="empty" hidden><p>Архивов пока нет</p><button class="btn" data-new><span data-icon="plus"></span>Новый архив</button></div>

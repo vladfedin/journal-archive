@@ -2,4 +2,4 @@
 {% set archive_section = 'timeline' %}
 {% block title %}Хронология · {{ user }}{% endblock %}
 {% block head %}{% if not source %}<script defer src="assets/timeline-data.js"></script>{% endif %}<script defer src="assets/timeline.js"></script>{% endblock %}
-{% block body %}<main class="main"><h1>Хронология</h1>{% include 'archive-nav.html' %}<div id="archive-timeline" class="timeline"{% if source %} data-source="{{ source }}"{% endif %}></div></main>{% endblock %}
+{% block body %}<main class="main"><h1 class="section-title"><span data-icon="timeline" aria-hidden="true"></span>Хронология</h1>{% include 'archive-nav.html' %}<div id="archive-timeline" class="timeline"{% if source %} data-source="{{ source }}"{% endif %}></div></main>{% endblock %}

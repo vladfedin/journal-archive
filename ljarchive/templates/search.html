@@ -3,7 +3,7 @@
 {% block title %}Поиск · {{ user or 'Все архивы' }}{% endblock %}
 {% block head %}<script defer src="{{ assets }}fulltext.js"></script>{% endblock %}
 {% block body %}<main class="main archive-main" id="fulltext" {% if app or search_api %}data-api="/api/search"{% endif %} data-parts="{{ parts|default([])|join(' ') }}" data-archive="{{ user or '' }}">
-<div class="archive-title"><h1>{{ 'Поиск по всем архивам' if app else 'Поиск' }}</h1></div>
+<div class="archive-title"><h1 class="section-title"><span data-icon="search" aria-hidden="true"></span>{{ 'Поиск по всем архивам' if app else 'Поиск' }}</h1></div>
 {% if not app %}{% include 'archive-nav.html' %}{% endif %}
 <div class="search-field ft-query"><span data-icon="search"></span><input id="ft-query" class="input" type="search" placeholder="Слова или «точная фраза»" maxlength="512" aria-label="Поисковый запрос" autocomplete="off" autofocus></div>
 <div class="filter-row ft-filters">
