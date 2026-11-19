@@ -15,7 +15,7 @@ const paths = {
   pen:'<path d="m14 5 5 5M4 20l5-1L21 7l-5-5L4 14z"/>'
 };
 const svg = name => `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[name] || paths.archive}</svg>`;
-function icons() { document.querySelectorAll('[data-icon]').forEach(el => { el.innerHTML=svg(el.dataset.icon); }); }
+function icons(root = document) { root.querySelectorAll('[data-icon]').forEach(el => { el.innerHTML=svg(el.dataset.icon); }); }
 
 document.addEventListener('DOMContentLoaded', () => {
   const brand = document.querySelector('.brand');

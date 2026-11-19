@@ -50,6 +50,82 @@ def check_contact_question(browser, base, job_id):
                 context.close()
 
 
+def check_feed_scroll(browser, root, base):
+    from ljarchive.render import build_archive
+    from ljarchive.storage import Store
+
+    folder = root / 'scroll'
+    store = Store(folder)
+    try:
+        with store.db:
+            store.set('username', 'scroll')
+            for eid in range(1, 73):
+                props = {'taglist': 'дневник'}
+                if eid == 1:
+                    props['sticky'] = 1
+                store.save_entry({'itemid': eid, 'eventtime': '2001-01-01' if eid == 1 else '2020-01-01',
+                                  'event': '<p>Отрывок</p>' * 24 + f'<lj-cut>Текст {eid}</lj-cut>', 'subject': f'Запись {eid}', 'props': props})
+        build_archive(store, {'username': 'scroll', 'entries_saved': 72, 'comments_saved': 0, 'status': 'complete'})
+    finally:
+        store.close()
+
+    for index in (base + '/archive/scroll/index.html', (folder / 'index.html').as_uri()):
+        page = browser.new_page(viewport={'width': 720, 'height': 600})
+        try:
+            page.goto(base)
+            page.goto(index + '?view=full')
+            cards = page.locator('#entry-list article')
+            expect(cards).to_have_count(10)
+            expect(cards.first).to_contain_text('Закреплено')
+            cut = cards.first.locator('details.lj-cut')
+            cut.locator('summary').click()
+            for total in (20, 30):
+                page.evaluate('window.scrollTo(0, document.documentElement.scrollHeight)')
+                expect(cards).to_have_count(total)
+            expect(cut).to_have_attribute('open', '')
+            assert page.locator('.year-mark').all_text_contents() == ['2020']
+            post = cards.nth(23).locator('h2 a')
+            post.scroll_into_view_if_needed()
+            href = post.get_attribute('href')
+            post.click()
+            page.wait_for_url('**/' + href)
+            page.go_back()
+            expect(page.locator(f'#entry-list h2 a[href="{href}"]')).to_be_in_viewport()
+            page.locator('[data-view=compact]').click()
+            expect(cards).to_have_count(30)
+            for total in (60, 72):
+                page.evaluate('window.scrollTo(0, document.documentElement.scrollHeight)')
+                expect(cards).to_have_count(total)
+            assert len(set(cards.evaluate_all('nodes => nodes.map(n => n.dataset.entryId)'))) == 72
+            expect(page.get_by_role('button', name='Показать ещё')).to_have_count(0)
+            page.locator('#year').select_option('2001')
+            expect(cards).to_have_count(1)
+            expect(cards.first).to_contain_text('Закреплено')
+            page.add_init_script('window.IntersectionObserver = undefined')
+            page.goto(index + '?view=compact')
+            more = page.get_by_role('button', name='Показать ещё')
+            more.focus()
+            page.keyboard.press('Enter')
+            expect(cards).to_have_count(60)
+            expect(cards.nth(30).locator('h2 a')).to_be_focused()
+            page.goto(index + '?view=full&q=Отрывок&sort=old&tag=дневник')
+            for total in (20, 30):
+                more.click()
+                expect(cards).to_have_count(total)
+            expect(cards.locator('.feed-body .prose')).to_have_count(30)
+            post = cards.nth(23).locator('h2 a')
+            href = post.get_attribute('href')
+            post.click()
+            page.wait_for_url('**/' + href)
+            page.get_by_role('link', name='← Все записи', exact=True).click()
+            expect(page.locator('#search')).to_have_value('Отрывок')
+            expect(page.locator('#sort')).to_have_value('old')
+            expect(page.locator(f'#entry-list h2 a[href="{href}"]')).to_be_in_viewport()
+
+        finally:
+            page.close()
+
+
 def main():
     with tempfile.TemporaryDirectory(prefix='ljarchive-browser-') as directory:
         root = Path(directory)
@@ -659,6 +735,7 @@ def main():
                 page.goto(base + '/archive/example_journal/statistics.html')
                 expect(page.locator('h1')).to_have_text('Статистика')
                 assert not errors, errors
+                check_feed_scroll(browser, root, base)
                 browser.close()
                 screenshots = os.environ.get('LJARCHIVE_SCREENSHOTS')
                 if screenshots:
