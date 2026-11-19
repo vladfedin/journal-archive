@@ -2,7 +2,7 @@
 
 Локальное приложение для выгрузки своего Живого Журнала: записи, комментарии, реакции и их авторы. Архив читается без приложения и интернета; данные доступны отдельно в JSON.
 
-**[Скачать для Windows, macOS или Linux](https://github.com/vladfedin/journal-archive/releases/latest)**
+**Скачать для Windows, macOS или Linux** · [staerum.ru](https://staerum.ru/journal-archive/) · [GitHub Releases](https://github.com/vladfedin/journal-archive/releases/latest)
 
 [Пошаговый гайд для Windows со скриншотами](docs/guide/README.md) · [PDF](docs/guide/guide.pdf)
 
