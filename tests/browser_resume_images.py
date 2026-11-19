@@ -90,7 +90,11 @@ def main():
                 expect(page.locator('#job-action')).to_have_text('Скрыть', timeout=20000)
                 state = page.request.get(base + '/api/status').json()
                 assert state['phase'] == 'complete' and state['job_id'] == job_id
-                expect(page.locator('#job-meta')).to_contain_text('сохранено 1 · недоступно 1')
+                expect(page.locator('#contact-dialog')).to_be_visible()
+                page.keyboard.press('Escape')
+                page.get_by_text('Подробности докачки', exact=True).click()
+                expect(page.locator('#job-photo-result')).to_be_visible()
+                expect(page.locator('#job-photo-result')).to_contain_text('сохранено 1 · недоступно 1')
                 assert resumed == [True] and state['requests_used'] == 2
                 assert calls.count('/denied.png') == 1 and calls.count('/private.png') == 1
                 data = json.loads((root / 'fixture/data/archive.json').read_text())

@@ -57,11 +57,12 @@ function showContact(state) {
     return;
   }
   if (!contactJob || !state.job_id || state.job_id !== contactJob.id) return;
-  if (terminal.has(state.phase) && (state.phase !== 'complete' || state.request_limit_reached)) {
+  const ready = !state.request_limit_reached && (state.phase === 'complete' || (state.phase === 'partial' && state.finished_with_skips));
+  if (terminal.has(state.phase) && !ready) {
     saveContactJob(null);
     return;
   }
-  const stage = !contactJob.started ? 'started' : state.phase === 'complete' ? 'complete' : null;
+  const stage = !contactJob.started ? 'started' : ready ? 'complete' : null;
   if (!stage || contactJob.complete) return;
   if (stage === 'started' && state.contact_question && !state.contact_ready && !terminal.has(state.phase)) return;
   openContact(state, stage);
@@ -259,8 +260,11 @@ function showStatus(s){lastState=s;showContact(s);if(!s.phase||s.phase==='idle'|
   if(s.started_at&&s.working_seconds!=null){const pause=s.waiting_seconds||0;meta.push((done?'заняло ':'идёт ')+minutes((s.working_seconds||0)+pause)+(pause>=60?`, из них пауз ${minutes(pause)}`:''));}
   if(s.request_limit)meta.push(`запросов ${num(s.requests_used)} из ${num(s.request_limit)}`);
   const photos=material?.browser_images_progress||s.browser_images_progress;
+  const photoSummary=photos?`Изображения · сохранено ${num(photos.saved)} · недоступно ${num(photos.unavailable)} · к повтору ${num(photos.pending)}`:'';
+  $('job-photo-result').hidden=!photos||!done||materialRunning;
+  $('job-photo-result').textContent=photoSummary;
   if(photos&&(!done||materialRunning)){
-    meta.unshift(`Изображения · сохранено ${num(photos.saved)} · недоступно ${num(photos.unavailable)} · к повтору ${num(photos.pending)}`);
+    meta.unshift(photoSummary);
     if((materialRunning&&material.phase!=='saving'||!done&&['running','waiting','materials','retrying','loading'].includes(s.phase))&&photos.current){
       const line=el('div','material-source',photos.current);
       $('job-message').append(line);$('job-now').hidden=false;

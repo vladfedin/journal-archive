@@ -69,8 +69,10 @@ def reaction_names(item):
 
 
 def doc(kind, href, title, text, *, who='', date='', access='', context='', tags=''):
-    return dict(kind=kind, href=href, title=title, text=text, author=who or '', date=date or '',
-                access=access, context=context, tags=tags)
+    fields = dict(kind=kind, href=href, title=title, text=text, author=who, date=date,
+                  access=access, context=context, tags=tags)
+    # Legacy XML-RPC binary fields remain in archive.json; index only readable text.
+    return {key: value if isinstance(value, str) else '' for key, value in fields.items()}
 
 
 def journal_docs(user, entries, comments):
@@ -83,7 +85,7 @@ def journal_docs(user, entries, comments):
         props = entry.get('props') or {}
         tags = props.get('taglist') or ''
         if isinstance(tags, list):
-            tags = ', '.join(tags)
+            tags = ', '.join(tag for tag in tags if isinstance(tag, str))
         parents[eid] = title, access, is_repost(entry)
         body = [visible(entry.get('event'))]
         body.extend(visible(props[key]) for key, _ in CURRENT if props.get(key))

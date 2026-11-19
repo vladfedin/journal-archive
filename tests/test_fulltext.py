@@ -9,6 +9,32 @@ from ljarchive.search_library import SearchLibrary
 from ljarchive.storage import Store
 
 
+@pytest.mark.parametrize('mixed', [False, True])
+def test_binary_tags_preserved_when_building_search(tmp_path, mixed):
+    from xmlrpc.client import Binary
+    from ljarchive.client import normalized
+
+    binary = normalized(Binary(b'\xff'))
+    tags = [binary, 'сад'] if mixed else binary
+    folder = tmp_path / 'journal'
+    store = Store(folder)
+    try:
+        with store.db:
+            store.set('username', 'journal')
+            store.save_entry({'itemid': 1, 'subject': 'Огород', 'event': 'Зелень',
+                              'eventtime': '2004-04-01', 'props': {'taglist': tags}})
+        build_archive(store, {'username': 'journal', 'status': 'complete', 'issues': [],
+                              'entries_saved': 1, 'comments_saved': 0})
+    finally:
+        store.close()
+    saved = json.loads((folder / 'data/archive.json').read_text(encoding='utf-8'))
+    assert saved['entries'][0]['props']['taglist'] == tags
+    query = 'сад' if mixed else 'огород'
+    assert SearchLibrary().search(tmp_path, {'q': query})['rows'][0]['href'] == 'entries/1.html'
+    shard = (folder / 'assets/fulltext-journal-1.js').read_text(encoding='utf-8')
+    assert 'Огород' in shard and 'encoding_unknown' not in shard
+
+
 @pytest.mark.parametrize('fts', [True, False])
 def test_fulltext_search_updates_and_portable_copy(tmp_path, fts):
     folder = tmp_path/'journal'
