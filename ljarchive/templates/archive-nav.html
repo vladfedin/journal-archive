@@ -1,1 +1,17 @@
-<nav class="archive-sections" aria-label="Виды архива">{% for key, label, path in [('posts','Записи','index.html'),('search','Поиск','search.html'),('calendar','Календарь','calendar.html'),('timeline','Хронология','timeline.html'),('statistics','Статистика','statistics.html'),('materials','Материалы','materials.html'),('account','Профиль','account.html')] %}<a href="{{ path }}"{% if archive_section == key %} aria-current="page"{% endif %}>{{ label }}</a>{% endfor %}</nav>
+<nav class="archive-sections" aria-label="Виды архива">
+  {% for key, label, icon, path in [
+    ('posts','Записи','journal','index.html'),
+    ('calendar','Календарь','calendar','calendar.html'),
+    ('timeline','Хронология','timeline','timeline.html'),
+    ('statistics','Статистика','statistics','statistics.html'),
+    ('materials','Материалы','materials','materials.html'),
+    ('account','Профиль','account','account.html')
+  ] %}
+  <a href="{{ path }}" title="{{ label }}"{% if archive_section == key %} aria-current="page"{% endif %}><span data-icon="{{ icon }}" aria-hidden="true"></span><span class="nav-label">{{ label }}</span></a>
+  {% endfor %}
+  <a class="nav-search" href="search.html" title="Поиск"{% if archive_section == 'search' %} aria-current="page"{% endif %}><span data-icon="search" aria-hidden="true"></span><span class="nav-label">Поиск</span></a>
+  {% if archive_section == 'posts' %}
+  <button class="nav-tool nav-search" id="feed-search-toggle" type="button" title="Поиск по ленте" aria-label="Поиск по ленте" aria-controls="feed-search-panel" aria-expanded="false" hidden><span data-icon="search" aria-hidden="true"></span></button>
+  <button class="nav-tool" id="feed-options-toggle" type="button" title="Фильтры и вид ленты" aria-label="Фильтры и вид ленты" aria-controls="feed-options-panel" aria-expanded="false" hidden><span data-icon="settings" aria-hidden="true"></span></button>
+  {% endif %}
+</nav>

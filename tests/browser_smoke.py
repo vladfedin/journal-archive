@@ -10,6 +10,7 @@ from pathlib import Path
 import tempfile
 import threading
 from unittest.mock import patch
+from urllib.parse import quote
 import zipfile
 
 from playwright.sync_api import expect, sync_playwright
@@ -48,6 +49,18 @@ def check_contact_question(browser, base, job_id):
                         send.assert_called_once_with('example_journal', 'fixture-only', title + ' — ' + answer)
             finally:
                 context.close()
+
+
+def search_from_feed_toolbar(page, query):
+    page.locator('#feed-search-toggle').click()
+    expect(page.locator('#search')).to_be_focused()
+    page.locator('#search').fill(query)
+    url = page.locator('#archive-search-link').get_attribute('href')
+    assert url == 'search.html?q=' + quote(query)
+    page.keyboard.press('Escape')
+    expect(page.locator('#search')).to_be_hidden()
+    expect(page.locator('#feed-search-toggle')).to_be_focused()
+    expect(page.locator('#feed-selection-label')).to_contain_text(query)
 
 
 def check_feed_scroll(browser, root, base):
@@ -91,6 +104,10 @@ def check_feed_scroll(browser, root, base):
             page.wait_for_url('**/' + href)
             page.go_back()
             expect(page.locator(f'#entry-list h2 a[href="{href}"]')).to_be_in_viewport()
+            expect(page.locator('#year')).to_be_hidden()
+            expect(page.locator('#search')).to_be_hidden()
+            expect(page.locator('#feed-selection')).to_be_hidden()
+            page.locator('#feed-options-toggle').click()
             page.locator('[data-view=compact]').click()
             expect(cards).to_have_count(30)
             for total in (60, 72):
@@ -486,6 +503,7 @@ def main():
                 page.locator('#stats-owner').check()
                 expect(page.locator('#stats-graph')).to_be_visible()
                 page.goto(base + '/archive/example_journal/index.html')
+                page.locator('#feed-options-toggle').click()
                 page.locator('[data-view=full]').click()
                 expect(page.locator('.full-post .feed-body .prose')).to_have_count(6)
                 expect(page.locator('.full-post .userpic')).to_have_count(6)
@@ -498,6 +516,7 @@ def main():
                 page.screenshot(path=str(root / 'full-journal.png'), full_page=True)
                 page.reload()
                 expect(page.locator('[data-view=full]')).to_have_attribute('aria-pressed', 'true')
+                page.locator('#feed-options-toggle').click()
                 page.locator('[data-view=compact]').click()
                 expect(page.locator('.entry-card .reaction')).to_have_count(6)
                 page.locator('#year').select_option('2012')
@@ -506,7 +525,7 @@ def main():
                 page.locator('#tag').select_option('книги')
                 expect(page.locator('.entry-card')).to_have_count(1)
                 page.locator('#reset-filters').click()
-                page.locator('#search').fill('полуночи')
+                search_from_feed_toolbar(page, 'полуночи')
                 expect(page.locator('.entry-card')).to_have_count(1)
                 expect(page.locator('.entry-card')).to_contain_text('Совпадение в комментарии')
                 page.locator('.entry-card h2 a').click()
@@ -536,11 +555,12 @@ def main():
                 expect(page.get_by_role('link', name='Все архивы', exact=True)).to_have_count(0)
                 expect(page.locator('.brand')).to_have_attribute('href', 'index.html')
                 expect(page.locator('.brand')).to_have_text('example_journal')
+                page.locator('#feed-options-toggle').click()
                 page.locator('[data-view=full]').click()
                 expect(page.locator('.full-post .feed-body .prose')).to_have_count(6)
                 expect(page.locator('.full-post .userpic')).to_have_count(6)
                 page.locator('[data-view=compact]').click()
-                page.locator('#search').fill('полуночи')
+                search_from_feed_toolbar(page, 'полуночи')
                 expect(page.locator('.entry-card')).to_have_count(1)
                 page.locator('.entry-card h2 a').click()
                 expect(page.locator('#comment-4')).to_be_visible()
@@ -586,6 +606,7 @@ def main():
                 server.jobs.state = {'phase':'comments','slug':'live_fixture','entry_id':1}
                 page.goto(base + '/archive/live_fixture/index.html')
                 expect(page.locator('.entry-card')).to_have_count(1)
+                page.locator('#feed-options-toggle').click()
                 page.locator('[data-view=full]').click()
                 expect(page.locator('.feed-body')).to_contain_text('Уже сохранено')
                 expect(page.locator('#archive-timeline')).to_have_count(0)

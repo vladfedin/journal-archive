@@ -179,9 +179,32 @@ document.addEventListener("DOMContentLoaded", () => {
     });
     const FILTERS = ["year", "tag", "security"];
 
+    const searchToggle = $("feed-search-toggle");
+    const optionsToggle = $("feed-options-toggle");
+    const panels = [searchToggle, optionsToggle];
+    function openPanel(toggle) {
+      for (const button of panels) {
+        const open = button === toggle;
+        $(button.getAttribute("aria-controls")).hidden = !open;
+        button.setAttribute("aria-expanded", String(open));
+      }
+      if (toggle === searchToggle) search.focus();
+    }
+    document.querySelector(".archive-sections a.nav-search").hidden = true;
+    for (const button of panels) {
+      button.hidden = false;
+      button.onclick = () => openPanel(button.getAttribute("aria-expanded") === "true" ? null : button);
+    }
+    function syncSearchLink() {
+      const q = search.value.trim();
+      $("archive-search-link").href = q ? "search.html?q=" + encodeURIComponent(q) : "search.html";
+    }
+    syncSearchLink();
+
     function pickTag(tag) {
       $("tag").value = tag; render();
-      search.scrollIntoView({block: "start"});
+      optionsToggle.focus({preventScroll: true});
+      optionsToggle.scrollIntoView({block: "center"});
     }
     function tagLink(tag) {
       const link = el("a", "", tag); link.href = "?tag=" + encodeURIComponent(tag);
@@ -266,6 +289,13 @@ document.addEventListener("DOMContentLoaded", () => {
       const year = $("year").value, tag = $("tag").value, security = $("security").value;
       const period=selectedDate||selectedMonth;
       const accepts = (e) => e && (!year || e.year === year) && (!period || e.date.startsWith(period)) && (!tag || e.tags.includes(tag)) && (!security || e.security === security);
+      const labels = [];
+      if (query) labels.push("«" + search.value.trim() + "»");
+      for (const key of FILTERS) if ($(key).value) labels.push($(key).selectedOptions[0].text);
+      if ($("sort").value === "old") labels.push($("sort").selectedOptions[0].text);
+      $("feed-selection-label").textContent = labels.join(" · ");
+      $("feed-selection").hidden = !labels.length && !period;
+      $("reset-filters").hidden = $("feed-selection").hidden;
       if (terms.length && !normalized) {
         $('results-count').textContent = 'Ищем…';
         loadSearch(); return;
@@ -278,9 +308,7 @@ document.addEventListener("DOMContentLoaded", () => {
       pinFirst = !terms.length && !period && !year && !tag && !security;
       rows.sort((a, b) => (pinFirst && Number(!!b.e.sticky) - Number(!!a.e.sticky)) ||
         (b.e.date.localeCompare(a.e.date) || b.e.id - a.e.id) * ($("sort").value === "old" ? -1 : 1));
-      const active = FILTERS.filter(key => $(key).value).length;
       $("results-count").textContent = terms.length ? plural(rows.length, "совпадение", "совпадения", "совпадений") : plural(rows.length, "запись", "записи", "записей");
-      $("reset-filters").hidden = !active && !terms.length && !period;
       $('date-filter').hidden=!period;
       $('date-filter').textContent=selectedDate?ruDate(selectedDate)+' ×':selectedMonth?('Январь Февраль Март Апрель Май Июнь Июль Август Сентябрь Октябрь Ноябрь Декабрь'.split(' ')[Number(selectedMonth.slice(5))-1]+' '+selectedMonth.slice(0,4)+' ×'):'';
       $('date-filter').setAttribute('aria-label','Снять ограничение по дате');
@@ -371,11 +399,25 @@ document.addEventListener("DOMContentLoaded", () => {
       more.hidden = shown >= rows.length;
       if (more.hidden) observer?.disconnect();
     }
-    search.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(() => { render(); }, 180); });
+    search.addEventListener("input", () => { syncSearchLink(); clearTimeout(timer); timer = setTimeout(render, 180); });
     for (const key of [...FILTERS, "sort"]) $(key).addEventListener("change", () => { if(key==='year'){selectedDate='';selectedMonth='';}render(); });
-    $('date-filter').onclick=()=>{selectedDate='';selectedMonth='';render();};
-    $("reset-filters").onclick = () => { search.value = ""; selectedDate='';selectedMonth='';for (const key of FILTERS) $(key).value = ""; render(); };
-    document.addEventListener("keydown", e => { if (e.key === "/" && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) { e.preventDefault(); search.focus(); } });
+    $('date-filter').onclick=()=>{selectedDate='';selectedMonth='';render();optionsToggle.focus();};
+    $("reset-filters").onclick = () => {
+      search.value = ""; selectedDate = ""; selectedMonth = "";
+      for (const key of FILTERS) $(key).value = "";
+      $("sort").value = "new";
+      syncSearchLink(); render(); optionsToggle.focus();
+    };
+    document.addEventListener("keydown", event => {
+      if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey) return;
+      if (event.key === "/" && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) {
+        event.preventDefault(); openPanel(searchToggle);
+      }
+      if (event.key === "Escape") {
+        const open = panels.find(button => button.getAttribute("aria-expanded") === "true");
+        if (open) { event.preventDefault(); openPanel(null); open.focus(); }
+      }
+    });
     render();
   }
 
