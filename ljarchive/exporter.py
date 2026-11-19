@@ -414,7 +414,7 @@ class Exporter:
                         entry_id=entry['itemid'])
             try:
                 deleted = lookup(ditemid, tid)
-            except (Cancelled, RequestLimitReached):
+            except (Cancelled, RequestLimitReached, HTTPRateLimited, APIRateLimited):
                 with self.store.db:
                     self.store.set("entry_comments", statuses)
                 raise

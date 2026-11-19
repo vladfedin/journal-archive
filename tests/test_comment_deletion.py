@@ -1,7 +1,8 @@
 import json
+import pytest
 
 from ljarchive.activitystreams import source_snapshot
-from ljarchive.client import CommentPage
+from ljarchive.client import APIRateLimited, CommentPage, HTTPRateLimited
 from ljarchive.comment_state import comment_view
 from ljarchive.exporter import normalize_thread
 from ljarchive.progress import preview_entry
@@ -154,6 +155,21 @@ class WebDeleted(Journal):
         self.checked.append((ditemid, dtalkid))
         nodes = [{'talkid': cid, 'dtalkid': cid * 256 + 7, 'deleted': 1} for cid in (11, 12)]
         return deleted_threads(web_page(ditemid, nodes), self.user, ditemid)
+
+
+@pytest.mark.parametrize('limit', [HTTPRateLimited, APIRateLimited])
+def test_web_deletion_check_stops_on_rate_limit(tmp_path, limit):
+    class Limited(WebDeleted):
+        def web_deleted_threads(self, ditemid, dtalkid):
+            self.checked.append(dtalkid)
+            raise limit('rate limit fixture')
+
+    client = Limited()
+    report = SyncExporter(tmp_path, client, SCOPE).run()
+    assert client.checked == [2823]
+    assert 'rate limit fixture' in report['issues']
+    assert not report['sync'].get('done')
+    assert not any(method == 'reactions' for method, _ in client.calls)
 
 
 def test_web_confirmation_closes_gaps_in_json_html_and_activitystreams(tmp_path):
