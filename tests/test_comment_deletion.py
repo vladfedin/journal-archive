@@ -120,3 +120,79 @@ def test_anonymous_tombstone_preserves_zero_ids_and_loaded_flag(tmp_path):
     merged = merge_comment(previous, item)
     assert merged['posterid'] == 44 and merged['is_loaded'] == 0
     assert merged['body'] == 'Saved' and merged['deletion']['after_archive']
+
+
+def web_page(ditemid, comments, journal='fixture'):
+    page = json.dumps({'comments': comments})
+    entry = json.dumps({'ditemid': ditemid, 'journal': journal})
+    return f'<script>\nSite.page = {page};\nSite.entry = {entry};\n</script>'.encode()
+
+
+def test_web_marker_is_bound_to_journal_entry_and_comment():
+    from ljarchive.comment_page import deleted_threads
+    nodes = [
+        {'talkid': 11, 'dtalkid': 2823, 'deleted': 1, 'leafclass': 'deleted'},
+        {'talkid': 12, 'dtalkid': 3079, 'deleted': 0, 'leafclass': 'collapsed'},
+        {'talkid': 13, 'dtalkid': 3335, 'deleted_poster': 1, 'body': 'Комментарий удалён'},
+        {'talkid': 14, 'dtalkid': 3592, 'deleted': 1},  # different entry suffix
+        {'talkid': 16, 'dtalkid': 3847, 'deleted': 1},  # inconsistent talkid
+    ]
+    page = web_page(263, nodes)
+    assert deleted_threads(page, 'fixture', 263) == {2823}
+    assert not deleted_threads(page, 'other', 263)
+    assert not deleted_threads(page, 'fixture', 519)
+    assert not deleted_threads(page.replace(b'<script>', b'<p>'), 'fixture', 263)
+
+
+class WebDeleted(Journal):
+    def __init__(self):
+        super().__init__(no_body=True)
+        self.checked = []
+
+    def web_deleted_threads(self, ditemid, dtalkid):
+        from ljarchive.comment_page import deleted_threads
+        self.checked.append((ditemid, dtalkid))
+        nodes = [{'talkid': cid, 'dtalkid': cid * 256 + 7, 'deleted': 1} for cid in (11, 12)]
+        return deleted_threads(web_page(ditemid, nodes), self.user, ditemid)
+
+
+def test_web_confirmation_closes_gaps_in_json_html_and_activitystreams(tmp_path):
+    client = WebDeleted()
+    report = SyncExporter(tmp_path, client, SCOPE).run()
+    assert report['status'] == 'complete' and report['deleted_comments'] == 2
+    assert client.checked == [(263, 2823)]
+    assert [p['dtalkid'] for m, p in client.calls if m == 'getcomments' and 'dtalkid' in p] == [2823, 3079]
+    data = json.loads((tmp_path / 'data/archive.json').read_text())
+    assert all(c['deletion']['evidence'] == 'web:Site.page.comments.deleted:D'
+               and not c['deletion']['after_archive'] for c in data['comments'])
+    page = (tmp_path / 'entries/1.html').read_text()
+    assert page.count('Комментарий удалён.') == 2 and 'ЖЖ не отдал текст' not in page
+    activity = json.loads((tmp_path / 'data/activitystreams.json').read_text())
+    assert sum(i['type'] == 'Tombstone' for i in activity['items']) == 2
+
+
+def test_web_deletion_retains_earlier_text_across_unloaded_api_updates(tmp_path):
+    SyncExporter(tmp_path, Journal(), SCOPE).run()
+    SyncExporter(tmp_path, WebDeleted(), SCOPE).run()
+    path = tmp_path / 'data/archive.json'
+    before = json.loads(path.read_text())['comments']
+    assert all(c['deletion']['after_archive'] and c['body'] for c in before)
+    SyncExporter(tmp_path, Journal(no_body=True), SCOPE).run()
+    assert json.loads(path.read_text())['comments'] == before
+
+
+def test_web_access_denied_can_still_confirm_deletion_via_metadata(tmp_path):
+    from ljarchive.client import AuthenticationRequired
+
+    class Restricted(Journal):
+        def web_deleted_threads(self, ditemid, dtalkid):
+            raise AuthenticationRequired('HTTP 403', status=403)
+
+        def comments(self, kind, start):
+            return CommentPage([{'id': 11, 'state': 'D'}], {}, 12, 13), b'<fixture/>'
+
+    report = SyncExporter(tmp_path, Restricted(no_body=True), SCOPE).run()
+    assert report['deleted_comments'] == 1 and report['unavailable_comment_entry_ids'] == [1]
+    records = json.loads((tmp_path / 'data/archive.json').read_text())['comments']
+    assert records[0]['deletion']['evidence'] == 'comment_meta:D'
+    assert 'deletion' not in records[1]

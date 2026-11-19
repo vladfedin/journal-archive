@@ -21,6 +21,13 @@ def main():
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+    if len(sys.argv) == 3 and sys.argv[1] == '--verify-update-version':
+        from . import __version__
+        from .render import ENV
+        if sys.argv[2] != __version__:
+            raise SystemExit(1)
+        ENV.get_template('app.html').render(desktop_updates=True)
+        return
     if len(sys.argv) == 3 and sys.argv[1] == '--self-test-video-tools':
         import json
         import subprocess
@@ -54,11 +61,19 @@ def main():
 def launch(output, port=8787, open_browser=True):
     from .launcher import prepare_server
     from .server import run_server
-    server, url = prepare_server(output, port)
+    from .update import DesktopUpdate, native_package
+    package = native_package()
+    updater = DesktopUpdate(package) if package else None
+    def cold_start():
+        return updater and updater.start_installed(output, port, open_browser)
+    server, url = prepare_server(output, port, cold_start=cold_start)
     if server is None:
-        if open_browser:
+        if url and open_browser:
             webbrowser.open(url)
         return
+    server.updater = updater
+    if updater:
+        updater.snapshot()
     run_server(server, open_browser)
 
 

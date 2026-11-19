@@ -1,0 +1,18 @@
+{% extends 'base.html' %}
+{% set archive_section = 'search' %}
+{% block title %}Поиск · {{ user or 'Все архивы' }}{% endblock %}
+{% block head %}<script defer src="{{ assets }}fulltext.js"></script>{% endblock %}
+{% block body %}<main class="main archive-main" id="fulltext" {% if app or search_api %}data-api="/api/search"{% endif %} data-parts="{{ parts|default([])|join(' ') }}" data-archive="{{ user or '' }}">
+<div class="archive-title"><h1>{{ 'Поиск по всем архивам' if app else 'Поиск' }}</h1></div>
+{% if not app %}{% include 'archive-nav.html' %}{% endif %}
+<div class="search-field ft-query"><span data-icon="search"></span><input id="ft-query" class="input" type="search" placeholder="Слова или «точная фраза»" maxlength="512" aria-label="Поисковый запрос" autocomplete="off" autofocus></div>
+<div class="filter-row ft-filters">
+<label>Где искать<select id="ft-kind"><option value="">Везде</option><option value="post">Записи</option><option value="comment">Комментарии</option><option value="message">Переписка</option><option value="profile">Профиль</option><option value="material">Материалы</option></select></label>
+<label>Автор<input class="input" id="ft-author" placeholder="Логин" maxlength="80"></label>
+<label>Год<input class="input" id="ft-year" placeholder="Все годы" maxlength="4" inputmode="numeric"></label>
+<label class="check"><input type="checkbox" id="ft-messages" checked>Включая переписку</label>
+</div>
+<div class="list-toolbar"><span id="ft-status" role="status"></span><label class="check" id="ft-group-label" hidden><input type="checkbox" id="ft-group">По обсуждениям</label></div>
+<p id="ft-warning" class="notice" hidden></p><section id="ft-results" aria-label="Результаты поиска"></section>
+<nav id="ft-pager" class="pager" hidden aria-label="Страницы результатов"><button id="ft-prev" class="btn" type="button">← Назад</button><span id="ft-page"></span><button id="ft-next" class="btn" type="button">Далее →</button></nav>
+</main>{% endblock %}

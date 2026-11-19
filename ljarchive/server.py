@@ -16,6 +16,7 @@ from urllib.parse import unquote, urlsplit, parse_qs
 
 from . import __version__
 from .client import Cancelled, ExportError, RequestBudget, username
+from .contact import has_contact_question, send_message
 from .demo import create_demo
 from .exporter import archive_slug, export, validate_entry_limit
 from .render import ARCHIVE_FORMAT_VERSION, ROOT, plural
@@ -42,6 +43,8 @@ class Jobs:
         self.thread = None
         self.stopping = False
         self.current = None
+        self.contact_cookie = None
+        self.contact_receipts = {}
         self.recovery_before = None
         self.recovery_time = 0
         self.recovery_lock = threading.Lock()
@@ -56,6 +59,8 @@ class Jobs:
         self.sessions = Sessions()
         from .live_statistics import LiveStatistics
         self.statistics_cache = LiveStatistics()
+        from .search_library import SearchLibrary
+        self.search_library = SearchLibrary()
         from .on_demand import MaterialQueue
         self.materials = MaterialQueue(self)
         self.relocation = {"phase": "idle"}
@@ -137,6 +142,34 @@ class Jobs:
             atomic_write(self.task_path(self.current["archive"]), dumps({
                 "parameters": self.current, "state": self.state, "history": self.history[-10:], "updated_at": now()}))
             self.persisted_clock = time.monotonic()
+
+    def profile_result(self, slug, report, recovery):
+        """Keep the library and its persisted job card in sync with the offline report."""
+        from .storage import atomic_write, dumps
+        from .personal import PROFILE_ISSUE
+        with self.lock:
+            active = self.current and self.current.get('archive') == slug
+            if active:
+                state = self.state
+            else:
+                path = self.task_path(slug)
+                if not path.is_file():
+                    return
+                record = json.loads(path.read_text(encoding='utf-8'))
+                state = record['state']
+            if state.get('phase') not in ('complete', 'partial') or state.get('request_limit_reached'):
+                return
+            if state['phase'] == 'partial' and not (state.get('finished_with_skips') or
+                    state.get('profile_result') or state.get('message') == PROFILE_ISSUE):
+                return
+            stop = (report.get('personal') or {}).get('interruption') or {}
+            state.update(profile_result=True, phase=report['status'], finished_with_skips=report.get('finished_with_skips', False),
+                         recovery=recovery, message=stop.get('message') or next(iter(report.get('issues', [])), '')
+                         if report['status'] == 'partial' and not report.get('finished_with_skips') else '')
+            if active:
+                self.persist()
+            else:
+                atomic_write(path, dumps(record))
 
     def legacy_parameters(self, slug):
         self.task_path(slug)
@@ -241,6 +274,8 @@ class Jobs:
             if state.get('phase') != 'idle':
                 state.update(server_time=time.time(), worker_alive=bool(self.thread and self.thread.is_alive()))
             if self.current:
+                state['contact_ready'] = bool(self.contact_cookie)
+                state['contact_question'] = has_contact_question(self.current.get('username'))
                 state["parameters"] = {key: self.current[key] for key in self.PARAMS if key in self.current}
                 active = next((item for item in reversed(list(self.materials.states.values()))
                                if item['_identity'][0] == self.current['archive'] and item['_identity'][2] == 'browser_images'
@@ -408,6 +443,8 @@ class Jobs:
             self.activity_clock = time.monotonic()
             self.state.update(started_at=time.time(), app_version=__version__, working_seconds=0, waiting_seconds=0)
             self.current = None if demo else {key: data.get(key) for key in self.PARAMS}
+            self.contact_cookie = None
+            self.contact_receipts = {}
             if not demo:
                 self.state.update(requests_used=0, request_limit=data["max_requests"], entry_limit=data["entry_limit"])
                 if (self.output / slug / "index.html").is_file():
@@ -451,10 +488,40 @@ class Jobs:
 
     def remember_session(self, client):
         self.sessions.remember(client)
+        with self.lock:
+            if self.current and client.account == self.current['username'] and client.source['access']['status'] == 'verified':
+                self.contact_cookie = client._cookie
         # Only the main export waits for a confirmation in its own task card.
         # Explicit material/profile downloads keep their existing queue controls.
         account = client.account
         client.request_browser = lambda **kwargs: self.wait_for_browser(account, **kwargs)
+
+    def message_author(self, data):
+        from uuid import UUID
+        body = data.get('body')
+        if not isinstance(body, str) or not body.strip() or len(body) > 3000:
+            raise ExportError('Введите от 1 до 3000 символов.')
+        try:
+            body.encode('utf-8')
+            token = str(UUID(str(data.get('token'))))
+        except ValueError:
+            raise ExportError('Некорректный текст или идентификатор сообщения.') from None
+        with self.lock:
+            if not self.current or self.stopping or self.state.get('job_id') != data.get('job_id'):
+                raise ExportError('Аккаунт или задача изменились. Откройте форму заново.')
+            if not self.contact_cookie:
+                raise ExportError('Для отправки нужен действующий вход в ЖЖ.')
+            account, cookie, receipts = self.current['username'], self.contact_cookie, self.contact_receipts
+            if token in receipts:
+                return receipts[token]
+            receipts[token] = {'status': 'sending', 'message': 'Отправка уже выполняется.'}
+        try:
+            result = send_message(account, cookie, body)
+        except Exception:
+            result = {'status': 'unknown', 'message': 'Проверьте папку «Отправленные» в ЖЖ.'}
+        with self.lock:
+            receipts[token] = result
+        return result
 
     def prepare_browser(self, data):
         from .storage import Store
@@ -505,9 +572,9 @@ class Jobs:
                                     session_ready=self.remember_session)
                 password = ""
             message = "Лимит запросов" if report.get("request_limit_reached") else ""
-            if report["status"] not in ("complete", "demo") and not message:
+            if report["status"] not in ("complete", "demo") and not report.get("finished_with_skips") and not message:
                 message = next(iter(report.get("issues", [])), "Загрузка не завершена.")
-            self.progress(phase=report["status"], entries=report["entries_saved"], comments=report["comments_saved"],
+            self.progress(phase=report["status"], finished_with_skips=bool(report.get("finished_with_skips")), entries=report["entries_saved"], comments=report["comments_saved"],
                           requests_used=report.get("requests_used", 0), request_limit=report.get("request_limit"),
                           request_limit_reached=bool(report.get("request_limit_reached")), cancelling=False,
                           message=message, archive_url=f"/archive/{slug}/index.html")
@@ -540,7 +607,7 @@ class Jobs:
                 slug = path.parent.name
                 if not (path.parent / "index.html").is_file():
                     continue
-                found[slug] = {key: report.get(key) for key in ("username", "status", "entries_saved", "comments_saved", "created_at", "entry_limit", "requests_used", "request_limit")}
+                found[slug] = {key: report.get(key) for key in ("username", "status", "finished_with_skips", "entries_saved", "comments_saved", "created_at", "entry_limit", "requests_used", "request_limit")}
                 found[slug].update(slug=slug, url=f"/archive/{slug}/index.html", report_url=f"/archive/{slug}/report.html",
                                   zip_url=f"/download/{slug}.zip", json_url=f"/download/{slug}.json",
                                   activitystreams_url=f"/download/{slug}.activitystreams.json", resumable=False)
@@ -565,7 +632,7 @@ class Jobs:
                 self.task_path(slug)
                 row = found.setdefault(slug, {"slug": slug, "username": params.get('journal') or params["username"], "entries_saved": 0,
                                                "comments_saved": 0, "entry_limit": params["entry_limit"]})
-                row.update(parameters=params, parameters_known=list(params), status=state["phase"], created_at=record["updated_at"],
+                row.update(parameters=params, parameters_known=list(params), finished_with_skips=bool(state.get("finished_with_skips") and state["phase"] == "partial"), status=state["phase"], created_at=record["updated_at"],
                            resumable=state["phase"] != "complete", message=state.get("message", ""))
             except (OSError, ValueError, KeyError, TypeError, ExportError):
                 continue
@@ -700,25 +767,41 @@ def make_server(output: Path, port=8787):
             path = unquote(urlsplit(self.path).path)
             if path == "/":
                 from .render import ENV
-                body = ENV.get_template("app.html").render().encode("utf-8")
+                body = ENV.get_template("app.html").render(desktop_updates=bool(self.server.updater)).encode("utf-8")
                 self.response_headers(200, "text/html; charset=utf-8", len(body), cookie=True)
                 return self.wfile.write(body)
             if path == "/favicon.ico":
                 return self.file(ROOT / "static" / "favicon.ico")
             if path == "/help":
                 from .render import ENV
-                body = ENV.get_template("help.html").render(app=True, user="", report={}).encode("utf-8")
+                body = ENV.get_template("help.html").render(app=True, user="", report={}, contact_active=bool(jobs.contact_cookie)).encode("utf-8")
                 self.response_headers(200, "text/html; charset=utf-8", len(body), cookie=True)
+                self.wfile.write(body)
+                return
+            if path == '/search':
+                from .render import ENV
+                body = ENV.get_template('search.html').render(app=True, report={}).encode()
+                self.response_headers(200, 'text/html; charset=utf-8', len(body), cookie=True)
                 self.wfile.write(body)
                 return
             if not self.authorized():
                 return self.json({"error": "Сначала откройте главную страницу приложения."}, 403)
+            if path == '/api/search':
+                try:
+                    params = {k:v[0] for k,v in parse_qs(urlsplit(self.path).query, max_num_fields=16).items()}
+                    result = jobs.search_library.search(jobs.output, params)
+                except (ValueError, OverflowError):
+                    return self.json({'error': 'Некорректный запрос поиска.'}, 400)
+                return self.json(result)
             if path == "/api/app":
                 return self.json({"application": "journal-archive", "version": app_version,
                                   "instance_id": instance_id, "output": str(jobs.output),
                                   "stopping": jobs.stopping})
             if path == "/api/status":
-                return self.json(jobs.snapshot())
+                state = jobs.snapshot()
+                if self.server.updater:
+                    state['app_update'] = self.server.updater.snapshot()
+                return self.json(state)
             if path == "/api/archives":
                 return self.json(jobs.archives())
             if path.startswith('/api/diagnostics/'):
@@ -815,6 +898,19 @@ def make_server(output: Path, port=8787):
                 icon = relative.parts[1:] in {("assets", "favicon.svg"), ("assets", "favicon.ico")}
                 if any(part.startswith(".") for part in relative.parts) or not target.is_relative_to(jobs.output) or (not icon and target.suffix not in {".html", ".css", ".js", ".json", ".jpg", ".png", ".gif", ".webp", ".avif", ".mp4", ".webm", ".ogv", ".mov", ".m4v"}):
                     return self.json({"error": "Нет доступа."}, 403)
+                if len(relative.parts) == 2 and target.name == 'search.html':
+                    from .render import ENV
+                    slug = relative.parts[0]
+                    try:
+                        jobs.task_path(slug)
+                    except ExportError as exc:
+                        return self.json({'error': str(exc)}, 400)
+                    body = ENV.get_template('search.html').render(user=slug, report={}, search_api=True).replace('<body>', '<body data-library-url="/">', 1).encode()
+                    self.response_headers(200, 'text/html; charset=utf-8', len(body))
+                    self.wfile.write(body)
+                    return
+                if relative.parts[1:] == ('assets', 'fulltext.js'):
+                    return self.file(ROOT / 'static/fulltext.js')
                 if len(relative.parts) == 2 and target.suffix == '.html':
                     try:
                         preparation = jobs.prepare_format(relative.parts[0])
@@ -863,14 +959,14 @@ def make_server(output: Path, port=8787):
                 if len(relative.parts) == 3 and relative.parts[1] == "assets" and relative.parts[2] in {"archive.css", "archive.js", "theme.js", "common.js", "timeline.js", "calendar.js", "calendar.css", "material-actions.js", "gallery.js", "profile.js", "favicon.svg", "favicon.ico"}:
                     if active or not target.exists():
                         return self.file(ROOT / "static" / relative.parts[2])
-                live_data = len(relative.parts) == 3 and relative.parts[1] == 'assets' and target.name in ('search-data.js', 'calendar-data.js')
+                live_data = len(relative.parts) == 3 and relative.parts[1] == 'assets' and target.name in ('search-data.js', 'feed-data.js', 'calendar-data.js')
                 live_feed = len(relative.parts) == 4 and relative.parts[1:3] == ('assets', 'posts') and target.stem.isdigit() and target.suffix == '.js'
                 live_page = (len(relative.parts) == 3 and relative.parts[1] == "entries" and target.stem.isdigit() and target.suffix == ".html") or (len(relative.parts) == 2 and target.name in ("index.html", "timeline.html", "calendar.html"))
                 if (active or not target.exists()) and (live_page or live_data or live_feed):
                     from .storage import Store
                     from .progress import preview_entry
                     from .render import ENV
-                    from .live import preview_index, preview_search, preview_feed
+                    from .live import preview_index, preview_search, preview_feed, preview_feed_data
                     import sqlite3
                     try:
                         store = Store.reader(jobs.output / relative.parts[0])
@@ -880,6 +976,8 @@ def make_server(output: Path, port=8787):
                             elif live_data:
                                 if target.name == 'search-data.js':
                                     html = preview_search(store)
+                                elif target.name == 'feed-data.js':
+                                    html = preview_feed_data(store)
                                 else:
                                     from .calendar import calendar_script
                                     html = calendar_script(store)
@@ -987,11 +1085,18 @@ def make_server(output: Path, port=8787):
                         raise ExportError('Введите имя пользователя и пароль ЖЖ.')
                     client = LiveJournalClient(account, password, delay=1, max_attempts=1, budget=RequestBudget(6))
                     try:
-                        return self.json({'communities': client.managed_communities()})
+                        communities = client.managed_communities()
                     finally:
                         client.close()
+                    return self.json({'communities': communities})
                 if self.path == '/api/profile':
                     return self.json(jobs.materials.start({**data, 'kind': 'profile', 'entry_id': 0, 'value': 'profile'}), 202)
+                if self.path in ('/api/update/check', '/api/update/install') and self.server.updater:
+                    return self.json(self.server.updater.start(self.path.rsplit('/', 1)[1]), 202)
+                if self.path == '/api/update/settings' and self.server.updater:
+                    return self.json(self.server.updater.set_automatic(data.get('automatic')))
+                if self.path == '/api/contact':
+                    return self.json(jobs.message_author(data))
                 if self.path == '/api/material':
                     return self.json(jobs.materials.start(data), 202)
                 if self.path == '/api/browser-images':
@@ -1040,6 +1145,7 @@ def make_server(output: Path, port=8787):
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     server.daemon_threads = True
     server.jobs = jobs
+    server.updater = None
     server.instance_id = instance_id
     return server
 

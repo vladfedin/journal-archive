@@ -127,7 +127,7 @@ def stop_previous(session, peer, timeout):
         time.sleep(.2)
 
 
-def prepare_server(output, port=8787, *, timeout=180):
+def prepare_server(output, port=8787, *, timeout=180, cold_start=None):
     """Return (new bound server or None, URL). Reuse only this or a newer version."""
     from .server import make_server
     output = Path(output).resolve()
@@ -164,6 +164,8 @@ def prepare_server(output, port=8787, *, timeout=180):
                 output = Path(previous_output).resolve()
                 stop_previous(session, peer, timeout)
                 port = peer['port']
+            elif cold_start and cold_start():
+                return None, None  # The staged version opens its own server and browser.
             if not peer and port:
                 try:
                     with socket.create_connection(('127.0.0.1', port), timeout=3):

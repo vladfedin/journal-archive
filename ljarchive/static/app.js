@@ -1,6 +1,72 @@
 'use strict';
 const $ = id => document.getElementById(id);
 const terminal = new Set(['idle','complete','partial','cancelled','error','demo']);
+const contactStorage = 'ljarchive.contact-job';
+let contactJob = null;
+try { contactJob = JSON.parse(localStorage.getItem(contactStorage)); } catch {}
+
+function saveContactJob(job) {
+  contactJob = job;
+  try { localStorage.setItem(contactStorage, JSON.stringify(job)); } catch {}
+}
+
+let composeJob, composeToken, composeStatus;
+const answerButtons = document.querySelectorAll('#contact-question [data-answer]');
+let contactRequested = new URLSearchParams(location.search).has('contact');
+
+function updateContact(state) {
+  const sameJob = composeJob === state.job_id;
+  const ready = sameJob && state.contact_ready;
+  const canSend = ready && composeStatus === 'editing';
+  const asking = !$('contact-question').hidden;
+  $('contact-send').disabled = asking || !canSend || !$('contact-body').value.trim();
+  for (const button of answerButtons) button.disabled = !asking || !canSend;
+  $('contact-dismiss').textContent = asking && composeStatus === 'editing' ? 'Отмена (без отправки)' : 'Закрыть';
+  const sender = state.parameters?.username || '';
+  $('contact-account').textContent = !sameJob ? 'Аккаунт изменился. Откройте форму заново.' :
+    ready ? 'От ' + sender + ' → staerum' : terminal.has(state.phase) ? 'Для отправки войдите в ЖЖ снова.' : 'Ожидаем входа в ЖЖ' + (sender ? ' · ' + sender : '');
+}
+
+function openContact(state, stage) {
+  const dialog = $('contact-dialog');
+  composeJob = state.job_id;
+  composeToken = crypto.randomUUID();
+  composeStatus = 'editing';
+  const asking = stage === 'started' && state.contact_question && state.contact_ready;
+  $('contact-question').hidden = !asking;
+  $('contact-editor').hidden = !!asking;
+  $('contact-body').disabled = !!asking;
+  $('contact-send').hidden = !!asking;
+  $('contact-body').value = '';
+  $('contact-body').readOnly = false;
+  $('contact-status').textContent = '';
+  $('contact-title').textContent = asking ? 'Вы играете в Шент?' :
+    ({started:'Копирование началось', complete:'Архив готов'}[stage] || 'Написать автору');
+  updateContact(state);
+  if (!dialog.open) dialog.showModal();
+  (asking ? $('contact-dismiss') : $('contact-body')).focus();
+}
+
+function showContact(state) {
+  if ($('contact-dialog').open) { updateContact(state); return; }
+  if (document.visibilityState !== 'visible' || document.querySelector('dialog[open]')) return;
+  if (contactRequested && state.phase) {
+    contactRequested = false;
+    history.replaceState(null, '', location.pathname);
+    openContact(state, 'manual');
+    return;
+  }
+  if (!contactJob || !state.job_id || state.job_id !== contactJob.id) return;
+  if (terminal.has(state.phase) && (state.phase !== 'complete' || state.request_limit_reached)) {
+    saveContactJob(null);
+    return;
+  }
+  const stage = !contactJob.started ? 'started' : state.phase === 'complete' ? 'complete' : null;
+  if (!stage || contactJob.complete) return;
+  if (stage === 'started' && state.contact_question && !state.contact_ready && !terminal.has(state.phase)) return;
+  openContact(state, stage);
+  saveContactJob({...contactJob, [stage]: true});
+}
 const labels = {preparing:'Подготовка',verify:'Проверка',login:'Вход',posts:'Записи',comments:'Комментарии',reactions:'Реакции',videos:'Видео',materials:'Материалы',personal:'Личные данные',userpics:'Юзерпики',render:'Страницы',waiting:'Пауза',retrying:'Повтор запроса',complete:'Готов',partial:'Не завершён',cancelled:'Остановлено',error:'Ошибка',demo:'Пример'};
 const localProgress = phase => ['preparing','verify','render'].includes(phase);
 const scopes = {full:'весь журнал',period:'за период',urls:'по ссылкам',latest:'тест (последние 10 записей)'};
@@ -162,24 +228,26 @@ function nowContent(s,clock){
   if(s.phase==='waiting')return [waitText(s,clock)];
   if(s.request_limit_reached)return ['Полученное сохранено. Докачать можно новым запуском со своим лимитом.'];
   if(s.phase==='cancelled')return ['Полученное сохранено. Продолжить можно в любой момент.'];
-  if(['complete','demo'].includes(s.phase)||!s.message)return [];
+  if(['complete','demo'].includes(s.phase)||(s.phase==='partial'&&s.finished_with_skips)||!s.message)return [];
   // «Комментарии к записи #232» → the entry's title, linked to its page.
   const entry=mapSlug===s.slug&&s.entry_id&&mapView?.items.find(i=>i.id===s.entry_id),mark='#'+s.entry_id;
   if(entry&&s.message.includes(mark)){const [before,...rest]=s.message.split(mark),link=el('a','',`«${entry.title}»`);link.href='/archive/'+encodeURIComponent(s.slug)+'/'+entry.url;return [before,link,rest.join(mark)];}
   return [s.message];
 }
-function showStatus(s){lastState=s;if(!s.phase||s.phase==='idle'||s.job_id&&s.job_id===dismissedJob)return;$('job').hidden=false;$('job-title').textContent=s.username||'';
+function showStatus(s){lastState=s;showContact(s);if(!s.phase||s.phase==='idle'||s.job_id&&s.job_id===dismissedJob)return;$('job').hidden=false;$('job-title').textContent=s.username||'';
   const material=s.material_task,materialRunning=material&&!['complete','error','needs_browser','cancelled'].includes(material.phase);
   const clock=s.server_time||Date.now()/1000,done=terminal.has(s.phase),stalled=!done&&s.worker_alive===false;
   const request=s.request||{},activity=s.last_activity||{},silent=!done&&network.has(s.phase)&&request.at&&request.at>(s.last_response_at||s.last_success_at||0)&&activity.kind==='request'&&clock-request.at>60;
   let stage=s.cancelling?'Останавливаем…':stalled?'Загрузка прервалась':s.request_limit_reached?'Достигнут лимит запросов':done?finished[s.phase]||labels[s.phase]:doing[s.phase]||'Загружаем';
+  const finishedWithSkips=s.phase==='partial'&&s.finished_with_skips&&!s.request_limit_reached;
+  if(finishedWithSkips)stage='Архив готов';
   if(s.phase==='browser_login'&&!s.cancelling)stage='Вход в браузере';
   if(s.phase==='waiting'&&!s.cancelling&&!stalled)stage=s.retry_at>clock?'Пауза до '+new Date(s.retry_at*1000).toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'}):'Продолжаем после паузы';
   if(materialRunning)stage=material.phase==='waiting'?'Пауза перед запросом':material.phase==='saving'?'Обновляем страницы архива':'Скачиваем изображения';
   if(material?.phase==='complete' && !s.request_limit_reached && s.phase==='partial')stage='Докачка изображений завершена';
   // Only this sentence is announced; it changes with the stage, not every second.
   if($('job-stage').textContent!==stage)$('job-stage').textContent=stage;
-  $('job-state').dataset.tone=stalled||s.phase==='error'?'error':s.phase==='waiting'||silent?'wait':['complete','demo'].includes(s.phase)&&!s.request_limit_reached?'done':done?'warn':'run';
+  $('job-state').dataset.tone=stalled||s.phase==='error'?'error':s.phase==='waiting'||silent?'wait':(['complete','demo'].includes(s.phase)||finishedWithSkips)&&!s.request_limit_reached?'done':done?'warn':'run';
   $('job-kind').hidden=s.operation!=='resume';$('job-kind').textContent='докачка пропусков';
   const now=material?[material.message||'']:nowContent(s,clock);if(material?.total)now.push(` · ${material.completed||0} / ${material.total}`);if(silent&&!material)now.unshift(`Ожидаем ответ${request.host?' от '+request.host:''} · ${minutes(clock-request.at)}. `);
   else if(!done&&network.has(s.phase)&&activity.kind==='failure'&&activity.reason==='web_login')now.splice(0,now.length,'Не удалось подтвердить вход для изображений. Полученное сохраняется.');
@@ -191,7 +259,7 @@ function showStatus(s){lastState=s;if(!s.phase||s.phase==='idle'||s.job_id&&s.jo
   if(s.started_at&&s.working_seconds!=null){const pause=s.waiting_seconds||0;meta.push((done?'заняло ':'идёт ')+minutes((s.working_seconds||0)+pause)+(pause>=60?`, из них пауз ${minutes(pause)}`:''));}
   if(s.request_limit)meta.push(`запросов ${num(s.requests_used)} из ${num(s.request_limit)}`);
   const photos=material?.browser_images_progress||s.browser_images_progress;
-  if(photos){
+  if(photos&&(!done||materialRunning)){
     meta.unshift(`Изображения · сохранено ${num(photos.saved)} · недоступно ${num(photos.unavailable)} · к повтору ${num(photos.pending)}`);
     if((materialRunning&&material.phase!=='saving'||!done&&['running','waiting','materials','retrying','loading'].includes(s.phase))&&photos.current){
       const line=el('div','material-source',photos.current);
@@ -210,7 +278,15 @@ function showStatus(s){lastState=s;if(!s.phase||s.phase==='idle'||s.job_id&&s.jo
   $('job-report').hidden=!s.archive_url;if(s.archive_url)$('job-report').href=s.archive_url.replace(/index\.html$/,'report.html');
   $('job-settings').hidden=!s.parameters;
   $('job-diagnostics').hidden=!s.slug||s.slug==='_demo';
-  $('job-recovery').hidden=!s.recovery;
+  const recoveryBox=$('job-recovery'),recoveryMode=String(!done);
+  if(recoveryBox.dataset.running!==recoveryMode){
+    recoveryBox.dataset.running=recoveryMode;
+    recoveryBox.open=!done;
+  }
+  recoveryBox.hidden=!s.recovery&&!s.archive_url;
+  $('job-recovery-content').hidden=!s.recovery;
+  $('job-skips').hidden=!s.archive_url;
+  if(s.archive_url)$('job-skips').href=s.archive_url.replace(/index\.html$/,'report.html#skipped');
   const recoveryKey=JSON.stringify([s.job_id,s.operation,done,s.recovery]);if($('job-recovery').dataset.key!==recoveryKey){$('job-recovery').dataset.key=recoveryKey;$('job-recovery-content').replaceChildren(gapsView(s.recovery,{attempt:s.operation==='resume',running:!done,videos:s.parameters?.videos!==false}));}
   let imageAction=$('job-images');if(!imageAction){imageAction=el('button','btn','Изображения: файлы и докачка');imageAction.type='button';imageAction.id='job-images';$('job-recovery').append(imageAction);}
   imageAction.hidden=!s.slug||!s.recovery?.rows?.some(r=>r.key==='images'&&(r.remaining||r.unavailable));imageAction.onclick=()=>window.ArchiveImages.open(s.slug);
@@ -229,7 +305,7 @@ async function library(){const data=await api('/api/archives');storageStatus(dat
   for(const archive of archives){const row=el('tr'),name=el('td'),link=el(archive.url?'a':'strong','journal-name',archive.username);row.dataset.archive=archive.slug;if(archive.url)link.href=archive.url;name.append(link);
     const mode=archive.parameters?.mode;const description=archive.entry_limit?`Тест · ${archive.entry_limit} записей`:mode==='period'?[day(archive.parameters.date_from),day(archive.parameters.date_to)].filter(Boolean).join(' — '):'';
     if(description)name.append(el('span','journal-scope',description));row.append(name,el('td','mono',String(archive.entries_saved||0)),el('td','mono',String(archive.comments_saved||0)),el('td','mono',day(archive.created_at)));
-    const state=el('td'),status=el(archive.report_url?'a':'span','status'+(archive.status==='complete'?'':' partial'),labels[archive.status]||'Не завершён');if(archive.report_url)status.href=archive.report_url;state.append(status);row.append(state);
+    const state=el('td'),status=el(archive.report_url?'a':'span','status'+(archive.status==='complete'||archive.finished_with_skips?'':' partial'),archive.finished_with_skips?'Готов':labels[archive.status]||'Не завершён');if(archive.report_url)status.href=archive.report_url;state.append(status);row.append(state);
     const cell=el('td'),actions=el('div','row-actions');if(archive.url){const open=el('a','btn','Открыть');open.href=archive.url;actions.append(open);}
     const more=el('details','more'),summary=el('summary','','⋯');summary.setAttribute('aria-label','Действия с архивом '+archive.username);const menu=el('div','menu');
     const settings=el('button','','Параметры');settings.type='button';settings.onclick=()=>showParameters(archive);menu.append(settings);
@@ -255,18 +331,106 @@ async function refreshMap(state){
   if(data.expected)$('progress').hidden=terminal.has(state.phase)||!localProgress(state.phase);
   if(first)showStatus(lastState);
 }
-let previousKey='';async function poll(){if(closed)return;let received=false;try{const state=await api('/api/status');received=true;showStatus(state);await refreshMap(state);error('');const key=JSON.stringify([state.phase,state.slug,state.archive_url]);if(key!==previousKey||!busy){await library();previousKey=key;}}catch(e){if(!received){$('job-stage').textContent='Нет связи';error('Нет связи с приложением. Показан последний полученный статус.');}else error(e.message);}finally{if(!closed)pollTimer=setTimeout(poll,busy?1200:5000);}}
+function showUpdate(update) {
+  if (!update || !$('app-update')) return;
+  const {phase, version} = update;
+  const messages = {
+    checking:'Проверяем GitHub Releases…', current:'Установлена последняя версия.',
+    available:'Можно загрузить версию ' + version + '.',
+    downloading:'Загрузка ' + version + ' · ' + Math.floor(100 * (update.bytes || 0) / (update.total || 1)) + '%',
+    ready:'Версия ' + version + ' готова. После завершения работы закройте приложение кнопкой внизу и запустите его снова.',
+    error:update.message
+  };
+  $('update-summary').textContent = phase === 'available' ? 'Доступна версия ' + version :
+    phase === 'ready' ? 'Обновление готово · ' + version : phase === 'downloading' ? messages.downloading : 'Обновления приложения';
+  $('update-status').textContent = messages[phase] || '';
+  if (typeof update.automatic === 'boolean') $('update-auto').checked = update.automatic;
+  const action = $('update-action');
+  action.disabled = ['checking','downloading','ready'].includes(phase);
+  action.hidden = phase === 'ready';
+  action.dataset.action = phase === 'available' ? 'install' : 'check';
+  action.textContent = phase === 'available' ? 'Загрузить ' + version : 'Проверить';
+}
+if ($('app-update')) {
+  $('update-action').onclick = async () => {
+    $('update-action').disabled = true;
+    try { showUpdate(await api('/api/update/' + $('update-action').dataset.action, {})); }
+    catch (e) { $('update-status').textContent = e.message; $('update-action').disabled = false; }
+  };
+  $('update-auto').onchange = async () => {
+    const box = $('update-auto');
+    box.disabled = true;
+    try { showUpdate(await api('/api/update/settings', {automatic:box.checked})); }
+    catch (e) { box.checked = !box.checked; $('update-status').textContent = e.message; }
+    finally { box.disabled = false; }
+  };
+}
+let previousKey='';async function poll(){if(closed)return;let received=false;try{const state=await api('/api/status');received=true;showUpdate(state.app_update);showStatus(state);await refreshMap(state);error('');const key=JSON.stringify([state.phase,state.slug,state.archive_url]);if(key!==previousKey||!busy){await library();previousKey=key;}}catch(e){if(!received){$('job-stage').textContent='Нет связи';error('Нет связи с приложением. Показан последний полученный статус.');}else error(e.message);}finally{if(!closed)pollTimer=setTimeout(poll,busy?1200:5000);}}
 document.querySelectorAll('[data-new]').forEach(b=>b.onclick=()=>openDialog('new'));
 document.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>$('export-dialog').close());
 document.querySelectorAll('[data-scope]').forEach(b=>b.onclick=()=>setScope(b.dataset.scope));
 $('export-dialog').addEventListener('close',()=>{$('password').value='';planToken++;communityRequest++;preparingResume=false;setBusy(busy);});
+window.addEventListener('storage', event => {
+  if (event.key === contactStorage) {
+    try { contactJob = JSON.parse(event.newValue); } catch {}
+  }
+});
+document.addEventListener('visibilitychange', () => showContact(lastState));
+document.addEventListener('close', () => showContact(lastState), true);
+document.querySelectorAll('[data-contact-close]').forEach(button => button.onclick = () => $('contact-dialog').close());
+document.querySelector('.library-footer a').addEventListener('click', event => {
+  if (!lastState.contact_ready) return;
+  event.preventDefault();
+  openContact(lastState, 'manual');
+});
+$('contact-body').oninput = () => updateContact(lastState);
+$('contact-form').onsubmit = event => {
+  event.preventDefault();
+  if (!$('contact-send').disabled) sendContact($('contact-body').value, false);
+};
+for (const button of answerButtons) {
+  button.onclick = () => {
+    if (!button.disabled) sendContact($('contact-title').textContent + ' — ' + button.textContent, true);
+  };
+}
+
+async function sendContact(body, answering) {
+  const token = composeToken;
+  composeStatus = 'sending';
+  $('contact-status').textContent = 'Отправляем…';
+  $('contact-body').readOnly = true;
+  updateContact(lastState);
+  let result;
+  try {
+    result = await api('/api/contact', {job_id:composeJob, token, body});
+  } catch (error) {
+    result = {status:'unknown', message:error.message + ' Проверьте папку «Отправленные» в ЖЖ.'};
+  }
+  if (token !== composeToken || !$('contact-dialog').open) return;
+  if (answering && result.status === 'sent' && composeJob === lastState.job_id) {
+    openContact(lastState, 'manual');
+    $('contact-status').textContent = 'Ответ отправлен.';
+    return;
+  }
+  composeStatus = result.status;
+  $('contact-status').textContent = result.status === 'sent' ? 'Сообщение отправлено.' : result.message;
+  if (result.status === 'sent') $('contact-body').value = '';
+  if (result.status === 'rejected') {
+    composeToken = crypto.randomUUID();
+    composeStatus = 'editing';
+    $('contact-body').readOnly = false;
+  }
+  updateContact(lastState);
+}
 $('request-limit').oninput=()=>limitEdited=true;
 $('show-password').onclick=()=>{const show=$('password').type==='password';$('password').type=show?'text':'password';$('show-password').setAttribute('aria-label',show?'Скрыть пароль':'Показать пароль');};
 $('export-form').onsubmit=async e=>{e.preventDefault();if(busy||submitting||preparingResume||needsCommunity()||closed)return;error('',true);let data;
   if(mode==='resume')data={resume:selected.slug,password:$('password').value};
   else data={username:$('username').value,journal:$('source-type').value==='community'?$('journal').value:$('username').value,source_type:$('source-type').value,password:$('password').value,entry_limit:scope==='latest'?10:null,mode:scope==='latest'?null:scope,images:$('images').checked,videos:$('videos').checked,account:$('account').checked,messages:$('messages').checked,delay:Number($('delay').value),max_requests:$('request-limit').value?Number($('request-limit').value):null,date_from:scope==='period'?$('date-from').value||null:null,date_to:scope==='period'?$('date-to').value||null:null,urls:scope==='urls'?$('entry-urls').value:[],archive:selected?.slug||null};
   submitting=true;$('submit-export').disabled=true;
-  try{const state=await api('/api/export',data);$('export-dialog').close();showStatus(state);await library();}
+  try{const state=await api('/api/export',data);$('export-dialog').close();
+    saveContactJob({id:state.job_id});
+    showStatus(state);await library();}
   catch(e){error(e.message,true);$('password').value='';if(choosingCommunity())resetCommunities();$('password').focus();}
   finally{data.password='';submitting=false;setBusy(busy);}
 };

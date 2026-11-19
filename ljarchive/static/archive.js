@@ -1,5 +1,11 @@
 "use strict";
 document.addEventListener("DOMContentLoaded", () => {
+  function revealReportDetails() {
+    const details = document.getElementById('skipped');
+    if (details && location.hash === '#skipped') details.open = true;
+  }
+  revealReportDetails();
+  window.addEventListener('hashchange', revealReportDetails);
   const $ = (id) => document.getElementById(id);
   const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text !== undefined) n.textContent = text; return n; };
   const MONTHS = "января февраля марта апреля мая июня июля августа сентября октября ноября декабря".split(" ");
@@ -62,9 +68,26 @@ document.addEventListener("DOMContentLoaded", () => {
 
   const search = $("search");
   if (search && window.ARCHIVE) {
-    const {entries, documents} = window.ARCHIVE;
+    const {entries} = window.ARCHIVE;
     const byEntry = new Map(entries.map(e => [e.id, e]));
-    const normalized = documents.map(d => ({...d, haystack: (d.title + " " + d.text).toLocaleLowerCase("ru")}));
+    const normalizeDocs = documents => documents.map(d => ({...d, haystack: (d.title + " " + d.text).toLocaleLowerCase("ru")}));
+    let normalized = window.ARCHIVE.documents ? normalizeDocs(window.ARCHIVE.documents) : null;
+    let loadingSearch = false;
+    function loadSearch() {
+      if (loadingSearch) return;
+      loadingSearch = true;
+      const script = document.createElement('script');
+      script.src = 'assets/search-data.js';
+      script.onload = () => {
+        normalized = normalizeDocs(window.ARCHIVE.documents);
+        script.remove(); render();
+      };
+      script.onerror = () => {
+        loadingSearch = false; script.remove();
+        if (search.value.trim()) $('results-count').textContent = 'Не удалось открыть поисковый индекс.';
+      };
+      document.head.append(script);
+    }
     const tagCounts = new Map();
     for (const e of entries) for (const tag of e.tags) tagCounts.set(tag, (tagCounts.get(tag) || 0) + 1);
     const tags = [...tagCounts.keys()].sort((a, b) => a.localeCompare(b, "ru"));
@@ -133,6 +156,10 @@ document.addEventListener("DOMContentLoaded", () => {
       const year = $("year").value, tag = $("tag").value, security = $("security").value;
       const period=selectedDate||selectedMonth;
       const accepts = (e) => e && (!year || e.year === year) && (!period || e.date.startsWith(period)) && (!tag || e.tags.includes(tag)) && (!security || e.security === security);
+      if (terms.length && !normalized) {
+        $('results-count').textContent = 'Ищем…';
+        loadSearch(); return;
+      }
       let rows = terms.length ? normalized.filter(d => accepts(byEntry.get(d.entry)) && terms.every(t => d.haystack.includes(t))).map(d => ({e: byEntry.get(d.entry), d})) : entries.filter(accepts).map(e => ({e}));
       if (view === "full") {
         const seen = new Set();

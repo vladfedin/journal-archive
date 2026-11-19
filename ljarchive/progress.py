@@ -13,12 +13,17 @@ class Images(HTMLParser):
     def __init__(self, base):
         super().__init__()
         self.base, self.urls = base, set()
+        self.captions = {}
 
     def handle_starttag(self, tag, attrs):
         if tag == 'img':
             src = dict(attrs).get('src')
             if src:
-                self.urls.add(urljoin(self.base, src))
+                url = urljoin(self.base, src)
+                self.urls.add(url)
+                caption = dict(attrs).get('alt') or dict(attrs).get('title')
+                if caption:
+                    self.captions[url] = caption
 
 
 def capture_materials(exporter, entry):
@@ -64,9 +69,12 @@ def material_progress(record, mapping, errors=None):
     from .media import settle_browser_answer
     result = {key: value for key, value in record.items() if key != 'urls'}
     if 'urls' in record:
-        result['saved'] = sum(bool(mapping.get(url)) for url in record['urls'])
+        urls = [url for url in record['urls'] if mapping.get(url) or
+                settle_browser_answer(url, (errors or {}).get(url, {})).get('availability') != 'unavailable']
+        result['requested'] = max(0, result.get('requested', len(record['urls'])) - (len(record['urls']) - len(urls)))
+        result['saved'] = sum(bool(mapping.get(url)) for url in urls)
         # Asked for several times and not given: shown as links to the original, not chased.
-        result['unavailable'] = sum(not mapping.get(url) and closed(settle_browser_answer(url, (errors or {}).get(url, {}))) for url in record['urls'])
+        result['unavailable'] = sum(not mapping.get(url) and closed(settle_browser_answer(url, (errors or {}).get(url, {}))) for url in urls)
     result['missing'] = max(0, result.get('requested', 0) - result.get('saved', 0))
     return result
 
@@ -183,7 +191,7 @@ def preview_entry(store, eid):
                      userpic_view=pictures['comment'].get(str(c['id'])),
                      subject_text=plain(c.get('subject')), autoformat=needs_autoformat(c.get('body'), c.get('props')),
                      reaction_view=reaction_view(c.get('reactions')),
-                     html=safe_content(c['display_body'], url, {}, media, set()))
+                     html=safe_content(c['display_body'], url, {}, media, set(), thread_id=c.get('dtalkid')))
         security = entry.get('security', 'public')
         summary = {'title': plain(entry.get('subject')) or 'Без заголовка', 'date': entry.get('eventtime', ''),
                    'security': security, 'security_label': {'private': 'Личная', 'usemask': 'Для друзей / группы'}.get(security, security),

@@ -22,6 +22,10 @@ def merge_comment(previous, incoming, *, evidence='getcomments', observed_at=Non
             'after_archive': previous.get('state') not in DELETED and 'body' in previous,
             'evidence': evidence + ':' + incoming['state'],
         }
+    elif previous.get('state') in DELETED and previous.get('deletion') and not current.get('body'):
+        # XML-RPC sometimes keeps returning an approved, unloaded stub after
+        # the web page has explicitly marked this very comment as deleted.
+        return dict(previous)
     elif 'body' not in current:
         current = {**previous, **current, 'source_status': 'body_not_returned'}
     return current

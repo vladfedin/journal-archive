@@ -98,6 +98,8 @@ def image_failures(store):
         if path and (store.folder / path).is_file():
             continue
         error = settle_browser_answer(url, errors.get(url, {}))
+        if error.get('availability') == 'unavailable':
+            continue
         result.append({'url': url, 'browser': authenticated_image_host(image_url(url)),
                        'error': error, 'message': error_message(error),
                        'entries': [titles[eid] for eid in sorted(refs.get(url, ())) if eid in titles]})
@@ -402,10 +404,13 @@ class MaterialQueue:
                         self.states[task_id].pop('wait', None)
                     self.states[task_id].update(values)
             store, asset = None, None
-            def refresh(*, failed=False):
+            def refresh(*, failed=False, interruption=None):
                 if request['kind'] == 'profile':
                     from .personal import refresh_profile
-                    return refresh_profile(store)
+                    report = refresh_profile(store, interruption=interruption)
+                    from .recovery import inventory as gaps, summary
+                    self.jobs.profile_result(request['archive'], report, summary(gaps(store)))
+                    return
                 path = store.folder / 'export-report.json'
                 report = json.loads(path.read_text(encoding='utf-8')) if path.exists() else {
                     'username': store.get('username'), 'status': 'partial', 'created_at': store.get('started_at', ''),
@@ -472,7 +477,8 @@ class MaterialQueue:
             except ExportError as exc:
                 update(phase='error', message=str(exc))
                 if store:
-                    try: refresh(failed=True)
+                    from .client import HTTPRateLimited, APIRateLimited
+                    try: refresh(failed=True, interruption=exc if isinstance(exc, (HTTPRateLimited, APIRateLimited, RequestLimitReached)) else None)
                     except Exception: pass  # Error metadata is already committed to SQLite.
             except Exception:
                 update(phase='error', message='Не удалось сохранить материал. Можно повторить загрузку.')

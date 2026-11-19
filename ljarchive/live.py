@@ -32,6 +32,11 @@ def preview_index(store):
     return ENV.get_template('index.html').render(user=store.get('username'), entries=rows, report=report, preview=True)
 
 
+def preview_feed_data(store):
+    _, rows = summaries(store)
+    return 'window.ARCHIVE=' + dumps({'entries': rows}).replace('<', '\\u003c') + ';'
+
+
 def preview_search(store):
     entries, rows = summaries(store)
     by_id = {e['id']: e for e in rows}

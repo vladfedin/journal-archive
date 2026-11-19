@@ -6,7 +6,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from .client import Cancelled, ExportError, IncompleteData, LiveJournalClient, RequestBudget, username
+from .client import HTTPRateLimited, APIRateLimited, Cancelled, ExportError, IncompleteData, LiveJournalClient, RequestBudget, username
 from .exporter import Exporter, now
 from .entries import is_repost
 from .storage import atomic_write, dumps
@@ -91,6 +91,17 @@ class SyncExporter(Exporter):
         with store.db:
             bind_source(store, self.client)
         old = store.get("sync_job", {})
+        # Older writers left a finished run with optional skips at the render checkpoint.
+        if old.get('phase') == 'render' and not self.resume_requested and not old.get('done'):
+            try:
+                previous = json.loads((self.folder / 'export-report.json').read_text(encoding='utf-8'))
+            except (OSError, ValueError):
+                previous = {}
+            saved = previous.get('sync') or {}
+            finished = previous.get('status') == 'complete' or previous.get('finished_with_skips')
+            if (finished and saved.get('phase') == 'render' and not saved.get('done')
+                    and saved.get('scope') == old.get('scope') and saved.get('started_at') == old.get('started_at')):
+                old = {}
         if old and (self.resume_requested or not old.get("done")) and old.get("scope") == self.scope.data():
             self.state = old
             self.resuming = True
@@ -419,6 +430,7 @@ class SyncExporter(Exporter):
         from .integrity import verify_archive
         store = self.store
         error, cancelled = None, False
+        rate_limited = False
         try:
             self.prepare()
             self.client.not_before = restored_deadline(store)
@@ -480,15 +492,17 @@ class SyncExporter(Exporter):
                 error = " ".join(failures) or None
             except Cancelled as exc:
                 error, cancelled = str(exc), True
+            except (HTTPRateLimited, APIRateLimited) as exc:
+                rate_limited, error = True, str(exc)
             except ExportError as exc:
                 error = str(exc)
             with store.db:
                 identity = bind_source(store, self.client)
             report = self.report(error, cancelled)
             report['source'] = identity
-            report = build_archive(store, report, images=self.images and not cancelled, userpics=not cancelled,
+            report = build_archive(store, report, images=self.images and not (cancelled or rate_limited), userpics=not (cancelled or rate_limited),
                                    client_cancel=self.client.cancel, progress=self.progress, budget=self.client.budget, media=getattr(self, "_media", None), client=self.client)
-            complete = self.state["phase"] == "render" and not error and report["status"] == "complete"
+            complete = self.state["phase"] == "render" and not error and (report["status"] == "complete" or report.get("finished_with_skips"))
             if complete:
                 self.checkpoint(phase="done", done=True, finished_at=now())
             elif self.images and not report["media_complete"] and report["status"] == "complete":

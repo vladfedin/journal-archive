@@ -66,7 +66,7 @@ def metadata_snapshot(store):
             'userpics': store.db.execute("SELECT payload FROM account_sections WHERE id='userpics'").fetchone() if requested.get('account') else None,
             'messages': store.db.execute('SELECT payload FROM messages').fetchall() if requested.get('messages') else [],
             'reactions': store.db.execute("SELECT kind,object_id,json_extract(payload,'$.count'),json_extract(payload,'$.authors.status'),json_remove(json_extract(payload,'$.authors'),'$.users') FROM reactions").fetchall(),
-            'captured': store.db.execute("SELECT id FROM account_sections WHERE json_extract(payload,'$.status') IN ('captured','source_exhausted')").fetchall()}
+            'sections': store.db.execute("SELECT id, json_extract(payload,'$.status'), json_extract(payload,'$.error') FROM account_sections").fetchall()}
 
 
 def check_cancel(cancel):
@@ -129,7 +129,7 @@ def inventory_snapshot(data, *, cancel=None, progress=None):
             item = json.loads(row[2])
             item['state'] = row[3] or item.get('state', 'A')
             if item['state'] in ('D', 'X'):
-                item.pop('source_status', None)
+                continue
             picture(item, 'comment', row[0])
             if item.get('source_status') != 'not_returned' and ('post', row[1]) in reaction_targets:
                 reaction_targets.add(('comment', row[0]))
@@ -163,6 +163,8 @@ def inventory_snapshot(data, *, cancel=None, progress=None):
         path = mapping.get(url)
         if not path or not (data['folder'] / path).is_file():
             error = settle_browser_answer(url, errors.get(url, {}))
+            if error.get('availability') == 'unavailable':
+                continue
             gap('images', fingerprint(url), error, plain_reason(error) if error else NOT_YET)
     for url, record in settings.get('videos', {}).items():
         check_cancel(cancel)
@@ -182,6 +184,8 @@ def inventory_snapshot(data, *, cancel=None, progress=None):
         if record is None or record[0] is None:
             gap('reactions', key, {'closed': key in given_up}, 'ЖЖ не отдал счётчик' if key in given_up else NOT_YET)
             continue
+        if key in given_up:
+            gap('reactions', key, {'closed': True}, 'сохранено прежнее значение счётчика')
         if record[1] != 'complete':
             authors = json.loads(record[2]) if record[2] else None
             gap('authors', key, authors, 'ЖЖ показал не всех' if record[1] == 'partial' else
@@ -191,9 +195,11 @@ def inventory_snapshot(data, *, cancel=None, progress=None):
         required.update(('profile', 'foaf', 'friends', 'tags', 'userpics', 'settings_display', 'settings_privacy', 'settings_notifications'))
     if requested.get('messages'):
         required.update(('messages_incoming', 'messages_outgoing'))
-    captured = {r[0] for r in data['captured']}
-    for section in required - captured:
-        gap('personal', section, None, NOT_YET)
+    sections = {key: (status, error) for key, status, error in data['sections']}
+    for key in required:
+        status, reason = sections.get(key, (None, None))
+        if status not in ('captured', 'source_exhausted'):
+            gap('personal', key, None, reason or ('раздел получен частично' if status else NOT_YET))
     return {'units': units, 'closed': shut, 'reasons': reasons, 'pictures': dict(pictures),
             'discovery_complete': bool(settings.get('posts_done')), 'counts': data['counts']}
 

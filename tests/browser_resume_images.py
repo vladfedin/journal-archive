@@ -71,6 +71,8 @@ def main():
                 page.locator('#job-action').click()
                 page.locator('#password').fill(password)
                 page.locator('#submit-export').click()
+                expect(page.locator('#contact-body')).to_be_focused()
+                page.keyboard.press('Escape')
                 expect(page.locator('#job-stage')).to_have_text('Вход в браузере', timeout=10000)
                 expect(page.locator('#job-action')).to_have_text('Продолжить')
                 expect(page.locator('#job-browser-cancel')).to_be_visible()

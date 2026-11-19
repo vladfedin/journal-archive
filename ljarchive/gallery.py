@@ -10,17 +10,18 @@ from .userpics import describe
 from .video import VideoRefs, embed_key
 
 
-def inventory(store):
+def inventory(store, entries=None, all_comments=None):
     from .render import original_url, plain, text_value
     from .entries import is_repost
-    entries = store.entries()
+    entries = store.entries() if entries is None else list(entries)
+    all_comments = store.comments() if all_comments is None else all_comments
     comments = defaultdict(list)
-    for comment in store.comments():
+    for comment in all_comments:
         comments[int(comment.get('jitemid', 0))].append(comment)
     known = {int(entry['itemid']) for entry in entries}
     entries.extend({'itemid': eid, 'subject': f'Запись #{eid} · текст недоступен', 'event': '', 'eventtime': ''}
                    for eid in comments if eid not in known)
-    pictures = describe(store)
+    pictures = describe(store, entries, all_comments)
     mapping, errors = store.get('media', {}), store.get('media_errors', {})
     videos, embeds = store.get('videos', {}), store.get('video_embeds', {})
     rows = {}
@@ -74,11 +75,14 @@ def inventory(store):
             source = text_value(item.get('event' if kind == 'post' else 'body'))
             images = Images(base); images.feed(source); images.close()
             for url in images.urls:
-                add('image', url, reference, title)
+                add('image', url, {**reference, 'caption': images.captions.get(url, '')}, title)
             refs = VideoRefs(base); refs.feed(source); refs.close()
             for module in refs.modules:
-                if embeds.get(embed_key(base, module)):
-                    refs.urls.add(embeds[embed_key(base, module)])
+                key = embed_key(base, module)
+                if embeds.get(key):
+                    refs.urls.add(embeds[key])
+                elif key in videos:
+                    add('video', key, reference, title)
             for url in refs.urls:
                 add('video', url, reference, title)
             picture = pictures.get(kind, {}).get(str(cid if cid else eid), {})
@@ -86,7 +90,8 @@ def inventory(store):
     catalog = store.get('userpic_catalog', {}) or {}
     for url in [catalog.get('defaultpicurl'), *(catalog.get('pickwurls') or [])]:
         add('userpic', url, title='Юзерпик')
-    for row in store.db.execute("SELECT payload FROM account_sections WHERE id='userpics'"):
+    has_sections = store.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='account_sections'").fetchone()
+    for row in (store.db.execute("SELECT payload FROM account_sections WHERE id='userpics'") if has_sections else ()):
         import json
         for pic in (json.loads(row[0]).get('data') or {}).get('pictures', []):
             add('userpic', pic.get('url'), title=pic.get('title') or 'Юзерпик')
@@ -140,3 +145,4 @@ def write_gallery(store, report):
     for old in store.folder.glob('materials*.html'):
         if re.fullmatch(r'materials(?:-(?:image|video|userpic|tags|tag-(?:none|[0-9a-f]{24})))?(?:-\d+)?\.html', old.name) and old.name not in produced:
             old.unlink()
+    return rows

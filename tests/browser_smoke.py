@@ -2,6 +2,7 @@
 
 Uses a temporary archive and a local HTTP server, never contacts LiveJournal.
 """
+import hashlib
 import io
 import json
 import os
@@ -12,8 +13,41 @@ from unittest.mock import patch
 import zipfile
 
 from playwright.sync_api import expect, sync_playwright
+from ljarchive.client import LiveJournalClient
 from ljarchive.demo import create_demo
 from ljarchive.server import make_server
+
+
+def check_contact_question(browser, base, job_id):
+    digests = {hashlib.sha256(name).hexdigest() for name in (b'first_fixture', b'example_journal')}
+    title = 'Вы играете в Шент?'
+    with patch('ljarchive.contact.QUESTION_ACCOUNT_DIGESTS', digests):
+        for answer in ('Отмена (без отправки)', 'Escape', 'Закрыть', 'Да', 'Нет', 'Замахнуться кочергой'):
+            context = browser.new_context()
+            try:
+                job = json.dumps({'id': job_id})
+                context.add_init_script(f"localStorage.setItem('ljarchive.contact-job', JSON.stringify({job}))")
+                page = context.new_page()
+                with patch('ljarchive.server.send_message', return_value={'status': 'sent', 'message_id': '17'}) as send:
+                    page.goto(base)
+                    dialog = page.locator('#contact-dialog')
+                    expect(dialog.get_by_role('heading')).to_have_text(title)
+                    expect(dialog.get_by_text('Выбранный ответ будет отправлен автору личным сообщением в ЖЖ.')).to_be_visible()
+                    expect(page.locator('#contact-dismiss')).to_be_focused()
+                    send.assert_not_called()
+                    if answer == 'Escape':
+                        page.keyboard.press('Escape')
+                    else:
+                        dialog.get_by_role('button', name=answer, exact=True).click()
+                    if answer in ('Escape', 'Закрыть', 'Отмена (без отправки)'):
+                        expect(dialog).to_be_hidden()
+                        send.assert_not_called()
+                    else:
+                        expect(page.locator('#contact-status')).to_have_text('Ответ отправлен.')
+                        expect(page.locator('#contact-body')).to_be_focused()
+                        send.assert_called_once_with('example_journal', 'fixture-only', title + ' — ' + answer)
+            finally:
+                context.close()
 
 
 def main():
@@ -25,10 +59,17 @@ def main():
         thread.start()
         base = f'http://127.0.0.1:{server.server_port}'
         calls = []
+        finish_export = threading.Event()
 
         def fake_sync(user, password, output, **kwargs):
             calls.append((user, kwargs))
             assert password == 'browser-test-secret'
+            client = LiveJournalClient(user, password)
+            client._cookie = 'fixture-only'
+            client.source['access']['status'] = 'verified'
+            kwargs['session_ready'](client)
+            client.close()
+            assert finish_export.wait(60)
             report = create_demo(output / kwargs['archive'])
             report['status'] = 'complete'
             return report
@@ -78,6 +119,7 @@ def main():
                 page.route('**/api/export', check_community)
                 page.locator('#submit-export').click()
                 expect(page.locator('#form-error')).to_have_text('Fixture export stopped')
+                expect(page.locator('#contact-dialog')).to_be_hidden()
                 assert submitted == ['readers']
                 page.unroute('**/api/export')
                 page.locator('#password').fill('browser-test-secret')
@@ -103,7 +145,25 @@ def main():
                 page.locator('#username').fill('example_journal')
                 page.locator('#password').fill('browser-test-secret')
                 page.locator('#submit-export').click()
+                expect(page.locator('#contact-title')).to_have_text('Копирование началось')
+                expect(page.locator('#contact-body')).to_be_focused()
+                expect(page.locator('#contact-send')).to_be_disabled()
+                page.locator('#contact-body').fill('Спасибо за архив!')
+                with patch('ljarchive.server.send_message', return_value={'status':'sent','message_id':'17'}) as send:
+                    page.locator('#contact-send').click()
+                    expect(page.locator('#contact-status')).to_have_text('Сообщение отправлено.')
+                    send.assert_called_once_with('example_journal', 'fixture-only', 'Спасибо за архив!')
+                page.keyboard.press('Escape')
+                page.reload()
+                expect(page.locator('#job')).to_be_visible()
+                expect(page.locator('#contact-dialog')).to_be_hidden()
+                check_contact_question(browser, base, server.jobs.snapshot()['job_id'])
+                finish_export.set()
+                expect(page.locator('#contact-title')).to_have_text('Архив готов', timeout=15000)
+                page.locator('#contact-dialog button[type=button]').last.click()
+                page.reload()
                 expect(page.locator('#job-stage')).to_have_text('Архив готов', timeout=15000)
+                expect(page.locator('#contact-dialog')).to_be_hidden()
                 expect(page.locator('#job-action')).to_have_text('Скрыть')
                 expect(page.locator('#password')).to_have_value('')
                 assert calls[0][1]['mode'] == 'full' and calls[0][1]['max_requests'] is None
@@ -401,6 +461,18 @@ def main():
                 expect(page.locator('.entry-card')).to_have_count(1)
                 page.locator('.entry-card h2 a').click()
                 expect(page.locator('#comment-4')).to_be_visible()
+                for search_url in [base+'/search', base+'/archive/example_journal/search.html',
+                                   (root/'example_journal/search.html').as_uri()]:
+                    page.goto(search_url)
+                    page.locator('#ft-query').fill('«полуночи»')
+                    page.locator('#ft-kind').select_option('comment')
+                    expect(page.locator('#ft-results mark').first).to_have_text('полуночи', ignore_case=True)
+                    page.locator('#ft-group').check()
+                    page.locator('#ft-results summary').first.click()
+                    result = page.locator('#ft-results a:visible').first
+                    result.click()
+                    page.wait_for_url('**/entries/3.html#comment-4')
+                    expect(page.locator('#comment-4')).to_be_visible()
                 page.goto((root / 'example_journal/help.html').as_uri())
                 expect(page.locator('h1')).to_have_text('Помощь')
                 expect(page.get_by_role('link', name='Написать автору', exact=True)).to_have_attribute('href', compose)
@@ -597,6 +669,7 @@ def main():
                         shutil.copy2(file, target / file.name)
                 print('PASS: create/update, full/compact feed, LJ-cut, userpics, JSON/ZIP, file://, reactions, threads, 320/390px, dark theme')
         finally:
+            finish_export.set()
             server.shutdown()
             server.server_close()
             thread.join(5)

@@ -19,6 +19,10 @@ with tempfile.TemporaryDirectory(prefix="ljarchive-ЖЖ-") as directory:
     env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "VIRTUAL_ENV")}
     diagnostic_log = Path(directory) / 'native.log'
     env['LJARCHIVE_DIAGNOSTIC_LOG'] = str(diagnostic_log)
+    from importlib.metadata import version
+    native_version = version('livejournal-local-archive')
+    subprocess.run([str(binary), '--verify-update-version', native_version], cwd=directory, env=env, check=True, timeout=90)
+    assert subprocess.run([str(binary), '--verify-update-version', 'invalid'], cwd=directory, env=env, timeout=90).returncode != 0
     video_tools = Path(directory) / 'video-tools.json'
     subprocess.run([str(binary), '--self-test-video-tools', str(video_tools)], cwd=directory, env=env, check=True, timeout=90)
     tools = json.loads(video_tools.read_text(encoding='utf-8'))

@@ -50,6 +50,10 @@ class RequestLimitReached(ExportError):
     pass
 
 
+class HTTPRateLimited(ExportError):
+    """The HTTP transport has already exhausted the attempts for a 429."""
+
+
 class APIRateLimited(ExportError):
     pass
 
@@ -250,6 +254,8 @@ class LiveJournalClient:
                                     attempt=attempt + 1, max_attempts=self.max_attempts,
                                     server_delay=bool(response.headers.get("Retry-After")))
                         if attempt == self.max_attempts - 1:
+                            if response.status_code == 429:
+                                raise HTTPRateLimited("HTTP 429 · ЖЖ ограничил частоту запросов. Срок повтора сохранён.")
                             raise ExportError("ЖЖ временно ограничивает запросы или недоступен. Данные сохранены, продолжите позже.")
                         continue
                     if response.status_code in (401, 403):
@@ -432,6 +438,17 @@ class LiveJournalClient:
         if not isinstance(result, list):
             raise ExportError("ЖЖ не вернул список реакций.")
         return result
+
+    def web_deleted_threads(self, ditemid, dtalkid):
+        from .comment_page import deleted_threads
+        from .web_session import cookie_header
+        base = f"https://{self.user.replace('_', '-')}.livejournal.com"
+        headers = {"Accept": "text/html"}
+        if self._cookie and not cookie_header(self, base + "/"):
+            headers["Cookie"] = "ljsession=" + self._cookie
+        raw = self._request("GET", f"/{int(ditemid)}.html?thread={int(dtalkid)}",
+                            base_url=base, category="livejournal", headers=headers)
+        return deleted_threads(raw, self.user, ditemid)
 
     def discover_journal_id(self, display_id):
         """Resolve an old archive without a stored user ID, using one public page."""

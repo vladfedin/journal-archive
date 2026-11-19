@@ -39,6 +39,16 @@ def lj_video_id(url):
     return None
 
 
+def rambler_frame(parts):
+    if (parts.scheme == 'https' and parts.netloc == 'vp.rambler.ru'
+            and re.fullmatch(r'/player/[\d.]+/player\.html', parts.path)):
+        fields = parse_qs(parts.fragment)
+        record = fields.get('ramblerPlayerId', fields.get('id', ['']))[0]
+        if lj_video_url(record):
+            return record, fields.get('authToken', [''])[0]
+    return None
+
+
 def canonical_video(value, base=''):
     url = urljoin(base, html.unescape(value or ''))
     try:
@@ -47,6 +57,8 @@ def canonical_video(value, base=''):
             return None
         host = (p.hostname or '').lower()
         q = parse_qs(p.query)
+        if host == 'vp.rambler.ru' and (frame := rambler_frame(p)):
+            return lj_video_url(frame[0])
         if host == 'vc.videos.livejournal.com' and p.path == '/index/player':
             return lj_video_url(q.get('record_id', [''])[0])
         video_id = None
@@ -90,6 +102,49 @@ def external_embed(value, base=''):
     except ValueError:
         pass
     return None
+
+
+class LJPlayer(HTMLParser):
+    def __init__(self, base, identities, *, comments=True):
+        super().__init__()
+        self.base, self.identities = base, identities
+        self.comments = comments
+        self.script = False
+        self.token = None
+
+    def handle_starttag(self, tag, attrs):
+        self.script = tag == 'script'
+        a = dict(attrs)
+        if a.get('data-rambler-player-id') in self.identities and a.get('data-auth-token'):
+            self.token = a['data-auth-token']
+        if tag == 'iframe':
+            try:
+                frame = rambler_frame(urlsplit(urljoin(self.base, a.get('src') or '')))
+            except ValueError:
+                return
+            if frame and frame[0] in self.identities and frame[1]:
+                self.token = frame[1]
+
+    def handle_endtag(self, tag):
+        if tag == 'script':
+            self.script = False
+
+    def handle_data(self, data):
+        if not self.comments or not self.script or 'rambler' not in data:
+            return
+        # LJ serializes the HTML of each discussion comment in an article field.
+        for match in re.finditer(r'"article"\s*:\s*(?=")', data):
+            try:
+                article, _ = json.JSONDecoder().raw_decode(data, match.end())
+            except ValueError:
+                continue
+            if 'rambler' in article:
+                child = LJPlayer(self.base, self.identities, comments=False)
+                child.feed(article)
+                child.close()
+                if child.token:
+                    self.token = child.token
+                    return
 
 
 class VideoRefs(HTMLParser):
@@ -444,7 +499,8 @@ class VideoArchive:
         row = self.store.db.execute('SELECT payload FROM entries WHERE id=?', (eid,)).fetchone()
         if not row:
             raise ExportError('Не найдена запись для проверки доступа к видео ЖЖ.')
-        base = original_url(self.client.user, json.loads(row[0]))
+        entry = json.loads(row[0])
+        base = original_url(self.client.user, entry)
         p = urlsplit(base)
         if p.hostname != self.client.user.replace('_', '-') + '.livejournal.com' or not re.fullmatch(r'/\d+\.html', p.path):
             raise ExportError('Не удалось определить запись с видео ЖЖ.')
@@ -462,15 +518,30 @@ class VideoArchive:
         if (playlist.get('type') != 'offline' or (str(playlist.get('id')) != record_id and playlist.get('uuid') != record_id)):
             raise ExportError('Видеосервис вернул другой ролик или прямой эфир.')
         identities = {value for value in (record_id, str(playlist.get('id')), playlist.get('uuid')) if value}
-        class Player(HTMLParser):
-            token = None
-            def handle_starttag(self, tag, attrs):
-                a = dict(attrs)
-                if a.get('data-rambler-player-id') in identities and a.get('data-auth-token'):
-                    self.token = a['data-auth-token']
+        from .render import text_value
+        def contains_player(markup):
+            refs = VideoRefs(base)
+            refs.feed(text_value(markup))
+            refs.close()
+            return any(lj_video_id(ref) in identities for ref in refs.urls)
+
+        pages = []
+        if contains_player(entry.get('event')):
+            pages.append(None)
+        for comment in self.store.comments(eid):
+            if contains_player(comment.get('body')):
+                thread = comment.get('dtalkid') or int(comment['id']) * 256 + int(entry.get('anum') or 0)
+                if str(thread).isdigit():
+                    pages.append(int(thread))
+        pages.append(None)
         self.step('access', 'Проверяем доступ к видео ЖЖ…')
-        raw = self.journal_page(base)
-        player = Player(); player.feed(raw.decode('utf-8', 'replace')); player.close()
+        for thread in dict.fromkeys(pages):
+            raw = self.journal_page(base, params={'thread': thread} if thread else None)
+            player = LJPlayer(base, identities)
+            player.feed(raw.decode('utf-8', 'replace'))
+            player.close()
+            if player.token:
+                break
         if not player.token:
             raise ExportError('Этот видеоплеер не найден в текущей записи.')
         try:
@@ -497,21 +568,23 @@ class VideoArchive:
         missing = [module for module in refs.modules if embed_key(base, module) not in self.embeds and embed_key(base, module) not in self.external
                    and not closed(self.records.get(embed_key(base, module)))]
         tried = bool(enabled and missing and base not in self.pages)
-        stop_reason = None
+        stop_reason, detail = None, None
         if tried:
+            self.trace = []
+            requests_before = self.client.budget.used
             self.pages.add(base)
             try:
                 self.resolve(entry, missing)
             except (Cancelled, RequestLimitReached, VideoStop) as exc:
                 stop_reason = 'request_limit' if isinstance(exc, RequestLimitReached) else getattr(exc, 'reason', 'cancelled')
             except ExportError as exc:
+                detail = str(exc)
                 if '401/403' in str(exc) or 'требуется вход' in str(exc):
                     stop_reason = 'auth_required'
             except OSError:
                 stop_reason = 'storage'
-            except Exception:
-                # One failed widget must not abort the remaining journal export.
-                pass
+            except Exception as exc:
+                detail = f'Ошибка обработки вставки ({type(exc).__name__})'
         for module in refs.modules:
             key = embed_key(base, module)
             if key in self.embeds: refs.urls.add(self.embeds[key])
@@ -522,6 +595,11 @@ class VideoArchive:
                         continue
                     reason = stop_reason or ('request_limit' if self.client.budget.exhausted else 'cancelled' if self.client.cancel.is_set() else 'embed_unresolved')
                     record.update(status='pending' if reason != 'embed_unresolved' else 'failed', error={'reason': reason})
+                    if tried:
+                        record.update(checked_at=datetime.now(timezone.utc).isoformat(timespec='seconds'),
+                                      requests=self.client.budget.used - requests_before, trace=self.trace[-8:])
+                        if detail:
+                            record['error']['detail'] = detail
                     if reason == 'embed_unresolved' and tried and module in missing:
                         fail(record)
         self.save()

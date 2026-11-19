@@ -4,8 +4,11 @@ import time
 from html.parser import HTMLParser
 from urllib.parse import urlsplit
 
-from .client import APIError, HTTPError, IncompleteData, ExportError, Cancelled, RequestLimitReached
+from .client import APIError, HTTPError, AuthenticationRequired, HTTPRateLimited, APIRateLimited, IncompleteData, ExportError, Cancelled, RequestLimitReached
 from .storage import dumps
+
+
+PROFILE_ISSUE = 'Личные данные сохранены частично. Подробности — в разделе «Профиль».'
 
 
 class Preferences(HTMLParser):
@@ -87,20 +90,22 @@ class Personal:
             if not key.startswith('messages_'):
                 self.save(key, status='captured', data=data, source=source)
         except HTTPError as exc:
-            if exc.status not in (404, 410):
-                raise
-            self.save(key, status='unavailable', error=str(exc), source=source)
+            self.save(key, status='unavailable' if exc.status in (404, 410) else 'partial', error=str(exc), source=source)
         except APIError as exc:
             if exc.code not in (100, 201, 203, 209, 300, 500):
                 raise
             self.save(key, status='unavailable', error=str(exc), source=source)
         except IncompleteData as exc:
             self.save(key, status='partial', error=str(exc), source=source)
+        except (HTTPRateLimited, APIRateLimited) as exc:
+            self.save(key, status='partial', error=str(exc), source=source)
+            raise
         except (Cancelled, RequestLimitReached):
             raise
+        except AuthenticationRequired as exc:
+            reason = f'HTTP {exc.status} · {exc}' if exc.status else str(exc)
+            self.save(key, status='partial', error=reason, source=source)
         except ExportError as exc:
-            if not getattr(self.exporter, 'continue_personal_errors', False):
-                raise
             self.save(key, status='partial', error=str(exc), source=source)
 
     def friends(self):
@@ -354,7 +359,7 @@ def download_profile(store, data, cancel, update, sessions=None):
             store.set('request_wait', budget.wait_info)
     client.save_cooldown = budget.save_cooldown = checkpoint
     exporter = SimpleNamespace(store=store, client=client, images=False,
-        personal_cycle=secrets.token_hex(12), continue_personal_errors=True,
+        personal_cycle=secrets.token_hex(12),
         update=lambda phase, message, **values: update(phase=phase, message=message, **values))
     try:
         client.login()
@@ -372,9 +377,9 @@ def download_profile(store, data, cancel, update, sessions=None):
         data.pop('password', None)
 
 
-def refresh_profile(store):
+def refresh_profile(store, *, interruption=None):
     from .gallery import write_gallery
-    from .render import ENV
+    from .render import ARCHIVE_FORMAT_VERSION, ENV, build_archive
     from .data import export_json
     from .integrity import write_manifest
     from .storage import atomic_write
@@ -382,12 +387,46 @@ def refresh_profile(store):
     report = json.loads(path.read_text(encoding='utf-8')) if path.is_file() else {
         'username': store.get('username'), 'status': 'partial', 'entries_saved': store.counts()['entries'],
         'comments_saved': store.counts()['comments'], 'missing_comments': []}
+    if (store.folder / 'index.html').is_file() and (report.get('format_version') != ARCHIVE_FORMAT_VERSION
+            or not (store.folder / 'assets/feed-data.js').is_file() or not (store.folder / 'search.html').is_file()):
+        # Upgrade old templates and their JS/data together. This renders only local data.
+        build_archive(store, report)
+    previous_stop = (report.get('personal') or {}).get('interruption') or {}
+    if previous_stop.get('only_issue') and report.get('status') == 'partial' and not report.get('issues'):
+        report['status'] = 'complete'
+    was_finished = previous_stop.get('was_finished') or report.get('status') == 'complete' or report.get('finished_with_skips', False)
+    previous_profile_only = (report.get('personal') or {}).get('complete_baseline')
     render_personal(store, report)
-    write_gallery(store, report)
+    if previous_profile_only and any(issue != PROFILE_ISSUE for issue in report.get('issues', [])):
+        was_finished = False
+    report['finished_with_skips'] = bool(report['status'] == 'partial' and was_finished
+        and not report.get('request_limit_reached') and (not report['personal']['complete'] or report.get('issues')))
+    if interruption and report['status'] in ('partial', 'complete'):
+        report['personal']['interruption'] = {'message': str(interruption), 'was_finished': bool(was_finished),
+                                              'only_issue': report['status'] == 'complete'}
+        report.update(status='partial', finished_with_skips=False)
+    from .fulltext import material_docs, personal_docs, write_part
+    materials = write_gallery(store, report)
+    write_part(store.folder, 'personal', personal_docs(report['username'], account_data(store)))
+    entries, comments = store.entries(), store.comments()
+    write_part(store.folder, 'materials', material_docs(materials, entries, comments, report['username']))
+    from .skip_details import skipped_items
+    report['skipped_items'] = skipped_items(report, materials, entries, comments,
+                                            count_attempts=store.get('reaction_count_attempts', {}))
+    if (store.folder / 'index.html').is_file():
+        # Reuse the feed already published, including retained and orphaned entries.
+        try:
+            feed = (store.folder / 'assets/feed-data.js').read_text(encoding='utf-8')
+            rows = json.loads(feed.removeprefix('window.ARCHIVE=').removesuffix(';'))['entries']
+        except (OSError, ValueError, KeyError):
+            from .live import summaries
+            _, rows = summaries(store)
+        atomic_write(store.folder / 'index.html', ENV.get_template('index.html').render(user=report['username'], entries=rows, report=report))
     export_json(store, split=True)
     atomic_write(path, dumps(report))
     atomic_write(store.folder / 'report.html', ENV.get_template('report.html').render(user=report['username'], report=report))
     write_manifest(store.folder)
+    return report
 
 
 def render_personal(store, report):
@@ -395,16 +434,12 @@ def render_personal(store, report):
     from .media import Media
     from .storage import atomic_write
     import threading
-    import hashlib
-    issue = 'Личные данные сохранены частично. Подробности — в разделе «Профиль».'
+    issue = PROFILE_ISSUE
     previous_personal = report.get('personal', {})
-    # Restore a status lowered solely by this section, only if the rest of the
-    # report is unchanged. A new content/media issue must keep the archive partial.
-    baseline = hashlib.sha256(dumps({k: v for k, v in report.items() if k not in ('personal', 'status', 'issues')}).encode()).hexdigest()
     previous_issue = issue in report.get('issues', [])
     report['issues'] = [text for text in report.get('issues', []) if text != issue]
     if (previous_issue and report.get('status') == 'partial' and not report['issues']
-            and previous_personal.get('complete_baseline') == baseline):
+            and previous_personal.get('complete_baseline') and not report.get('request_limit_reached')):
         report['status'] = 'complete'
     data = account_data(store)
     sections, mapping = data['sections'], store.get('media', {})
@@ -440,8 +475,15 @@ def render_personal(store, report):
     if not report['personal']['complete']:
         if report['status'] == 'complete':
             report['status'] = 'partial'
-            report['personal']['complete_baseline'] = baseline
+            report['personal']['complete_baseline'] = True
         report['issues'].append(issue)
+    elif (report.get('finished_with_skips') and report['status'] == 'partial'
+            and not report['issues'] and not report.get('request_limit_reached')
+            and report.get('media_complete', True)
+            and not any(report.get(key) for key in ('pending_days', 'pending_comment_entry_ids',
+                                                    'orphan_entry_ids', 'unknown_encoding_entry_ids'))):
+        # A legacy profile refresh could remove its last issue but leave a partial result.
+        report['status'] = 'complete'
     profile = (sections.get('profile', {}).get('data') or {})
     friends = sections.get('friends', {}).get('data') or {}
     pictures = [{'url': u, 'path': mapping.get(u)} for u in sorted(urls)]

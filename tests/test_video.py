@@ -390,3 +390,41 @@ def test_browser_login_failures_are_recognized_for_embeds(tmp_path, monkeypatch,
     try:
         with pytest.raises(AuthenticationRequired):video.resolve({'itemid':1,'anum':1},['3'])
     finally:close(video)
+
+
+def test_native_video_in_serialized_comment_frame(tmp_path, monkeypatch):
+    import io
+    from urllib.parse import urlencode
+    from ljarchive.video import lj_video_url
+    video = manager(tmp_path, monkeypatch)
+    uuid = 'record::12345678-1234-1234-1234-123456789abc'
+    old = lj_video_url('12345')
+    frame = 'https://vp.rambler.ru/player/1.174.0/player.html#' + urlencode({'id': uuid, 'authToken': 'fixture-token'})
+    with video.store.db:
+        video.store.save_entry({'itemid': 1, 'anum': 7, 'event': 'Post'})
+        video.store.save_comment({'jitemid': 1, 'id': 3, 'dtalkid': 775, 'body': '<div data-rambler-player-id="12345"></div>'})
+    calls = []
+    def request(method, path, **kw):
+        calls.append(path)
+        if path == '/video/check':
+            assert kw['params'] == {'recordId': 12345, 'token': 'fixture-token'}
+            return b'OK'
+        assert kw['params'] == {'thread': 775}
+        return ('<script>Site.comments = ' + json.dumps([{'article':'<iframe src="'+frame+'"></iframe>'}]) + ';</script>').encode()
+    monkeypatch.setattr(video.client, '_request', request)
+    monkeypatch.setattr(video, 'open', lambda url: io.BytesIO(json.dumps({'success':True,'result':{'playList':{
+        'type':'offline','id':12345,'uuid':uuid,'source':'https://cdn.example/clip.mp4'}}}).encode()))
+    try:
+        assert canonical_video(frame) == lj_video_url(uuid)
+        media = Media(tmp_path, False, threading.Event())
+        try:
+            markup = str(safe_content('<iframe src="' + frame + '"></iframe>',
+                                      'https://fixture.livejournal.com/263.html', {}, media, set(), thread_id=775))
+            assert 'href="https://fixture.livejournal.com/263.html?thread=775"' in markup
+            assert 'fixture-token' not in markup
+        finally:
+            media.close()
+        assert video.lj_source(old, 1)[0] == 'https://cdn.example/clip.mp4'
+        assert calls == ['/263.html', '/video/check']
+        assert 'fixture-token' not in json.dumps(video.trace)
+    finally: close(video)

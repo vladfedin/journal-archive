@@ -23,7 +23,7 @@ from .gaps import closed
 from .storage import Store, atomic_write, dumps
 
 # Bump when previously generated offline pages or assets need rebuilding.
-ARCHIVE_FORMAT_VERSION = "0.8.11"
+ARCHIVE_FORMAT_VERSION = "0.8.14.1"
 ROOT = Path(__file__).parent
 ENV = Environment(loader=FileSystemLoader(ROOT / "templates"), autoescape=select_autoescape(["html"]))
 TAGS = frozenset("p br div span a b strong i em u s del blockquote pre code ul ol li h1 h2 h3 h4 h5 h6 hr img video table thead tbody tr td th caption dl dt dd sub sup details summary figure figcaption".split())
@@ -162,10 +162,11 @@ def original_url(user, entry):
 
 class Content(HTMLParser):
     """Rewrite already-sanitized markup, keeping local references relative."""
-    def __init__(self, source, base, links, media, comment_ids):
+    def __init__(self, source, base, links, media, comment_ids, thread_id=None):
         super().__init__(convert_charrefs=False)
         self.out, self.base, self.links, self.media = [], base, links, media
         self.comment_ids = comment_ids
+        self.thread_id = thread_id
         self.preserve_depth = 0
         self.link_sources = []
         self.feed(source)
@@ -201,7 +202,11 @@ class Content(HTMLParser):
                     self.out.append(self.material_slot('embed', module, self.base, 'Встроенный материал ↗'))
                 return
             url = canonical_video(attrs.get('src'), self.base)
-            original = self.base if url and lj_video_id(url) else url
+            original = url
+            if url and lj_video_id(url):
+                original = self.base
+                if self.thread_id and str(self.thread_id).isdigit():
+                    original = urlsplit(self.base)._replace(query=f'thread={self.thread_id}', fragment='').geturl()
             record = self.media.videos.get(url, {})
             path = record.get('path')
             local = self.media.folder / path if path else None
@@ -287,7 +292,7 @@ class Content(HTMLParser):
         self.out.append(f"&#{name};")
 
 
-def safe_content(value, base, links, media, comment_ids, *, expand_cuts=False):
+def safe_content(value, base, links, media, comment_ids, *, expand_cuts=False, thread_id=None):
     source = text_value(value)
     source = re.sub(r'<(script|style)\b[^>]*>.*?</\1\s*>', "", source, flags=re.I | re.S)
     from .video import video_markup
@@ -302,7 +307,7 @@ def safe_content(value, base, links, media, comment_ids, *, expand_cuts=False):
                     lambda m: '<p><a href="' + html.escape(m[1], quote=True) + '">Открыть встроенный материал в оригинале ↗</a></p>', source, flags=re.I)
     cleaned = bleach.clean(source, tags=TAGS, attributes=ATTRS, protocols=["https", "http", "mailto"], strip=True)
     cleaned = re.sub(r"<p>(?:\s|&nbsp;|&#160;|<br\s*/?>)*</p>", "", cleaned, flags=re.I)
-    return Markup("".join(Content(cleaned, base, links, media, comment_ids).out))
+    return Markup("".join(Content(cleaned, base, links, media, comment_ids, thread_id).out))
 
 
 def threaded(comments):
@@ -362,6 +367,7 @@ def render_feed(entry, user, links, media, comment_ids):
 def build_archive(store: Store, report: dict, *, images=False, userpics=False, client_cancel=None, progress=None, budget=None, media=None, client=None, complete_after_media=False, entry_ids=None, changed_media=()):
     from .recovery import images_only_partial, requested_gaps_settled, inventory, summary as recovery_summary
     repair_image_status = images_only_partial(report)
+    finished = report.get("status") == "complete" or report.get("finished_with_skips", False) or repair_image_status
     folder, user = store.folder, report["username"]
     entry_ids = None if entry_ids is None else set(entry_ids)
     update_assets = (entry_ids is None or report.get('format_version') != ARCHIVE_FORMAT_VERSION
@@ -480,7 +486,7 @@ def build_archive(store: Store, report: dict, *, images=False, userpics=False, c
                 item["by_owner"] = item["user"] == (summary.get('author') or user)
                 item["parent_user"] = authors.get(int(item.get("parentid") or 0))
                 item.update(comment_view(item, settled=closed(comment_statuses.get(str(eid)))))
-                item["html"] = safe_content(item["display_body"], url, links, media, comment_ids)
+                item["html"] = safe_content(item["display_body"], url, links, media, comment_ids, thread_id=item.get("dtalkid"))
                 item["subject_text"] = plain(item.get("subject"))
                 item["autoformat"] = needs_autoformat(item.get("body"), item.get("props"))
                 item["reaction_view"] = reaction_view(item.get("reactions"))
@@ -553,7 +559,21 @@ def build_archive(store: Store, report: dict, *, images=False, userpics=False, c
         render_personal(store, report)
     from .gallery import write_gallery
     previous_gallery = {path.relative_to(folder).as_posix() for path in folder.glob('materials*.html')}
-    write_gallery(store, report)
+    from .personal import account_data
+    from .fulltext import PARTS, write_journal, personal_docs, material_docs, write_part, write_page
+    materials = write_gallery(store, report)
+    write_part(folder, 'materials', material_docs(materials, entries, comments, user))
+    from .skip_details import skipped_items
+    report['skipped_items'] = skipped_items(report, materials, entries, comments,
+                                            count_attempts=store.get('reaction_count_attempts', {}))
+    report['finished_with_skips'] = bool(finished and report['status'] == 'partial'
+        and not (cancel.is_set() or report.get('request_limit_reached'))
+        and not any(e.get('reason') == 'storage' for e in report['media_errors'].values())
+        and not any((v.get('error') or {}).get('reason') == 'storage' for v in report['videos']['missing'].values()))
+    write_journal(store, entries, comments, entry_ids)
+    if entry_ids is None or not (folder / 'assets/fulltext-personal.js').exists():
+        write_part(folder, 'personal', personal_docs(user, account_data(store)))
+    write_page(folder, report)
     from .progress import write_timeline
     write_timeline(store, report)
     if entry_ids is None:
@@ -567,6 +587,7 @@ def build_archive(store: Store, report: dict, *, images=False, userpics=False, c
         progress(phase='render', message='JSON', completed=0, total=0)
     export_json(store, split=True)
     atomic_write(folder / "export-report.json", dumps(report))
+    atomic_write(folder / 'assets/feed-data.js', 'window.ARCHIVE=' + dumps({'entries': summaries}).replace('<', '\\u003c') + ';')
     # JS file rather than fetch(): search also works when opened through file://.
     if entry_ids is None:
         atomic_write(folder / "assets" / "search-data.js", "window.ARCHIVE=" + dumps({"entries": summaries, "documents": search}).replace("<", "\\u003c") + ";")
@@ -579,7 +600,8 @@ def build_archive(store: Store, report: dict, *, images=False, userpics=False, c
         progress(phase='render', message='Проверка файлов', completed=0, total=0)
     changed = None
     if entry_ids is not None:
-        changed = [*changed_media, *changed_assets, 'index.html', 'report.html', 'export-report.json', 'timeline.html', 'assets/timeline-data.js',
+        changed = [*changed_media, *changed_assets, 'search.html', 'assets/fulltext.js', 'assets/feed-data.js',
+                   *[f'assets/fulltext-{part}.js' for part in PARTS], 'index.html', 'report.html', 'export-report.json', 'timeline.html', 'assets/timeline-data.js',
                    *[f'entries/{eid}.html' for eid in entry_ids], *[f'assets/posts/{eid}.js' for eid in entry_ids],
                    *previous_gallery, *[path.relative_to(folder).as_posix() for path in folder.glob('materials*.html')],
                    *[f'data/{name}.json' for name in ('archive', 'activitystreams', 'activitystreams-context', 'entries', 'comments', 'comment-metadata', 'materials')]]

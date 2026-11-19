@@ -5,7 +5,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .client import APIError, Cancelled, ExportError, IncompleteData, LiveJournalClient, RequestBudget, username
+from .client import HTTPRateLimited, APIRateLimited, APIError, Cancelled, ExportError, IncompleteData, LiveJournalClient, RequestBudget, RequestLimitReached, username
 from .storage import Store, atomic_write, dumps
 from .comment_state import DELETED, merge_comment
 from .entries import is_repost
@@ -319,16 +319,12 @@ class Exporter:
                 raise IncompleteData(f"ЖЖ повторяет страницу комментариев к записи #{eid}. Запись отложена.")
             status.update(pages=pages, next_page=page if page >= pages else page + 1, last_valid_page=page, last_valid_ids=sorted(current_ids), valid_seen_ids=sorted(valid_ids | current_ids))
             if page >= pages:
-                missing = store.db.execute("""SELECT payload FROM comments WHERE entry_id=?
-                    AND (json_type(payload,'$.body') IS NULL OR json_extract(payload,'$.source_status')='body_not_returned')
-                    AND COALESCE(json_extract(payload,'$.state'),'A') NOT IN ('D','X')""", (eid,)).fetchall()
-                import json
-                for row in missing:
-                    item = json.loads(row[0])
+                missing = self.missing_comment_bodies(eid)
+                for item in missing:
                     if item["id"] not in status["seen_ids"]:
                         continue
-                    loaded = store.db.execute("SELECT json_type(payload,'$.body'),json_extract(payload,'$.source_status') FROM comments WHERE id=?", (item["id"],)).fetchone()
-                    if loaded[0] is not None and loaded[1] != "body_not_returned":
+                    loaded = store.db.execute("SELECT json_type(payload,'$.body'),json_extract(payload,'$.source_status'),json_extract(payload,'$.state') FROM comments WHERE id=?", (item["id"],)).fetchone()
+                    if loaded[2] in DELETED or (loaded[0] is not None and loaded[1] != "body_not_returned"):
                         continue
                     if not item.get("dtalkid"):
                         continue
@@ -345,6 +341,8 @@ class Exporter:
                         raise IncompleteData(str(exc)) from exc
                     self.save_thread(expanded_items, expanded_users)
                     status["seen_ids"] = sorted(set(status["seen_ids"]) | {int(c["id"]) for c in expanded_items})
+                if missing:
+                    self.check_web_deletions(entry, status, statuses, self.missing_comment_bodies(eid))
                 self.confirm_deleted(eid, status)
                 status["done"] = self.discussion_complete(entry, status)
                 with store.db:
@@ -390,6 +388,46 @@ class Exporter:
                                  (current["id"], current["posterid"], current["state"]))
             for uid, name in users.items():
                 store.db.execute("INSERT OR REPLACE INTO users VALUES (?,?)", (uid, name))
+
+    def missing_comment_bodies(self, eid):
+        import json
+        rows = self.store.db.execute("""SELECT payload FROM comments WHERE entry_id=?
+            AND (json_type(payload,'$.body') IS NULL OR json_extract(payload,'$.source_status')='body_not_returned')
+            AND COALESCE(json_extract(payload,'$.state'),'A') NOT IN ('D','X')""", (eid,))
+        return [json.loads(row[0]) for row in rows]
+
+    def check_web_deletions(self, entry, status, statuses, missing):
+        from .reactions import display_id
+        lookup = getattr(self.client, 'web_deleted_threads', None)
+        ditemid = display_id(entry)
+        if not missing or not lookup or not ditemid:
+            return
+        seen = set(status.get('seen_ids', []))
+        targets = {c['dtalkid']: c for c in missing if c['id'] in seen and c.get('dtalkid')}
+        # Resume after the last checked branch if the shared request budget runs out.
+        cursor = status.get('web_checked_thread', 0)
+        order = sorted(targets, key=lambda tid: (tid <= cursor, tid))
+        for tid in order:
+            if tid not in targets:
+                continue
+            self.update('comments', f"Проверяем отметку удаления в ЖЖ · комментарий #{tid // 256}",
+                        entry_id=entry['itemid'])
+            try:
+                deleted = lookup(ditemid, tid)
+            except (Cancelled, RequestLimitReached):
+                with self.store.db:
+                    self.store.set("entry_comments", statuses)
+                raise
+            except ExportError:
+                # Export metadata can still confirm deletion when the web page is unavailable.
+                break
+            status['web_checked_thread'] = tid
+            matched = []
+            for confirmed in targets.keys() & deleted:
+                item = {**targets.pop(confirmed), 'state': 'D'}
+                item.pop('body', None)
+                matched.append(item)
+            self.save_thread(matched, {}, evidence='web:Site.page.comments.deleted')
 
     def confirm_deleted(self, eid, status):
         """Check bodyless nodes against explicit export metadata, never infer deletion.
@@ -637,6 +675,7 @@ class Exporter:
                     if self.entry_limit is not None:
                         store.set("entry_comments", {})
             error, cancelled = None, False
+            rate_limited = False
             try:
                 failures = []
                 def stage(operation, label):
@@ -660,6 +699,8 @@ class Exporter:
                 error = " ".join(failures) or None
             except Cancelled as exc:
                 error, cancelled = str(exc), True
+            except (HTTPRateLimited, APIRateLimited) as exc:
+                rate_limited, error = True, str(exc)
             except ExportError as exc:
                 error = str(exc)
             with store.db:
@@ -671,7 +712,7 @@ class Exporter:
                 with store.db:
                     store.set("last_request_stats", budget.snapshot())
             self.update("render", "Собираем страницы, поиск и отчёт о полноте…")
-            report = build_archive(store, report, images=self.images and not cancelled, userpics=not cancelled,
+            report = build_archive(store, report, images=self.images and not (cancelled or rate_limited), userpics=not (cancelled or rate_limited),
                                    client_cancel=self.client.cancel, progress=self.progress, budget=budget, media=getattr(self, "_media", None), client=self.client)
             with store.db:
                 store.set("finished", report["status"] == "complete")

@@ -1,5 +1,5 @@
 <!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Архивы · Архив ЖЖ</title><link rel="icon" href="/static/favicon.ico" sizes="16x16 32x32 48x48"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml" sizes="any"><link rel="stylesheet" href="/static/archive.css"><script src="/static/theme.js"></script><script defer src="/static/common.js"></script><script defer src="/static/timeline.js"></script><script defer src="/static/image-recovery.js"></script><script defer src="/static/app.js"></script></head><body data-page="library">
-<header class="header"><div class="header-inner"><a class="brand" href="/"><span class="mark" data-icon="archive"></span>Архив ЖЖ</a><nav class="nav" aria-label="Разделы"><a href="/" aria-current="page">Архивы</a><a href="/help">Помощь</a><button class="icon" id="theme-toggle" aria-label="Тёмная тема" hidden><span></span></button></nav></div></header>
+<header class="header"><div class="header-inner"><a class="brand" href="/"><span class="mark" data-icon="archive"></span>Архив ЖЖ</a><nav class="nav" aria-label="Разделы"><a href="/" aria-current="page">Архивы</a><a href="/search">Поиск</a><a href="/help">Помощь</a><button class="icon" id="theme-toggle" aria-label="Тёмная тема" hidden><span></span></button></nav></div></header>
 <main class="main">
 <div class="heading"><h1>Архивы</h1><button class="btn primary" data-new><span data-icon="plus"></span>Новый архив</button></div>
 <section class="job" id="job" hidden aria-labelledby="job-title">
@@ -10,15 +10,38 @@
 <p class="job-meta" id="job-meta"></p>
 <progress id="progress" aria-label="Ход загрузки"></progress>
 <div id="job-timeline" class="timeline" hidden></div>
-<section class="gaps" id="job-recovery" hidden aria-label="Пропуски"><div id="job-recovery-content"></div></section>
+<details class="gaps" id="job-recovery" hidden><summary>Подробности докачки</summary><div id="job-recovery-content"></div><a id="job-skips" hidden>Пропущенные материалы и обсуждения</a></details>
 <p class="job-foot"><a id="job-report" hidden>Состояние архива</a><a id="job-statistics" hidden>Статистика</a><button type="button" class="link-button" id="job-settings" hidden>Параметры загрузки</button><button type="button" class="link-button" id="job-diagnostics">Диагностика</button></p>
 </section>
 <p id="app-error" class="notice" role="alert" hidden></p>
 <div id="empty" class="empty" hidden><p>Архивов пока нет</p><button class="btn" data-new><span data-icon="plus"></span>Новый архив</button></div>
 <table class="library" id="library" hidden><thead><tr><th scope="col">Журнал</th><th scope="col">Записи</th><th scope="col">Комментарии</th><th scope="col">Обновлён</th><th scope="col">Статус</th><th scope="col"><span class="sr-only">Действия</span></th></tr></thead><tbody id="archives"></tbody></table>
 <p class="storage"><span data-icon="folder"></span><code id="output-path"></code><button type="button" class="btn text" id="move-storage">Переместить</button></p>
+{% if desktop_updates %}
+<details class="app-update" id="app-update">
+  <summary id="update-summary">Обновления приложения</summary>
+  <p id="update-status" role="status"></p>
+  <label class="check"><input id="update-auto" type="checkbox">Загружать новые версии автоматически</label>
+  <button class="btn" id="update-action" type="button" disabled>Проверить</button>
+</details>
+{% endif %}
 </main><footer class="footer library-footer"><span>Архив ЖЖ · {{ app_version }}</span>{% include 'author_contact.html' %}<button class="btn text" type="button" id="quit">Завершить приложение</button></footer>
 <dialog id="storage-dialog" class="dialog" aria-labelledby="storage-title"><form id="storage-form"><div class="dialog-head"><h2 id="storage-title">Переместить архивы</h2><button type="button" class="btn text" id="storage-close">Закрыть</button></div><div class="dialog-body"><div class="field"><label for="storage-path">Новая папка</label><input id="storage-path" class="input" required spellcheck="false" autocomplete="off"></div><p class="fine">Все архивы, файлы и прогресс загрузки.</p><p id="storage-status" role="status"></p><button id="storage-submit" class="btn primary">Переместить</button></div></form></dialog>
+<dialog id="contact-dialog" class="dialog" aria-labelledby="contact-title">
+<form id="contact-form">
+  <div class="dialog-head"><h2 id="contact-title"></h2><button type="button" class="icon" data-contact-close aria-label="Закрыть"><span data-icon="x"></span></button></div>
+  <div id="contact-question" hidden>
+    <p>Выбранный ответ будет отправлен автору личным сообщением в ЖЖ.</p>
+    <div class="question-answers" role="group" aria-labelledby="contact-title">
+      <button type="button" class="btn" data-answer>Да</button>
+      <button type="button" class="btn" data-answer>Нет</button>
+      <button type="button" class="btn" data-answer>Замахнуться кочергой</button>
+    </div>
+  </div>
+  <div class="field" id="contact-editor"><label for="contact-body">Напишите автору ваши замечания, вопросы и благодарности</label><textarea id="contact-body" rows="4" maxlength="3000" required></textarea></div>
+  <p id="contact-account" class="fine"></p><p id="contact-status" role="status"></p>
+  <div class="dialog-buttons"><button class="btn" type="button" id="contact-dismiss" data-contact-close>Закрыть</button><button id="contact-send" class="btn primary" type="submit" disabled>Отправить</button></div>
+</form></dialog>
 <dialog id="export-dialog" class="dialog" aria-labelledby="dialog-title"><form id="export-form">
 <div class="dialog-head"><h2 id="dialog-title">Новый архив</h2><button class="icon" type="button" data-close aria-label="Закрыть"><span data-icon="x"></span></button></div>
 <div class="form-grid" id="credentials"><div class="field" id="username-field"><label for="username">Пользователь ЖЖ</label><input class="input" id="username" placeholder="username" autocomplete="username" spellcheck="false" autocapitalize="none" required maxlength="15" pattern="[A-Za-z0-9_\-]{1,15}"></div><div class="field"><label for="password">Пароль</label><div class="password-input"><input class="input" type="password" id="password" autocomplete="current-password" required maxlength="1024"><button class="icon" type="button" id="show-password" aria-label="Показать пароль"><span data-icon="eye"></span></button></div></div></div>

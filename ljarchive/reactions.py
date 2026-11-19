@@ -213,13 +213,15 @@ def reaction_report(store):
     comments_saved = sum("reactions" in item for item in comments)
     counts_unavailable = sum("reactions" not in item and f"{kind}:{item[key]}" in given_up
                              for kind, key, items in (("post", "itemid", entries), ("comment", "id", comments)) for item in items)
+    retained = sum('reactions' in item and f'{kind}:{item[key]}' in given_up
+                   for kind, key, items in (('post', 'itemid', entries), ('comment', 'id', comments)) for item in items)
     posts_authors = sum(item.get("reactions", {}).get("authors", {}).get("status") == "complete" for item in entries)
     comments_authors = sum(item.get("reactions", {}).get("authors", {}).get("status") == "complete" for item in comments)
     authors_unavailable = sum(closed(item.get("reactions", {}).get("authors")) for item in entries + comments)
     # Settled means saved, or asked for several times and treated as absent.
     return {"posts_saved": posts_saved, "posts_total": len(entries),
             "comments_saved": comments_saved, "comments_total": len(comments),
-            "unavailable": counts_unavailable, "authors_unavailable": authors_unavailable,
+            "unavailable": counts_unavailable + retained, "counts_retained": retained, "authors_unavailable": authors_unavailable,
             "complete": posts_saved + comments_saved + counts_unavailable == len(entries) + len(comments),
             "author_posts_saved": posts_authors, "author_comments_saved": comments_authors,
             "authors_complete": posts_authors + comments_authors + authors_unavailable + counts_unavailable
