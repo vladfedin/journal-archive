@@ -23,7 +23,7 @@ from .gaps import closed
 from .storage import Store, atomic_write, dumps
 
 # Bump when previously generated offline pages or assets need rebuilding.
-ARCHIVE_FORMAT_VERSION = "0.9.0.4"
+ARCHIVE_FORMAT_VERSION = "0.9.0.5"
 ROOT = Path(__file__).parent
 ENV = Environment(loader=FileSystemLoader(ROOT / "templates"), autoescape=select_autoescape(["html"]))
 TAGS = frozenset("p br div span a b strong i em u s del blockquote pre code ul ol li h1 h2 h3 h4 h5 h6 hr img video table thead tbody tr td th caption dl dt dd sub sup details summary figure figcaption".split())

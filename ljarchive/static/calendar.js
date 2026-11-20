@@ -107,11 +107,19 @@ function renderChart(){
  $('tooltip').hidden=true;computeBounds();$('week-summary').hidden=state.view!=='weeks';$('compact-option').hidden=state.view!=='weeks';$('compact').checked=state.compact;
  const labels={months:'Месяцы × дни месяца',weeks:'Недели × дни недели',calendar:'Календарь года'};
  $('chart-title').textContent=labels[state.view];
- $('chart-caption').textContent=state.view==='calendar'?'Число — дата. Цвет — '+(state.metric==='posts'?'записи.':'комментарии.'):'Ячейка — день. Число — '+(state.metric==='posts'?'записи.':'комментарии.');
+ const caption=$('chart-caption'),foot=caption.parentElement,gaps=foot.querySelector('.gap-key');
+ const byComments=state.metric==='comments';
+ const hints=[];
+ if(state.view==='calendar')hints.push(byComments?'Цвет — число комментариев.':'Цвет — число записей.');
+ if(byComments)hints.push('Комментарии сгруппированы по дате записи.');
+ caption.textContent=hints.join(' ');
+ caption.hidden=!hints.length;
  $('legend').replaceChildren(el('span','','0'));
  for(let i=0;i<=5;i++){const swatch=el('i','heat');swatch.dataset.level=i;const low=bounds[i],high=i===5?'':i===0?0:bounds[i+1]-1;swatch.title=i===0?'0':i===5?`${low}+`:`${low}–${high}`;$('legend').append(swatch);}
  $('legend').append(el('span','num',`${bounds.at(-1)}+`));
  if(state.view==='months')renderMonths();else if(state.view==='weeks')renderWeeks();else renderCalendar();
+ gaps.hidden=!$('calendar-grid').querySelector('.day[data-gap="true"]');
+ foot.hidden=caption.hidden && gaps.hidden;
  const selected=$('calendar-grid').querySelector('.day[tabindex="0"]')||$('calendar-grid').querySelector('.day');if(selected)selected.tabIndex=0;
  document.querySelectorAll('[data-view]').forEach(b=>b.setAttribute('aria-pressed',b.dataset.view===state.view));
  $('metric').value=state.metric;
