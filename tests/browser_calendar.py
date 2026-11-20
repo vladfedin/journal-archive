@@ -53,6 +53,7 @@ def main():
             page.goto(url+'?year=2024')
             expect(page.locator('#calendar-year')).to_have_value('2024')
             expect(page.locator('#calendar-count')).to_contain_text('500 записей')
+            expect(page.locator('#selection-note')).to_be_hidden()
             assert page.locator('#post-list .post-item').count() == 25
             assert page.locator('body *').count() < 8000
             for view in ('months', 'weeks', 'calendar'):
@@ -71,7 +72,8 @@ def main():
             page.locator('#calendar-year').select_option('2026')
             page.locator('[data-date="2026-02-01"]').click()
             expect(page.locator('.empty-state')).to_have_text('Записи пока не получены')
-            expect(page.locator('#selection-note')).to_have_text('Не получено записей: 3')
+            expect(page.locator('#selection-note a')).to_have_text('Не получено записей: 3')
+            expect(page.locator('#selection-note a')).to_have_attribute('href', 'report.html')
             expect(page.locator('[data-date="2026-02-01"]')).to_have_attribute('data-missing', '3')
             page.locator('[data-date="2026-02-02"]').click()
             expect(page.locator('.empty-state')).to_have_text('Нет сохранённых записей')

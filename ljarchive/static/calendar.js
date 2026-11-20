@@ -129,7 +129,14 @@ function renderInspector(){
  $('selection-counts').textContent=`${postsLabel(selectedPosts.length)} · ${summaryComments(selectedPosts)}`;$('clear-selection').hidden=state.selection.type==='year';
  const comb=$('micro-comb');comb.replaceChildren();comb.style.overflowX='auto';comb.style.height='49px';
  selectedPosts.forEach(p=>{const b=postLink(p,'','',{'data-open':p.id,'data-gap':p.gap,'data-comments':p.comments,'data-expected':p.commentsExpected,'aria-label':`${validDate(p.date)?dateLabel(p.date):'Без даты'} · ${p.title} · ${postCommentLabel(p)}`,'title':`${p.date} · ${p.title} · ${postCommentLabel(p)}${issueLabel(p)?' · '+issueLabel(p):''}`});b.style.flex='0 0 5px';b.style.height=`${5+Math.log1p(p.comments)/Math.log1p(commentPeak)*29}px`;comb.append(b);});comb.hidden=!selectedPosts.length;
- $('selection-note').textContent=missingSelected()?`Не получено записей: ${missingSelected()}`:selectedPosts.length?'Высота — сохранённые комментарии.':'По сохранённым данным.';
+ const missing=missingSelected(),note=$('selection-note');
+ note.hidden=!missing;
+ note.replaceChildren();
+ if(missing){
+  const link=el('a','',`Не получено записей: ${missing}`);
+  link.href='report.html';
+  note.append(link);
+ }
 const feed=$('period-feed'),s=state.selection;feed.hidden=!selectedPosts.length||['week','weekday','undated'].includes(s.type);feed.href='index.html?'+new URLSearchParams({view:'full',...(s.type==='day'?{date:s.key}:s.type==='month'?{month:`${state.year}-${String(s.month+1).padStart(2,'0')}`}:{year:state.year})});
  renderList();$('post-list').scrollTop=0;
  $('mobile-jump').hidden=state.selection.type==='year';$('mobile-jump').textContent=`${postsLabel(selectedPosts.length)} ↓`;
@@ -178,7 +185,6 @@ function centerYear(){const b=$('years').querySelector(`[data-year="${state.year
 let overviewResize;window.addEventListener('resize',()=>{clearTimeout(overviewResize);overviewResize=setTimeout(()=>{if(years.length){renderOverview();centerYear();}},100);});
 $('overview-range').textContent=years.length?`${firstYear} — ${lastYear}`:'Нет записей';
 $('calendar-undated').hidden=!undated.length;$('calendar-undated').textContent=`Без даты: ${undated.length}`;
-$('calendar-coverage').textContent=source.partial||!source.discovery_complete?'По сохранённым данным · состояние архива — в отчёте':'';
 if(!years.length){$('calendar-year').disabled=true;$('calendar-prev').disabled=true;$('calendar-next').disabled=true;$('calendar-grid').replaceChildren(el('p','calendar-empty','Записей с датами пока нет'));state.selection={type:'undated'};renderInspector();return;}
 readHash();render();centerYear();
 });

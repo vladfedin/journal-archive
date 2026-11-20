@@ -7,7 +7,7 @@
 
 .calendar-explorer{--paper:var(--bg);--accent:var(--green);background:var(--bg);color:var(--ink);font-family:var(--sans);max-width:1360px;margin:28px auto 50px;padding:0 28px}
 .calendar-explorer .calendar-heading{margin:0 0 24px}.calendar-explorer .year-stat{max-width:420px}.calendar-explorer .post-open{font:500 var(--type-reading)/1.4 var(--sans)}
-.calendar-explorer .calendar-coverage{font-size:var(--type-caption);color:var(--muted);margin:8px 0 16px}.calendar-explorer .inspector a.post-open{display:block}.calendar-explorer .micro-comb a{display:block;flex:0 0 5px;min-width:5px;background:var(--heat3);border-radius:2px 2px 0 0}.calendar-explorer .micro-comb a[data-gap=true]{background:var(--amber)}
+.calendar-explorer .inspector a.post-open{display:block}.calendar-explorer .micro-comb a{display:block;flex:0 0 5px;min-width:5px;background:var(--heat3);border-radius:2px 2px 0 0}.calendar-explorer .micro-comb a[data-gap=true]{background:var(--amber)}
 .calendar-explorer .micro-comb{overflow-x:auto;max-height:49px}.calendar-explorer .day[data-missing]:not([data-missing="0"]){background-image:repeating-linear-gradient(135deg,transparent 0 4px,color-mix(in srgb,var(--amber) 22%,transparent) 4px 6px)}
 .calendar-explorer .undated-link{border:0;background:transparent;color:var(--accent);font-size:var(--type-caption);padding:0}.calendar-explorer .period-feed{display:block;font-size:var(--type-caption);margin-top:10px}.calendar-explorer .calendar-empty{padding:24px;color:var(--muted)}
 @media(max-width:720px){.calendar-explorer{padding:0 16px}.calendar-explorer .year-stat{max-width:180px}.calendar-explorer .overview-controls{align-items:flex-start}.calendar-explorer .overview-year{max-width:160px}}
@@ -17,7 +17,7 @@
 .calendar-explorer .legend .heat,.calendar-explorer .rate-legend .heat{min-width:0;padding:0;flex:none}
 .calendar-explorer select{width:auto;min-width:0}
 .calendar-explorer .overview-controls,.calendar-explorer .toolbar{flex-wrap:nowrap}
-.calendar-explorer .calendar-coverage{margin:8px 0 16px}
+
 @media(max-width:420px){.calendar-explorer .toolbar{flex-wrap:wrap}.calendar-explorer .overview-controls{flex-wrap:wrap}}
 
 .calendar-explorer .year svg{stroke:none}
