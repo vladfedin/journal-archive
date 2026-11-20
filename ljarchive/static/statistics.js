@@ -5,6 +5,17 @@
   const $ = id => document.getElementById(id);
   let people = new Map(data.people.map(p => [p.id, p]));
   const number = n => new Intl.NumberFormat('ru').format(n);
+  // Year cells are narrow: up to four characters (999, 9,9K, 999K, 1,2M); the exact number is in the tooltip.
+  const compact = n => {
+    if (n < 1000) return number(n);
+    if (n < 9950) return (n / 1000).toLocaleString('ru', {maximumFractionDigits: 1}) + 'K';
+    if (n < 999500) return Math.round(n / 1000) + 'K';
+    return (n / 1e6).toLocaleString('ru', {maximumFractionDigits: n < 9.95e6 ? 1 : 0}) + 'M';
+  };
+  // The total columns are wider: exact up to 999 999, shortened from a million.
+  const wide = n => n < 1e6 ? number(n) : compact(n);
+  // A shortened number keeps what is on screen in its accessible name, with the exact value after it.
+  const exact = (a, n) => { if (a.textContent !== number(n)) a.setAttribute('aria-label', `${a.textContent} (${number(n)})`); };
   const node = (tag, text, cls) => {
     const n = document.createElement(tag);
     if (text !== undefined) n.textContent = text;
@@ -64,12 +75,17 @@
       ['Записи', 'posts', data.totals.posts, data.published || {}]
     ]) {
       const row = node('tr'), heading = node('th', label); heading.scope = 'row'; row.append(heading);
-      for (const y of [year, ...data.years]) {
+      [year, ...data.years].forEach((y, index) => {
         const value = y ? values[y] || 0 : all, cell = node('td');
-        if (value) cell.append(link('discussions.html?' + new URLSearchParams({kind, ...(y ? {year: y} : {})}), number(value)));
+        // The first column is the wide total; the year columns are the narrow cells.
+        if (value) {
+          const a = link('discussions.html?' + new URLSearchParams({kind, ...(y ? {year: y} : {})}), index ? compact(value) : wide(value));
+          if (a.textContent !== number(value)) { a.title = `${label}${y ? ' · ' + y : ''}: ${number(value)}`; exact(a, value); }
+          cell.append(a);
+        }
         else cell.textContent = '0';
         row.append(cell);
-      }
+      });
       totals.append(row);
     }
     table.append(totals);
@@ -79,17 +95,21 @@
     for (const p of data.people.filter(p => own || !p.owner)) for (const y of data.years) peak = Math.max(peak, metric(p, y));
     for (const p of subset) {
       const tr = node('tr'), name = node('th', p.name); name.scope = 'row'; name.title = p.name;
-      const total = node('td', undefined, 'stats-total'); total.append(link(discussionURL(p.id, year), format(metric(p, year))));
+      const total = node('td', undefined, 'stats-total'), sum = metric(p, year), share = $('stats-metric').value === 'share';
+      const all = link(discussionURL(p.id, year), share ? format(sum) : wide(sum));
+      if (!share && all.textContent !== number(sum)) { all.title = `${p.name}${year ? ' · ' + year : ''}: ${number(sum)}`; exact(all, sum); }
+      total.append(all);
       tr.append(name, total);
       for (const y of data.years) {
         const td = node('td');
         if (p.years[y]) {
-          const value = metric(p, y), a = link(discussionURL(p.id, y), format(value));
-          if ($('stats-metric').value === 'share') {
+          const value = metric(p, y), a = link(discussionURL(p.id, y), share ? format(value) : compact(value));
+          if (share) {
             a.replaceChildren(node('span', value.toLocaleString('ru', {maximumFractionDigits: 1})), node('small', '%'));
           }
           a.className = 'heat heat-' + Math.max(1, Math.ceil(Math.log1p(value) / Math.log1p(peak || 1) * 5));
           a.title = `${p.name} · ${y}: ${format(value)} · ${number(p.years[y].comments)} комм. / ${number(p.years[y].posts)} записей`;
+          if (!share) exact(a, value);
           td.append(a);
         } else {
           const zero = node('span', '·', 'heat heat-zero'); zero.title = 'Нет сохранённых комментариев'; td.append(zero);

@@ -7,6 +7,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import tempfile
 import threading
 from unittest.mock import patch
@@ -441,6 +442,16 @@ def main():
                 assert page.locator('#stats-people a.heat').count() > 0
                 expect(page.locator('.stats-totals tr')).to_have_count(2)
                 expect(page.locator('.stats-totals tr').first).to_contain_text('12')
+                # Year cells shorten thousands to K; the exact number stays in the tooltip and the accessible name.
+                page.evaluate("""() => { const data = structuredClone(window.ARCHIVE_STATS);
+                    const person = data.people.find(p => Object.keys(p.years).length), year = Object.keys(person.years)[0];
+                    person.years[year].comments = 1136; person.comments = Math.max(person.comments, 1136);
+                    window.dispatchEvent(new CustomEvent('archive-statistics', {detail: data})); }""")
+                big = page.locator('#stats-people a.heat', has_text='1,1K')
+                expect(big).to_have_count(1)
+                expect(big).to_have_attribute('aria-label', '1,1K (1\u00a0136)')
+                expect(big).to_have_attribute('title', re.compile('1\u00a0136'))
+                assert big.evaluate('a => a.scrollWidth <= a.clientWidth')
                 page.locator('.stats-totals a[href=\"discussions.html?kind=posts&year=2008\"]').click()
                 expect(page.locator('#discussion-count')).to_contain_text('Записей: 1')
                 page.locator('#discussion-back').click()
