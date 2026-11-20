@@ -37,7 +37,7 @@ def main():
         write_calendar(store, report)
         store.close()
         assets = Path(__file__).resolve().parents[1] / 'ljarchive/static'
-        for name in ('archive.css', 'calendar.css', 'calendar.js', 'archive.js', 'theme.js', 'common.js', 'material-actions.js', 'favicon.ico', 'favicon.svg'):
+        for name in ('archive.css', 'typography.css', 'calendar.css', 'calendar.js', 'archive.js', 'theme.js', 'common.js', 'material-actions.js', 'favicon.ico', 'favicon.svg'):
             shutil.copyfile(assets / name, folder / 'assets' / name)
         (folder / 'entries').mkdir()
         (folder / 'entries/1.html').write_text('<h1>Запись 1</h1>')

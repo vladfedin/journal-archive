@@ -1,0 +1,15 @@
+/* System faces include Cyrillic and work in a portable archive without downloads. */
+:root {
+  --sans: system-ui, "Segoe UI", sans-serif;
+  --serif: Georgia, "Liberation Serif", "Times New Roman", serif;
+  --type-caption: .75rem;
+  --type-ui: .875rem;
+  --type-section: 1rem;
+  --type-reading: 1.125rem;
+  --type-subtitle: 1.25rem;
+  --type-heading: 1.5rem;
+  --type-post-title: 1.75rem;
+}
+@media (max-width: 700px) {
+  :root { --type-post-title: 1.5rem; }
+}
