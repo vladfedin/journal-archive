@@ -306,8 +306,14 @@ function showStatus(s){lastState=s;showContact(s);
   if(now.length===1&&!now[0])now.length=0;
   $('job-now').hidden=!now.length;$('job-message').replaceChildren(...now);$('job-now').classList.toggle('is-problem',['error','partial'].includes(s.phase)||stalled);
   // Facts: what is already there, not promises. Before the calendar — what was asked for.
-  const data=mapSlug===s.slug&&mapView?.data,facts=[];
-  if(data?.expected){const years=yearsOf(data);if(years)facts.push(years);facts.push(`${num(data.ready)} из ${count(data.expected,ENTRY_FORMS)}`);facts.push(count(s.comments,COMMENT_FORMS));}
+  // Period and link updates cover part of the history; a whole-journal run (or its resume) covers all of it.
+  const data=mapSlug===s.slug&&mapView?.data,facts=[],narrow=['period','urls'].includes(s.parameters?.mode)&&!!data?.task;
+  if(data?.expected){const years=yearsOf(data),own=data.task||data;if(years)facts.push(years);
+    // A period or link update covers part of the history: the whole archive and this run are told apart.
+    // Entries of this run saved earlier also count as ready, so a run's share is its size, not a fraction done.
+    if(narrow){facts.push(count(data.known,ENTRY_FORMS));if(own.expected)facts.push(`в этой загрузке ${count(own.expected,ENTRY_FORMS)}`);}
+    else facts.push(`${num(data.ready)} из ${count(data.expected,ENTRY_FORMS)}`);
+    facts.push(count(s.comments,COMMENT_FORMS));}
   else{const p=s.parameters||{};if(s.entries)facts.push(count(s.entries,ENTRY_FORMS));if(s.comments)facts.push(count(s.comments,COMMENT_FORMS));if(!facts.length){if(p.images)facts.push('изображения');if(p.videos)facts.push('видео');if(p.account)facts.push('профиль, друзья, юзерпики');if(p.messages)facts.push('переписка');}}
   $('job-facts').textContent=facts.join(' · ');
   const meta=[];
@@ -333,7 +339,7 @@ function showStatus(s){lastState=s;showContact(s);
   // The thin line on top of the card: the stage's own count when it has one, otherwise entries saved.
   const progress=$('progress');progress.hidden=done&&!materialRunning;
   if(s.total&&localProgress(s.phase)){progress.max=s.total;progress.value=s.completed||0;}
-  else if(data?.expected){progress.max=data.expected;progress.value=data.ready||0;}
+  else if(data?.expected&&!narrow){progress.max=data.expected;progress.value=data.ready||0;}
   else if(s.total){progress.max=s.total;progress.value=s.completed||0;}else progress.removeAttribute('value');
   $('job-wait').hidden=!!data?.expected||done||['preparing','verify'].includes(s.phase)&&!!s.archive_url;
   $('open-result').hidden=!s.archive_url;if(s.archive_url)$('open-result').href=s.archive_url;

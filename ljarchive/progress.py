@@ -114,6 +114,26 @@ def timeline(store, *, task=False):
         if row[1]:
             authors[row[0]][row[1]] += row[2]
     items, by_day = [], Counter()
+    scope = sync_state.get('scope') or {}
+    def in_period(date):
+        return not ((scope.get('start') and date[:10] < scope['start']) or (scope.get('end') and date[:10] > scope['end']))
+    linked = None
+    if task and scope.get('mode') == 'urls':
+        # Until the posts phase has chosen its entries, a link update covers the entries of its links.
+        from .client import ExportError
+        from .sync import url_id
+        linked = set()
+        for url in scope.get('urls') or []:
+            try:
+                linked.add(url_id(store.get('username') or '', url) // 256)
+            except ExportError:
+                pass
+    def in_task(eid, date):
+        if selected is not None and sync_state.get('phase') != 'posts':
+            return eid in selected
+        if linked is not None:
+            return eid in linked
+        return scope.get('mode') != 'period' or in_period(date)
     from .render import plain
     for row in store.db.execute('''SELECT id,json_extract(payload,'$.eventtime'),
             json_extract(payload,'$.subject'),json_extract(payload,'$.reply_count'),json_extract(payload,'$.repost') FROM entries ORDER BY 2,id'''):
@@ -121,22 +141,20 @@ def timeline(store, *, task=False):
         repost = is_repost({"repost": repost})
         if repost:
             expected = 0
-        if task and selected is not None and sync_state.get('phase') != 'posts' and eid not in selected:
-            continue
-        if task and sync_state.get('phase') == 'posts' and sync_state.get('scope', {}).get('mode') == 'period':
-            scope = sync_state['scope']
-            if (scope.get('start') and (date or '')[:10] < scope['start']) or (scope.get('end') and (date or '')[:10] > scope['end']):
-                continue
         date = date or ''
+        # The whole history is always shown; the task's own entries only drive its counts.
+        scoped = not task or in_task(eid, date)
         by_day[date[:10]] += 1
         status = statuses.get(str(eid), {})
         mat = material_progress(materials.get(str(eid), {}), mapping, errors)
-        done = repost or status.get('done', bodies_done)
+        # A new run resets bodies_done; entries outside it keep what earlier runs saved.
+        done = repost or status.get('done', bodies_done if scoped else True)
         state = 'pending' if not done else 'ready'
         if (status.get('error') and not repost) or (done and mat['missing'] > mat.get('unavailable', 0)) or missing_videos.get(eid):
             state = 'partial'
         elif not done and counts[eid]:
-            state = 'loading'
+            # Outside the current run nothing is loading: an earlier run left it incomplete.
+            state = 'loading' if scoped else 'partial'
         items.append({'id': eid, 'date': date, 'title': plain(title) or 'Без заголовка',
                       'url': f'entries/{eid}.html', 'state': state, 'repost': repost, 'error': None if repost else status.get('error'),
                       'settled': closed(status), 'videos': missing_videos.get(eid, 0),
@@ -145,14 +163,25 @@ def timeline(store, *, task=False):
                       'comments': 0 if repost else counts[eid], 'expected_comments': expected, 'pages': status.get('pages'),
                       'page': status.get('last_valid_page', max(0, status.get('next_page', 1) - 1)), 'materials': mat,
                       'top': [] if repost else authors[eid].most_common(3)})
+        if not scoped:
+            items[-1]['outside'] = True
     gaps = []
     for row in store.db.execute('SELECT day,expected FROM days ORDER BY day'):
         missing = max(0, row[1] - by_day[row[0]])
         if missing:
             gaps.append({'date': row[0], 'count': missing})
     items.sort(key=lambda item: (item['date'], item['id']))
-    return {'entries': items, 'gaps': gaps, 'known': len(items), 'expected': len(items) + sum(g['count'] for g in gaps),
-            'ready': sum(i['state'] == 'ready' for i in items), 'partial': sum(i['state'] == 'partial' for i in items)}
+    result = {'entries': items, 'gaps': gaps, 'known': len(items), 'expected': len(items) + sum(g['count'] for g in gaps),
+              'ready': sum(i['state'] == 'ready' for i in items), 'partial': sum(i['state'] == 'partial' for i in items)}
+    if task:
+        # Progress of the current (or last) task: its entries and the days of its period still missing entries.
+        mine = [i for i in items if not i.get('outside')]
+        missing = sum(g['count'] for g in gaps if scope.get('mode') != 'period' or in_period(g['date']))
+        result['task'] = {'expected': len(mine) + missing, 'ready': sum(i['state'] == 'ready' for i in mine)}
+        if linked is not None and (selected is None or sync_state.get('phase') == 'posts'):
+            # Links to entries not saved yet are part of the run too.
+            result['task']['expected'] = max(result['task']['expected'], len(linked))
+    return result
 
 
 def write_timeline(store, report):

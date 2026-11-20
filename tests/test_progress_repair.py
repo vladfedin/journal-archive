@@ -177,9 +177,30 @@ def test_partial_period_refresh_keeps_other_years_on_offline_timeline(tmp_path):
     try:
         assert timeline(reader)['expected'] == 2
         assert timeline(reader)['ready'] == 2
-        assert timeline(reader, task=True)['expected'] == 1
+        # The live view keeps the whole history; only its counts follow the last task.
+        live = timeline(reader, task=True)
+        assert live['expected'] == 2 and live['ready'] == 2 and live['task'] == {'expected': 1, 'ready': 1}
+        assert [e.get('outside', False) for e in live['entries']] == [True, False]
     finally:
         reader.close()
+
+
+def test_a_new_period_run_shows_the_whole_history_without_marking_saved_entries_pending(tmp_path):
+    SyncExporter(tmp_path, Journal(), Scope()).run()
+    store = Store(tmp_path)
+    try:
+        with store.db:
+            # An older archive without per-entry statuses, and a new period run that has just reset bodies_done.
+            store.set('entry_comments', {})
+            store.set('bodies_done', False)
+            store.set('sync_job', {'phase': 'posts', 'scope': Scope('period', '2026-01-01', '2026-12-31').data(), 'done': False})
+        live = timeline(store, task=True)
+        states = {e['date'][:4]: e['state'] for e in live['entries']}
+        assert live['expected'] == 2 and live['task']['expected'] == 1
+        assert len(states) == 2 and states['2026'] in ('pending', 'loading')  # in the run, not yet fetched again
+        assert all(state == 'ready' for year, state in states.items() if year != '2026')
+    finally:
+        store.close()
 
 
 def test_interruption_while_expanding_last_page_resumes_that_page(tmp_path):
@@ -223,5 +244,30 @@ def test_saved_screened_comment_and_missing_images_have_separate_status(tmp_path
         html = (tmp_path/'entries/1.html').read_text(encoding='utf-8')
         assert row['notice'] in html
         assert 'target="_blank" rel="noreferrer noopener">ЖЖ ↗' in html
+    finally:
+        store.close()
+
+
+def test_live_view_scopes_a_link_update_and_does_not_call_earlier_gaps_loading(tmp_path):
+    SyncExporter(tmp_path, Journal(), Scope()).run()
+    store = Store(tmp_path)
+    try:
+        with store.db:
+            statuses = store.get('entry_comments', {})
+            statuses['2'] = {**statuses.get('2', {}), 'done': False}  # an earlier run left entry 2 incomplete
+            store.set('entry_comments', statuses)
+            store.set('bodies_done', False)
+            # A link update for entry 1, before its posts phase has chosen the entries.
+            store.set('sync_job', {'phase': 'posts', 'done': False,
+                                   'scope': Scope('urls', urls=('https://fixture.livejournal.com/263.html',)).data()})
+        live = timeline(store, task=True)
+        states = {e['id']: (e['state'], e.get('outside', False)) for e in live['entries']}
+        assert live['expected'] == 2 and live['task']['expected'] == 1
+        assert not states[1][1] and states[2] == ('partial', True)
+        assert timeline(store)['entries'][1]['state'] == 'loading'  # offline view: unchanged
+        with store.db:  # a link to an entry the archive does not have yet is part of the run as well
+            store.set('sync_job', {'phase': 'posts', 'done': False, 'scope': Scope('urls', urls=(
+                'https://fixture.livejournal.com/263.html', 'https://fixture.livejournal.com/1031.html')).data()})
+        assert timeline(store, task=True)['task']['expected'] == 2
     finally:
         store.close()
