@@ -139,7 +139,7 @@ function attemptHistory(attempts){
 }
 async function api(path,data){const r=await fetch(path,{method:data===undefined?'GET':'POST',headers:data===undefined?{}:{'Content-Type':'application/json'},body:data===undefined?undefined:JSON.stringify(data),cache:'no-store'});const value=await r.json();if(!r.ok)throw new Error(value.error||'Не удалось выполнить запрос.');return value;}
 function error(message,form=false){const target=$(form?'form-error':'app-error');target.textContent=message;target.hidden=!message;}
-function setBusy(value){busy=value;document.querySelectorAll('[data-new],[data-update],[data-resume]').forEach(b=>b.disabled=value||moving||closed);$('submit-export').disabled=value||moving||submitting||preparingResume||needsCommunity()||closed;$('move-storage').disabled=value||moving||closed;$('move-storage').title=value?'После завершения загрузки':'';}
+function setBusy(value){busy=value;document.querySelectorAll('[data-new],[data-update],[data-resume],[data-busy]').forEach(b=>b.disabled=value||moving||closed);$('submit-export').disabled=value||moving||submitting||preparingResume||needsCommunity()||closed;$('move-storage').disabled=value||moving||closed;$('move-storage').title=value?'После завершения загрузки':'';}
 function setScope(value){scope=value;document.querySelectorAll('[data-scope]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.scope===value)));$('period-fields').hidden=value!=='period';$('url-fields').hidden=value!=='urls';$('entry-urls').required=value==='urls';$('entry-urls').disabled=value!=='urls';if(!limitEdited)$('request-limit').value=value==='latest'?'50':'';$('request-limit').required=value==='latest';$('account').checked=value==='full';setSource();}
 let communityRequest=0;
 const choosingCommunity=()=>mode==='new'&&$('source-type').value==='community';
@@ -231,32 +231,86 @@ function nowContent(s,clock){
   if(s.phase==='cancelled')return ['Полученное сохранено. Продолжить можно в любой момент.'];
   if(['complete','demo'].includes(s.phase)||(s.phase==='partial'&&s.finished_with_skips)||!s.message)return [];
   // «Комментарии к записи #232» → the entry's title, linked to its page.
+  // The stage already says what is fetched: «Получаем комментарии» + «к записи «…» · страница 1».
+  const text=s.message.replace(/^(Комментарии|Записи) (?=(к|за) )/,'');if(text!==s.message)s={...s,message:text};
   const entry=mapSlug===s.slug&&s.entry_id&&mapView?.items.find(i=>i.id===s.entry_id),mark='#'+s.entry_id;
   if(entry&&s.message.includes(mark)){const [before,...rest]=s.message.split(mark),link=el('a','',`«${entry.title}»`);link.href='/archive/'+encodeURIComponent(s.slug)+'/'+entry.url;return [before,link,rest.join(mark)];}
   return [s.message];
 }
-function showStatus(s){lastState=s;showContact(s);if(!s.phase||s.phase==='idle'||s.job_id&&s.job_id===dismissedJob)return;$('job').hidden=false;$('job-title').textContent=s.username||'';
+// What a card says about its archive: years, entries, comments, images, videos.
+const ENTRY_FORMS=['запись','записи','записей'],COMMENT_FORMS=['комментарий','комментария','комментариев'],IMAGE_FORMS=['изображение','изображения','изображений'],VIDEO_FORMS=['видео','видео','видео'];
+const kinds={full:'весь журнал',period:'за период',urls:'по ссылкам',latest:'тест · 10 записей'};
+function yearsOf(data){const dates=(data?.entries||[]).map(e=>e.date).concat((data?.gaps||[]).map(g=>g.date)).filter(d=>/^\d{4}-/.test(d||'')).sort();if(!dates.length)return '';const a=dates[0].slice(0,4),z=dates.at(-1).slice(0,4);return a===z?a:`${a} — ${z}`;}
+function updatedText(iso){const d=new Date(iso||'');if(isNaN(d))return '';const months='января февраля марта апреля мая июня июля августа сентября октября ноября декабря'.split(' ');return `${d.getDate()} ${months[d.getMonth()]}${d.getFullYear()!==new Date().getFullYear()?' '+d.getFullYear():''} в ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;}
+function unavailableText(a){const parts=[];if(a.unavailable_discussions)parts.push(count(a.unavailable_discussions,['обсуждение','обсуждения','обсуждений']));const images=(a.unavailable_images||0)+(a.removed_images||0);if(images)parts.push(count(images,IMAGE_FORMS));return parts.length?'недоступно: '+parts.join(', '):'';}
+// The archive's menu: its sections, downloads and maintenance. Ids only on the running card.
+function archiveMenu(a,{job=false,resume=false,update=false}={}){
+  const menu=el('div','menu'),group=title=>menu.append(el('h5','menu-title',title));const base=a.url?a.url.replace(/index\.html$/,''):'';
+  const link=(text,href,id,download)=>{const n=el('a','',text);n.href=href;if(id)n.id=id;if(download)n.download=download;menu.append(n);return n;};
+  const action=(text,fn,id)=>{const n=el('button','',text);n.type='button';if(id)n.id=id;n.onclick=()=>{n.closest('details')&&(n.closest('details').open=false);fn();};menu.append(n);return n;};
+  if(a.url){
+    group('Разделы архива');for(const [text,page] of [['Календарь','calendar.html'],['Хронология','timeline.html'],['Материалы','materials.html'],['Профиль','account.html'],['Переписка','messages.html']])link(text,base+page);
+    menu.append(el('hr'));group('Скачать');link('ZIP-архив',a.zip_url||`/download/${a.slug}.zip`);link('JSON (ActivityStreams)',a.activitystreams_url||`/download/${a.slug}.activitystreams.json`);link('Исходный JSON',a.json_url||`/download/${a.slug}.json`);
+    menu.append(el('hr'));
+  }
+  group('Обслуживание');
+  if(resume)action('Докачать пропуски',()=>openDialog('resume',a)).dataset.busy='';
+  if(update)action('Обновить архив',()=>{const archive=archives.find(x=>x.slug===lastState.slug);if(archive)openDialog('update',archive);else error('Архив не найден.');},'job-update').dataset.busy='';
+  if(a.parameters)action('Параметры загрузки',()=>showParameters(job?lastState:a),job?'job-settings':'');
+  action('Изображения: файлы и докачка',()=>window.ArchiveImages.open(a.slug),job?'job-images':'');
+  if(a.url){link('Состояние архива',a.report_url||base+'report.html',job?'job-report':'');if(job)link('Пропущенные материалы и обсуждения',base+'report.html#skipped','job-skips');}
+  action('Диагностика',()=>showDiagnostics(a.slug),job?'job-diagnostics':'');
+  return menu;
+}
+function gapsSummary(data,{running,plan}={}){
+  if(!data?.available)return '';const rows=data.rows||[],open=rows.reduce((n,r)=>n+(r.remaining||0),0),shut=rows.reduce((n,r)=>n+(r.unavailable||0),0);
+  return [open?`${running?'докачиваем':plan?'будем докачивать':'осталось докачать'} ${num(open)}`:'',shut?`недоступно ${num(shut)}`:''].filter(Boolean).join(' · ');
+}
+let jobVisible=false,jobMenuKey='',pendingFocus='';
+// After a finished job card hides, keyboard focus goes to its archive's main action instead of the page body.
+// The card is rebuilt with the finished data a moment later; until then focus waits on the journal name, which the rebuild keeps.
+function holdFocus(){const card=pendingFocus&&cards.get(pendingFocus);if(!card||card.li.hidden)return;const name=card.li.querySelector('a.journal-name')||card.li.querySelector('.vol-name');if(!name)return;if(!name.matches('a'))name.tabIndex=-1;name.focus({preventScroll:true});}
+function announce(text){const live=$('library-status');live.textContent='';setTimeout(()=>{live.textContent=text;},60);}
+function focusPending(){const card=pendingFocus&&cards.get(pendingFocus);if(!card||card.li.hidden)return false;const target=card.li.querySelector('.vol-actions .btn.primary')||card.li.querySelector('.vol-actions .btn:not(:disabled)');if(!target)return false;target.focus({preventScroll:true});pendingFocus='';return true;}
+function showStatus(s){lastState=s;showContact(s);
   const material=s.material_task,materialRunning=material&&!['complete','error','needs_browser','cancelled'].includes(material.phase);
   const clock=s.server_time||Date.now()/1000,done=terminal.has(s.phase),stalled=!done&&s.worker_alive===false;
-  const request=s.request||{},activity=s.last_activity||{},silent=!done&&network.has(s.phase)&&request.at&&request.at>(s.last_response_at||s.last_success_at||0)&&activity.kind==='request'&&clock-request.at>60;
-  let stage=s.cancelling?'Останавливаем…':stalled?'Загрузка прервалась':s.request_limit_reached?'Достигнут лимит запросов':done?finished[s.phase]||labels[s.phase]:doing[s.phase]||'Загружаем';
   const finishedWithSkips=s.phase==='partial'&&s.finished_with_skips&&!s.request_limit_reached;
+  const ready=['complete','demo'].includes(s.phase)&&!s.request_limit_reached;
+  // A finished archive goes back to being an ordinary card; the job card is for work in progress and what needs a decision.
+  const show=!!s.phase&&s.phase!=='idle'&&s.slug!=='_demo'&&!(s.job_id&&s.job_id===dismissedJob)&&!((ready||finishedWithSkips)&&!materialRunning);
+  if(jobVisible!==show){
+    if(!show&&jobVisible&&(ready||finishedWithSkips)){announce(`Архив ${s.username||''} готов`);if($('job').contains(document.activeElement))pendingFocus=s.slug;}
+    jobVisible=show;syncCards();
+  }
+  $('job').hidden=!show;if(!show){setBusy(!done||materialRunning);holdFocus();return;}
+  $('job-title').textContent=s.username||'';if(s.archive_url)$('job-title').href=s.archive_url;else $('job-title').removeAttribute('href');
+  const request=s.request||{},activity=s.last_activity||{},silent=!done&&network.has(s.phase)&&request.at&&request.at>(s.last_response_at||s.last_success_at||0)&&activity.kind==='request'&&clock-request.at>60;
+  let stage=s.cancelling?'Останавливаем…':stalled?'Загрузка прервалась':s.request_limit_reached?'Достигнут лимит запросов':done?{...finished,partial:'Не завершено'}[s.phase]||labels[s.phase]:doing[s.phase]||'Загружаем';
   if(finishedWithSkips)stage='Архив готов';
   if(s.phase==='browser_login'&&!s.cancelling)stage='Вход в браузере';
   if(s.phase==='waiting'&&!s.cancelling&&!stalled)stage=s.retry_at>clock?'Пауза до '+new Date(s.retry_at*1000).toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'}):'Продолжаем после паузы';
   if(materialRunning)stage=material.phase==='waiting'?'Пауза перед запросом':material.phase==='saving'?'Обновляем страницы архива':'Скачиваем изображения';
-  if(material?.phase==='complete' && !s.request_limit_reached && s.phase==='partial')stage='Докачка изображений завершена';
+  if(material?.phase==='complete'&&!s.request_limit_reached&&s.phase==='partial')stage='Докачка изображений завершена';
   // Only this sentence is announced; it changes with the stage, not every second.
   if($('job-stage').textContent!==stage)$('job-stage').textContent=stage;
-  $('job-state').dataset.tone=stalled||s.phase==='error'?'error':s.phase==='waiting'||silent?'wait':(['complete','demo'].includes(s.phase)||finishedWithSkips)&&!s.request_limit_reached?'done':done?'warn':'run';
-  $('job-kind').hidden=s.operation!=='resume';$('job-kind').textContent='докачка пропусков';
+  const tone=stalled||s.phase==='error'?'error':s.phase==='waiting'||silent?'wait':(['complete','demo'].includes(s.phase)||finishedWithSkips)&&!s.request_limit_reached?'done':done?'warn':'run';
+  $('job-state').dataset.tone=tone;$('job').dataset.tone=tone;$('job').classList.toggle('active',!done||materialRunning);
+  const kind=s.operation==='resume'?'докачка пропусков':s.parameters?.entry_limit?`тест · ${count(s.parameters.entry_limit,ENTRY_FORMS)}`:kinds[s.parameters?.mode]||'';
+  $('job-kind').hidden=!kind||(done&&!materialRunning);$('job-kind').textContent=kind;
   const now=material?[material.message||'']:nowContent(s,clock);if(material?.total)now.push(` · ${material.completed||0} / ${material.total}`);if(silent&&!material)now.unshift(`Ожидаем ответ${request.host?' от '+request.host:''} · ${minutes(clock-request.at)}. `);
   else if(!done&&network.has(s.phase)&&activity.kind==='failure'&&activity.reason==='web_login')now.splice(0,now.length,'Не удалось подтвердить вход для изображений. Полученное сохраняется.');
   else if(!done&&network.has(s.phase)&&activity.kind==='redirect')now.unshift('ЖЖ перенаправляет запрос · '+(activity.http_status||302)+'. ');
+  // «Входим в ЖЖ» + «Входим в ЖЖ и проверяем доступ…» → «Входим в ЖЖ · проверяем доступ…».
+  if(typeof now[0]==='string'&&now[0].toLowerCase().startsWith(stage.toLowerCase()))now[0]=now[0].slice(stage.length).replace(/^[\s,.:;—–-]*(и\s+)?/,'');
+  if(now.length===1&&!now[0])now.length=0;
   $('job-now').hidden=!now.length;$('job-message').replaceChildren(...now);$('job-now').classList.toggle('is-problem',['error','partial'].includes(s.phase)||stalled);
-  const meta=[],data=mapSlug===s.slug&&mapView?.data;
-  if(!data?.expected)meta.push(count(s.entries,['запись','записи','записей']));
-  meta.push(count(s.comments,['комментарий','комментария','комментариев']));
+  // Facts: what is already there, not promises. Before the calendar — what was asked for.
+  const data=mapSlug===s.slug&&mapView?.data,facts=[];
+  if(data?.expected){const years=yearsOf(data);if(years)facts.push(years);facts.push(`${num(data.ready)} из ${count(data.expected,ENTRY_FORMS)}`);facts.push(count(s.comments,COMMENT_FORMS));}
+  else{const p=s.parameters||{};if(s.entries)facts.push(count(s.entries,ENTRY_FORMS));if(s.comments)facts.push(count(s.comments,COMMENT_FORMS));if(!facts.length){if(p.images)facts.push('изображения');if(p.videos)facts.push('видео');if(p.account)facts.push('профиль, друзья, юзерпики');if(p.messages)facts.push('переписка');}}
+  $('job-facts').textContent=facts.join(' · ');
+  const meta=[];
   if(s.started_at&&s.working_seconds!=null){const pause=s.waiting_seconds||0;meta.push((done?'заняло ':'идёт ')+minutes((s.working_seconds||0)+pause)+(pause>=60?`, из них пауз ${minutes(pause)}`:''));}
   if(s.request_limit)meta.push(`запросов ${num(s.requests_used)} из ${num(s.request_limit)}`);
   const photos=material?.browser_images_progress||s.browser_images_progress;
@@ -274,70 +328,155 @@ function showStatus(s){lastState=s;showContact(s);if(!s.phase||s.phase==='idle'|
       }
     }
   }
-  $('job-meta').textContent=meta.join(' · ');
-  $('progress').hidden=done||(!$('job-timeline').hidden&&!localProgress(s.phase));if(s.total){$('progress').max=s.total;$('progress').value=s.completed||0;}else $('progress').removeAttribute('value');
-  const ready=['complete','demo'].includes(s.phase);
-  $('open-result').hidden=!s.archive_url;if(s.archive_url)$('open-result').href=s.archive_url;$('open-result').className='btn'+(ready?' primary':'');
+  if(!done&&!s.cancelling)meta.push('полученное сохраняется, продолжить можно позже');
+  $('job-meta').textContent=meta.length?meta.join(' · ').replace(/^./,c=>c.toUpperCase()):'';
+  // The thin line on top of the card: the stage's own count when it has one, otherwise entries saved.
+  const progress=$('progress');progress.hidden=done&&!materialRunning;
+  if(s.total&&localProgress(s.phase)){progress.max=s.total;progress.value=s.completed||0;}
+  else if(data?.expected){progress.max=data.expected;progress.value=data.ready||0;}
+  else if(s.total){progress.max=s.total;progress.value=s.completed||0;}else progress.removeAttribute('value');
+  $('job-wait').hidden=!!data?.expected||done||['preparing','verify'].includes(s.phase)&&!!s.archive_url;
+  $('open-result').hidden=!s.archive_url;if(s.archive_url)$('open-result').href=s.archive_url;
   $('job-statistics').hidden=!s.archive_url;if(s.archive_url)$('job-statistics').href=s.archive_url.replace(/index\.html$/,'statistics.html');
-  $('job-report').hidden=!s.archive_url;if(s.archive_url)$('job-report').href=s.archive_url.replace(/index\.html$/,'report.html');
-  $('job-settings').hidden=!s.parameters;
-  $('job-diagnostics').hidden=!s.slug||s.slug==='_demo';
+  const menuKey=JSON.stringify([s.slug,s.archive_url,!!s.parameters,done]);
+  if(menuKey!==jobMenuKey){jobMenuKey=menuKey;const info={slug:s.slug,username:s.username,url:s.archive_url,report_url:s.archive_url&&s.archive_url.replace(/index\.html$/,'report.html'),parameters:s.parameters};$('job-menu').replaceChildren(...archiveMenu(info,{job:true,update:done&&!!s.archive_url}).childNodes);setBusy(busy);}
+  $('job-more').hidden=!s.slug||s.slug==='_demo';
   const recoveryBox=$('job-recovery');
   if(recoveryBox.dataset.job!==s.job_id){recoveryBox.open=false;recoveryBox.dataset.job=s.job_id||'';}
-  recoveryBox.hidden=!s.recovery&&!s.archive_url&&!s.parameters&&$('job-diagnostics').hidden&&s.phase!=='partial';
-  $('job-recovery-content').hidden=!s.recovery;
-  $('job-skips').hidden=!s.archive_url;
-  if(s.archive_url)$('job-skips').href=s.archive_url.replace(/index\.html$/,'report.html#skipped');
-  const recoveryKey=JSON.stringify([s.job_id,s.operation,done,s.recovery]);if($('job-recovery').dataset.key!==recoveryKey){$('job-recovery').dataset.key=recoveryKey;$('job-recovery-content').replaceChildren(gapsView(s.recovery,{attempt:s.operation==='resume',running:!done,videos:s.parameters?.videos!==false}));}
-  let imageAction=$('job-images');if(!imageAction){imageAction=el('button','btn','Изображения: файлы и докачка');imageAction.type='button';imageAction.id='job-images';$('job-recovery').append(imageAction);}
-  imageAction.hidden=!s.slug||!s.recovery?.rows?.some(r=>r.key==='images'&&(r.remaining||r.unavailable));imageAction.onclick=()=>window.ArchiveImages.open(s.slug);
-  $('job-hint').hidden=done||!!s.cancelling;
-  const actionSlot=$(s.phase==='partial'?'job-tech-actions':'job-run-actions');
-  if($('job-action').parentNode!==actionSlot)actionSlot.append($('job-action'));
-  $('job-action').disabled=!!s.cancelling;$('job-action').textContent=!done?'Остановить':ready?'Скрыть':s.phase==='cancelled'||s.phase==='error'?'Продолжить':'Докачать пропуски';
-  $('job-action').className='btn'+(ready?' text':done?' primary':'');
+  const summary=gapsSummary(s.recovery,{running:!done});
+  recoveryBox.hidden=!s.recovery?.available||!summary&&!(s.operation==='resume'&&resolvedText(s.recovery.rows||[]));
+  $('job-gaps-summary').textContent=summary||'пропусков нет';
+  const recoveryKey=JSON.stringify([s.job_id,s.operation,done,s.recovery]);if(recoveryBox.dataset.key!==recoveryKey){recoveryBox.dataset.key=recoveryKey;$('job-recovery-content').replaceChildren(gapsView(s.recovery,{attempt:s.operation==='resume',running:!done,videos:s.parameters?.videos!==false}));}
+  const action=$('job-action');
+  action.disabled=!!s.cancelling;action.textContent=!done?'Остановить':s.phase==='cancelled'||s.phase==='error'?'Продолжить':'Докачать пропуски';
+  action.className='btn'+(done?' primary':'');
   $('job-browser-cancel').hidden=s.phase!=='browser_login';$('job-browser-cancel').disabled=!!s.cancelling;
-  if(s.phase==='browser_login'){$('job-action').textContent='Продолжить';$('job-action').className='btn primary';$('job-hint').hidden=true;$('progress').hidden=true;}
-  if(materialRunning){$('job-action').disabled=true;$('job-state').dataset.tone='run';}
+  if(s.phase==='browser_login'){action.textContent='Продолжить';action.className='btn primary';progress.hidden=true;}
+  if(materialRunning){action.disabled=true;$('job-state').dataset.tone='run';}
   setBusy(!done||materialRunning);
 }
-async function library(){const data=await api('/api/archives');storageStatus(data.relocation);const key=JSON.stringify(data);if(key===libraryKey){setBusy(busy);return;}libraryKey=key;
-  const open=new Set(Array.from(document.querySelectorAll('#archives details[open]'),menu=>menu.closest('tr').dataset.archive));
-  const focused=document.activeElement,focusSlug=focused.closest('#archives tr')?.dataset.archive,focusAction=focused.dataset.action;
-  archives=data.archives.filter(a=>a.slug!=='_demo');$('output-path').textContent=data.output;$('archives').replaceChildren();$('empty').hidden=!!archives.length;$('library').hidden=!archives.length;
-  for(const archive of archives){const row=el('tr'),name=el('td'),link=el(archive.url?'a':'strong','journal-name',archive.username);row.dataset.archive=archive.slug;if(archive.url)link.href=archive.url;name.append(link);
-    const mode=archive.parameters?.mode;const description=archive.entry_limit?`Тест · ${archive.entry_limit} записей`:mode==='period'?[day(archive.parameters.date_from),day(archive.parameters.date_to)].filter(Boolean).join(' — '):'';
-    if(description)name.append(el('span','journal-scope',description));row.append(name,el('td','mono',String(archive.entries_saved||0)),el('td','mono',String(archive.comments_saved||0)),el('td','mono',day(archive.created_at)));
-    const state=el('td'),status=el(archive.report_url?'a':'span','status'+(archive.status==='complete'||archive.finished_with_skips?'':' partial'),archive.finished_with_skips?'Готов':labels[archive.status]||'Не завершён');if(archive.report_url)status.href=archive.report_url;state.append(status);row.append(state);
-    const cell=el('td'),actions=el('div','row-actions');if(archive.url){
-      const shortcuts=el('span','library-shortcuts');
-      for(const [label,icon,href] of [['Открыть архив','open',archive.url],['Статистика','statistics',archive.url.replace('index.html','statistics.html')]]){
-        const a=el('a','icon');a.href=href;a.title=label;a.setAttribute('aria-label',label);a.innerHTML=svg(icon);shortcuts.append(a);
-      }
-      link.after(shortcuts);
-    }
-    const more=el('details','more'),summary=el('summary','','⋯');summary.setAttribute('aria-label','Действия с архивом '+archive.username);const menu=el('div','menu');
-    const settings=el('button','','Параметры');settings.type='button';settings.onclick=()=>showParameters(archive);menu.append(settings);
-    const diagnostics=el('button','','Диагностика');diagnostics.type='button';diagnostics.onclick=()=>showDiagnostics(archive.slug);menu.append(diagnostics);
-    const images=el('button','','Изображения');images.type='button';images.onclick=()=>{more.open=false;window.ArchiveImages.open(archive.slug);};menu.append(images);
-    if(archive.resumable){const resume=el('button','',resumeLabel(archive));resume.type='button';resume.dataset.resume='';resume.onclick=()=>openDialog('resume',archive);menu.append(resume);}
-    const update=el('button','','Обновить');update.type='button';update.dataset.update='';update.onclick=()=>openDialog('update',archive);menu.append(update);
-    if(archive.url){menu.append(el('hr'));for(const [text,url] of [['Скачать JSON',archive.activitystreams_url],['Исходный JSON',archive.json_url],['Скачать ZIP',archive.zip_url],['Календарь',archive.url.replace('index.html','calendar.html')],['Хронология',archive.url.replace('index.html','timeline.html')],['Профиль',archive.url.replace('index.html','account.html')],['Переписка',archive.url.replace('index.html','messages.html')],['Состояние архива',archive.report_url]]){const a=el('a','',text);a.href=url;menu.append(a);}}
-    more.open=open.has(archive.slug);more.append(summary,menu);actions.append(more);cell.append(actions);row.append(cell);
-    row.querySelectorAll('a,button,summary').forEach(action=>action.dataset.action=action.textContent||action.getAttribute('aria-label'));
-    $('archives').append(row);
-    if(archive.slug===focusSlug)Array.from(row.querySelectorAll('[data-action]')).find(action=>action.dataset.action===focusAction)?.focus({preventScroll:true});
-  }setBusy(busy);
+// One card per journal. Cards are kept between refreshes while their data is the same, so open menus,
+// focus and the position of the entries survive polling.
+const cards=new Map(),timelines=new Map();
+function syncCards(){
+  for(const [slug,card] of cards)card.li.hidden=jobVisible&&slug===lastState.slug;
+  const visible=[...cards.values()].filter(c=>!c.li.hidden).length+(jobVisible?1:0);
+  $('library').hidden=!visible;$('empty').hidden=!!visible||!libraryKey;
 }
+function justFinished(){const s=lastState,ago=(s.server_time||Date.now()/1000)-(s.last_progress_at||s.last_saved_at||0);return !!s.job_id&&(s.phase==='complete'||s.phase==='partial'&&s.finished_with_skips)&&ago<1800;}
+function freshFor(a){return lastState.slug===a.slug&&justFinished()?lastState.job_id:'';}
+function cardStatus(a){
+  const status=el('div','vol-status'),state=el('span','vol-state'),fresh=freshFor(a);state.append(el('span','job-dot'));
+  const ready=a.status==='complete'||a.finished_with_skips||a.status==='demo';
+  status.dataset.tone=ready?'done':a.status==='error'?'error':'warn';
+  state.append(document.createTextNode(ready?'Готов':a.status==='cancelled'?'Остановлено':a.status==='error'?'Загрузка прервалась':'Не завершено'));status.append(state);
+  const text=[];
+  if(ready){
+    if(fresh){const took=(lastState.working_seconds||0)+(lastState.waiting_seconds||0);text.push(el('span','vol-fresh','обновлён только что'));if(took)text.push(document.createTextNode('\u00a0· заняло '+minutes(took)));}
+    else if(a.created_at)text.push(document.createTextNode('обновлён '+updatedText(a.created_at)));
+    const lost=unavailableText(a);if(lost)text.push(document.createTextNode((text.length?'\u00a0· ':'')+lost));
+  }else if(a.message)text.push(document.createTextNode(a.message));
+  // Finished, but some gaps can still be fetched: the way to them is right here, not in a menu.
+  const resume=ready&&a.resumable&&a.finished_with_skips&&a.open_gaps;
+  if(resume)text.push(document.createTextNode((text.length?'\u00a0· ':'')+'можно докачать: '+num(a.open_gaps)));
+  if(text.length){const span=el('span','vol-text');span.append(...text);status.append(span);}
+  if(resume){const go=el('button','link-button vol-resume','Докачать');go.type='button';go.dataset.busy='';go.onclick=()=>openDialog('resume',a);status.append(go);}
+  return status;
+}
+function cardFacts(a,data){
+  const facts=[],years=yearsOf(data);if(years)facts.push(years);
+  facts.push(count(a.entries_saved||0,ENTRY_FORMS),count(a.comments_saved||0,COMMENT_FORMS));
+  if(a.images_saved)facts.push(count(a.images_saved,IMAGE_FORMS));if(a.videos_saved)facts.push(count(a.videos_saved,VIDEO_FORMS));
+  const mode=a.parameters?.mode;const scope=a.entry_limit?`тест · ${count(a.entry_limit,ENTRY_FORMS)}`:mode==='period'?[day(a.parameters.date_from),day(a.parameters.date_to)].filter(Boolean).join(' — '):'';
+  if(scope)facts.push(scope);
+  return facts.join(' · ');
+}
+// Restoring focus after a rebuild looks an action up by its text.
+function labelActions(root){root.querySelectorAll('a,button,summary').forEach(action=>action.dataset.action=action.textContent||action.getAttribute('aria-label'));}
+function cardGaps(a){
+  if(!a.unavailable_discussions&&!a.unavailable_images&&!a.removed_images)return null;
+  const gaps=el('details','gaps'),sum=el('summary','','Что не удалось получить'),body=el('div');gaps.append(sum,body);
+  gaps.ontoggle=()=>{if(!gaps.open||body.childNodes.length)return;body.append(el('p','fine','Проверяем…'));api('/api/recovery/'+encodeURIComponent(a.slug)+'?whole=1').then(data=>{body.replaceChildren(gapsView(data,{videos:a.parameters?.videos!==false}));const settled=[[data.confirmed?.images_missing,'нет в ЖЖ'],[data.confirmed?.images_refused,'доступ закрыт']].filter(([n])=>n).map(([n,why])=>`${count(n,IMAGE_FORMS)} — ${why}`);if(settled.length)body.append(el('p','gaps-note',`Браузер с вашим входом не получил: ${settled.join(', ')}. На страницах они остались ссылками на оригинал, докачка их не вернёт.`));}).catch(()=>body.replaceChildren(el('p','fine','Список пропусков недоступен.')));};
+  return gaps;
+}
+// Counts arrive after the card (the server counts them in the background): only the status and the details change,
+// the strip keeps its place and its open state.
+function refreshCounts(card,a){
+  const status=cardStatus(a);labelActions(status);card.li.querySelector(':scope>.vol-status')?.replaceWith(status);
+  const old=card.li.querySelector(':scope>details.gaps'),gaps=cardGaps(a);
+  if(gaps){labelActions(gaps);if(old){old.replaceWith(gaps);gaps.open=old.open;}else card.li.append(gaps);}else old?.remove();
+}
+function buildCard(a,index,firstFolded){
+  const li=el('li','volume');li.dataset.archive=a.slug;
+  const head=el('div','vol-head'),title=el('div','vol-title'),name=el('h2','vol-name'),link=el(a.url?'a':'span','journal-name',a.username);if(a.url)link.href=a.url;name.append(link);title.append(name);
+  if(a.url){const stat=el('a','vol-stat');stat.href=a.url.replace(/index\.html$/,'statistics.html');stat.innerHTML=svg('statistics');stat.append('Статистика');title.append(stat);}
+  const actions=el('div','vol-actions'),resumable=a.resumable&&!a.finished_with_skips;
+  const main=el('button','btn'+(resumable?' primary':''));main.type='button';
+  if(resumable){main.textContent=resumeLabel(a);main.dataset.resume='';main.onclick=()=>openDialog('resume',a);}
+  else{main.innerHTML=svg('refresh');main.append('Обновить');main.dataset.update='';main.onclick=()=>openDialog('update',a);}
+  actions.append(main);
+  if(a.url){const open=el('a','btn'+(resumable?'':' primary'));open.href=a.url;open.innerHTML=svg('open');open.append('Открыть архив');actions.append(open);}
+  const more=el('details','more'),summary=el('summary','','⋯');summary.setAttribute('aria-label','Ещё действия с архивом '+a.username);more.append(summary,archiveMenu(a));actions.append(more);
+  const facts=el('p','vol-facts',cardFacts(a));
+  head.append(title,actions,facts);li.append(head);
+  let view=null;
+  if(a.url){
+    const root=el('div','timeline');li.append(root);
+    view=new window.ArchiveTimeline(root,a.url.replace(/index\.html$/,''),{summary:false,collapsible:true,open:index===0,hint:firstFolded});
+    const cached=timelines.get(a.slug);
+    const show=data=>{view.set(data,null);facts.textContent=cardFacts(a,data);root.hidden=!data.expected;};
+    if(cached?.key===a.created_at)show(cached.data);
+    else api('/api/timeline/'+encodeURIComponent(a.slug)).then(data=>{timelines.set(a.slug,{key:a.created_at,data});if(li.isConnected||cards.get(a.slug)?.li===li)show(data);}).catch(()=>{root.hidden=true;});
+  }
+  li.append(cardStatus(a));
+  // Just finished with a browser image check: its result stays on the card.
+  const photos=freshFor(a)&&lastState.browser_images_progress;
+  if(photos)li.append(el('p','vol-photos',`Изображения · сохранено ${num(photos.saved)} · недоступно ${num(photos.unavailable)} · к повтору ${num(photos.pending)}`));
+  const gaps=cardGaps(a);if(gaps)li.append(gaps);
+  labelActions(li);
+  return {li,view};
+}
+let gapsTimer=0;
+async function library(){const data=await api('/api/archives');storageStatus(data.relocation);
+  // The server counts gaps in the background; ask again soon instead of waiting for the next idle poll.
+  if(!gapsTimer&&data.archives.some(a=>a.gaps_pending))gapsTimer=setTimeout(()=>{gapsTimer=0;library().catch(()=>{});},1500);
+  const key=JSON.stringify([data,freshKey()]);if(key===libraryKey){setBusy(busy);focusPending();return;}libraryKey=key;
+  archives=data.archives.filter(a=>a.slug!=='_demo');$('output-path').textContent=data.output;
+  $('library-count').textContent=archives.length?count(archives.length,['журнал','журнала','журналов']):'';
+  const list=$('archives'),seen=new Set();let index=jobVisible?1:0,firstFolded=true,position=0;
+  // Focus is restored after the cards are in place: moving a node in the DOM drops its focus.
+  const active=document.activeElement,focusSlug=active?.closest?.('#archives .volume')?.dataset.archive,focusAction=active?.dataset?.action;
+  for(const a of archives){
+    seen.add(a.slug);const {gaps_pending,unavailable_discussions,unavailable_images,removed_images,open_gaps,...stable}=a,cardKey=JSON.stringify([stable,freshFor(a)]),counts=JSON.stringify([unavailable_discussions,unavailable_images,removed_images,open_gaps]);let card=cards.get(a.slug);
+    const visibleIndex=jobVisible&&a.slug===lastState.slug?-1:index++;
+    if(!card||card.key!==cardKey){
+      const wasOpen=card?.li.querySelector('details.more')?.open;
+      card?.view?.destroy();const built=buildCard(a,visibleIndex,firstFolded&&visibleIndex>0);
+      if(built.view&&visibleIndex>0)firstFolded=false;
+      if(wasOpen)built.li.querySelector('details.more').open=true;
+      if(card)card.li.replaceWith(built.li);
+      card={...built,key:cardKey,counts};cards.set(a.slug,card);
+    }else{
+      if(card.counts!==counts){refreshCounts(card,a);card.counts=counts;}
+      if(card.view&&visibleIndex>0)firstFolded=false;
+    }
+    const at=list.children[position];if(at!==card.li)list.insertBefore(card.li,at||null);position++;
+  }
+  for(const [slug,card] of cards)if(!seen.has(slug)){card.view?.destroy();card.li.remove();cards.delete(slug);}
+  // The same action again, or, when it is gone (nothing left to fetch), the card's main action.
+  const holder=focusSlug&&cards.get(focusSlug)?.li;
+  if(!focusPending()&&holder&&!holder.hidden&&!holder.contains(document.activeElement))(Array.from(holder.querySelectorAll('[data-action]')).find(n=>n.dataset.action===focusAction)||holder.querySelector('.vol-actions .btn.primary:not(:disabled)')||holder.querySelector('.vol-actions .btn:not(:disabled)'))?.focus({preventScroll:true});
+  syncCards();setBusy(busy);
+}
+function freshKey(){return justFinished()?lastState.slug+':'+lastState.job_id:'';}
 let mapView=null,mapSlug='',mapTime=0,mapPhase='';
 async function refreshMap(state){
-  if(!state.slug||state.slug==='_demo')return;
-  if(mapSlug!==state.slug){mapView?.destroy();mapSlug=state.slug;mapTime=0;mapView=new window.ArchiveTimeline($('job-timeline'),'/archive/'+encodeURIComponent(state.slug)+'/');}
+  if(!state.slug||state.slug==='_demo'||!jobVisible)return;
+  if(mapSlug!==state.slug){mapView?.destroy();mapSlug=state.slug;mapTime=0;mapView=new window.ArchiveTimeline($('job-timeline'),'/archive/'+encodeURIComponent(state.slug)+'/',{summary:false});}
   if(Date.now()-mapTime<8000&&mapPhase===state.phase){mapView.active=terminal.has(state.phase)?null:state.entry_id;mapView.draw();return;}
   mapTime=Date.now();mapPhase=state.phase;
   const data=await api('/api/timeline/'+encodeURIComponent(state.slug));
   const first=$('job-timeline').hidden&&data.expected;$('job-timeline').hidden=!data.expected;mapView.set(data,data.active);
-  if(data.expected)$('progress').hidden=terminal.has(state.phase)||!localProgress(state.phase);
   if(first)showStatus(lastState);
 }
 function showUpdate(update) {
@@ -443,9 +582,8 @@ $('export-form').onsubmit=async e=>{e.preventDefault();if(busy||submitting||prep
   catch(e){error(e.message,true);$('password').value='';if(choosingCommunity())resetCommunities();$('password').focus();}
   finally{data.password='';submitting=false;setBusy(busy);}
 };
-$('job-action').onclick=async()=>{try{if(lastState.phase==='browser_login'){$('job-action').disabled=true;showStatus(await api('/api/browser-confirm',{job_id:lastState.job_id}));}else if(busy){$('job-action').disabled=true;showStatus(await api('/api/cancel',{}));}else if(['complete','demo'].includes(lastState.phase)){$('job').hidden=true;dismissedJob=lastState.job_id;}else{await library();const archive=archives.find(a=>a.slug===lastState.slug);if(archive)openDialog('resume',archive);else error('Сохранённая задача не найдена.');}}catch(e){error(e.message);$('job-action').disabled=false;}};
+$('job-action').onclick=async()=>{try{if(lastState.phase==='browser_login'){$('job-action').disabled=true;showStatus(await api('/api/browser-confirm',{job_id:lastState.job_id}));}else if(busy){$('job-action').disabled=true;showStatus(await api('/api/cancel',{}));}else{await library();const archive=archives.find(a=>a.slug===lastState.slug);if(archive)openDialog('resume',archive);else error('Сохранённая задача не найдена.');}}catch(e){error(e.message);$('job-action').disabled=false;}};
 $('job-browser-cancel').onclick=async()=>{try{showStatus(await api('/api/cancel',{}));}catch(e){error(e.message);}};
-$('job-settings').onclick=()=>showParameters(lastState);
 $('settings-close').onclick=()=>$('settings-dialog').close();
 let diagnosticURL='';
 async function showDiagnostics(slug){
@@ -457,7 +595,6 @@ async function showDiagnostics(slug){
     $('diagnostics-download').href=diagnosticURL;$('diagnostics-download').hidden=false;
   }catch(e){$('diagnostics-content').textContent=e.message;}
 }
-$('job-diagnostics').onclick=()=>showDiagnostics(lastState.slug);
 $('diagnostics-close').onclick=()=>$('diagnostics-dialog').close();
 $('quit').onclick=async()=>{try{await api('/api/quit',{});closed=true;clearTimeout(pollTimer);setBusy(false);$('quit').disabled=true;$('job').hidden=true;error('Приложение закрыто.');}catch(e){error(e.message);}};
 poll();

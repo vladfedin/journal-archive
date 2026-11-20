@@ -484,5 +484,9 @@ class MaterialQueue:
                 update(phase='error', message='Не удалось сохранить материал. Можно повторить загрузку.')
             finally:
                 if store: store.close()
+                archive = request.get('archive')
                 request.clear()
-                with self.jobs.lock: self.current, self.running = None, False
+                with self.jobs.lock:
+                    self.current, self.running = None, False
+                    # The library card recounts this archive's gaps now, not after the recount pause.
+                    self.jobs.gaps_started.pop(archive, None)

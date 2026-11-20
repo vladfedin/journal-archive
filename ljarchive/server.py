@@ -25,6 +25,10 @@ from .sync import sync, validate_scope, target_slug
 TERMINAL = {"complete", "partial", "cancelled", "error", "demo", "idle"}
 
 
+# Seconds between whole-archive gap counts for a library card while its database keeps changing.
+GAPS_RECOUNT = 30
+
+
 class Jobs:
     PARAMS = ("username", "journal", "source_type", "archive", "mode", "date_from", "date_to", "urls", "entry_limit", "images", "videos", "delay", "max_requests", "account", "messages")
 
@@ -48,6 +52,9 @@ class Jobs:
         self.recovery_before = None
         self.recovery_time = 0
         self.recovery_lock = threading.Lock()
+        self.gaps_cache = {}
+        self.gaps_pending = {}
+        self.gaps_started = {}
         self.recovery_thread = None
         self.history = []
         self.move_thread = None
@@ -121,6 +128,9 @@ class Jobs:
                     self.output, self.tasks = folder, folder / ".jobs"
             def worker():
                 try:
+                    # A card count reads the old tree; let it finish before the copy, so the old files can be removed.
+                    for thread in list(self.gaps_pending.values()):
+                        thread.join(60)
                     warning = relocate(source, target, switch, update)
                     update(phase="complete", message=warning or "Перенесено")
                 except (ExportError, OSError) as exc:
@@ -291,13 +301,16 @@ class Jobs:
             self.state[key] = self.state.get(key, 0) + max(0, now - self.activity_clock)
         self.activity_clock = now
 
-    def recovery_plan(self, slug):
+    def recovery_plan(self, slug, whole=False):
         from .recovery import read_inventory, summary
         path = self.task_path(slug)
         folder = (self.output / slug).resolve()
         if not folder.is_relative_to(self.output.resolve()):
             raise ExportError('Нет доступа к архиву.')
-        result = summary(read_inventory(folder))
+        inventory = read_inventory(folder, whole=whole)
+        result = summary(inventory)
+        if whole and result.get('available'):
+            result['confirmed'] = (inventory or {}).get('confirmed') or {}
         try:
             result['attempts'] = json.loads(path.read_text(encoding='utf-8')).get('history', [])[-5:]
         except (OSError, ValueError):
@@ -443,6 +456,8 @@ class Jobs:
             self.activity_clock = time.monotonic()
             self.state.update(started_at=time.time(), app_version=__version__, working_seconds=0, waiting_seconds=0)
             self.current = None if demo else {key: data.get(key) for key in self.PARAMS}
+            # The card's count after this job must not wait for the recount pause.
+            self.gaps_started.pop(slug, None)
             self.contact_cookie = None
             self.contact_receipts = {}
             if not demo:
@@ -607,7 +622,9 @@ class Jobs:
                 slug = path.parent.name
                 if not (path.parent / "index.html").is_file():
                     continue
-                found[slug] = {key: report.get(key) for key in ("username", "status", "finished_with_skips", "entries_saved", "comments_saved", "created_at", "entry_limit", "requests_used", "request_limit")}
+                found[slug] = {key: report.get(key) for key in ("username", "status", "finished_with_skips", "entries_saved", "comments_saved", "created_at", "entry_limit", "requests_used", "request_limit", "images_saved")}
+                videos = report.get("videos") if isinstance(report.get("videos"), dict) else {}
+                found[slug].update(videos_saved=videos.get("saved") or 0, **self.card_gaps(slug, path.parent))
                 found[slug].update(slug=slug, url=f"/archive/{slug}/index.html", report_url=f"/archive/{slug}/report.html",
                                   zip_url=f"/download/{slug}.zip", json_url=f"/download/{slug}.json",
                                   activitystreams_url=f"/download/{slug}.activitystreams.json", resumable=False)
@@ -632,11 +649,63 @@ class Jobs:
                 self.task_path(slug)
                 row = found.setdefault(slug, {"slug": slug, "username": params.get('journal') or params["username"], "entries_saved": 0,
                                                "comments_saved": 0, "entry_limit": params["entry_limit"]})
-                row.update(parameters=params, parameters_known=list(params), finished_with_skips=bool(state.get("finished_with_skips") and state["phase"] == "partial"), status=state["phase"], created_at=record["updated_at"],
+                row.update(parameters=params, parameters_known=list(params), finished_with_skips=bool(state.get("finished_with_skips") and state["phase"] == "partial"), status=state["phase"], created_at=row.get("created_at") or record["updated_at"],
                            resumable=state["phase"] != "complete", message=state.get("message", ""))
             except (OSError, ValueError, KeyError, TypeError, ExportError):
                 continue
         return {"output": str(self.output), "relocation": dict(self.relocation), "archives": sorted(found.values(), key=lambda row: row.get("created_at") or "", reverse=True)}
+
+    def card_gaps(self, slug, folder):
+        """Whole-archive gaps for the library card: what LJ did not give after the last repeat, and what can still be fetched.
+
+        The last report only covers the entries of the last run, so a period update would hide older gaps.
+        Counted from the archive database in the background and kept until the database changes; until a count is
+        ready the card gets the previous one (or none) and gaps_pending. Not counted for the archive being downloaded
+        right now: its card is replaced by the job."""
+        try:
+            stamp = tuple((f.stat().st_mtime_ns, f.stat().st_size) if f.exists() else None for f in (folder / "archive.sqlite3", folder / "archive.sqlite3-wal"))
+        except OSError:
+            return {}
+        with self.lock:
+            running = bool(self.current) and self.current.get("archive") == slug and self.state.get("phase") not in TERMINAL
+            cached = self.gaps_cache.get(slug)
+            if cached and (cached[0] == stamp or running):
+                return cached[1]
+            if running or stamp[0] is None:
+                return {}
+            if self.relocation.get("phase") == "copying":
+                return cached[1] if cached else {}
+            # An archive written to all the time (image recovery, downloads from its pages) is recounted at most
+            # every GAPS_RECOUNT seconds; meanwhile the card keeps the previous count without asking again.
+            if cached and slug not in self.gaps_pending and time.monotonic() - self.gaps_started.get(slug, -math.inf) < GAPS_RECOUNT:
+                return cached[1]
+            if slug not in self.gaps_pending:
+                self.gaps_started[slug] = time.monotonic()
+                thread = threading.Thread(target=self.count_gaps, args=(slug, folder, stamp), daemon=True, name="card-gaps-" + slug)
+                self.gaps_pending[slug] = thread
+                thread.start()
+        return {**(cached[1] if cached else {}), "gaps_pending": True}
+
+    def count_gaps(self, slug, folder, stamp):
+        value = {}
+        try:
+            from .recovery import read_inventory, summary
+            inventory = read_inventory(folder, whole=True)
+            rows = {row["key"]: row for row in (summary(inventory).get("rows") or [])}
+            value = {"unavailable_discussions": rows.get("discussions", {}).get("unavailable", 0),
+                     "unavailable_images": rows.get("images", {}).get("unavailable", 0),
+                     # Checked through the browser with the user's login: LJ answered that the file is gone or closed.
+                     # Not a gap to fetch again, but also not in the archive.
+                     "removed_images": sum(((inventory or {}).get("confirmed") or {}).values()),
+                     "open_gaps": sum(row.get("remaining", 0) for row in rows.values())}
+        except Exception:
+            # A card without counts is better than a count retried on every poll; the next database change retries it.
+            import traceback
+            traceback.print_exc()
+        finally:
+            with self.lock:
+                self.gaps_cache[slug] = (stamp, value)
+                self.gaps_pending.pop(slug, None)
 
     def diagnostics(self, slug):
         from .diagnostics import build_diagnostics
@@ -884,7 +953,9 @@ def make_server(output: Path, port=8787):
                     return self.json({"entries": [], "gaps": [], "known": 0, "expected": 0, "ready": 0, "partial": 0})
             if path.startswith('/api/recovery/'):
                 try:
-                    return self.json(jobs.recovery_plan(path.removeprefix('/api/recovery/')))
+                    # whole=1: the library card, all entries; without it: the resume plan of the saved task.
+                    whole = parse_qs(urlsplit(self.path).query).get('whole') == ['1']
+                    return self.json(jobs.recovery_plan(path.removeprefix('/api/recovery/'), whole=whole))
                 except ExportError as exc:
                     return self.json({'error': str(exc)}, 400)
             if path.startswith("/static/"):

@@ -13,6 +13,19 @@ from ljarchive.storage import Store, dumps, atomic_write
 from test_render_server import local_server
 
 
+def settled(jobs):
+    """Library rows once the background gap count for every card is ready."""
+    jobs.gaps_started.clear()  # as if the recount pause has passed
+    for _ in range(20):
+        rows = jobs.archives()['archives']
+        threads = list(jobs.gaps_pending.values())
+        if not threads and not any(row.get('gaps_pending') for row in rows):
+            return rows
+        for thread in threads:
+            thread.join(10)
+    raise AssertionError('gap counts did not settle')
+
+
 def result(status='complete'):
     return {'status':status,'entries_saved':5,'comments_saved':12,'requests_used':73,'request_limit':None,'issues':[]}
 
@@ -127,8 +140,135 @@ def test_legacy_partial_archive_parameters_are_available_for_resume(tmp_path):
     assert 'videos' not in row['parameters_known']
 
 
+def test_archive_card_reports_saved_media_and_what_lj_did_not_give(tmp_path):
+    folder=tmp_path/'example_journal'
+    report=create_demo(folder)
+    # The last report covers only the last run; the card counts what is closed in the whole archive.
+    report.update(images_saved=532,videos={'total':11,'saved':4},unavailable_comment_entry_ids=[136,141,148],images_closed=31)
+    atomic_write(folder/'export-report.json',dumps(report))
+    jobs=Jobs(tmp_path)
+    row=jobs.archives()['archives'][0]
+    assert (row['images_saved'],row['videos_saved'])==(532,4)
+    store=Store(folder)
+    with store.db:
+        store.set('entry_comments',{'1':{'done':False,'error':'Не все комментарии получены.','attempts':3,'closed':True}})
+    store.close()
+    row=settled(jobs)[0]
+    assert row['unavailable_discussions']==1 and row['unavailable_images']==0 and row['removed_images']==0
+    assert isinstance(row['open_gaps'],int)
+    report.pop('videos')
+    atomic_write(folder/'export-report.json',dumps(report))
+    assert jobs.archives()['archives'][0]['videos_saved']==0
+
+
 def test_status_parameters_are_allowlisted(tmp_path):
     jobs = Jobs(tmp_path)
     assert jobs.snapshot() == {'phase': 'idle'}
     jobs.current = {'username': 'fixture', 'images': True, 'password': 'secret', 'cookies': 'private'}
     assert jobs.snapshot()['parameters'] == {'username': 'fixture', 'images': True}
+
+
+def test_card_counts_unavailable_discussions_across_the_whole_archive_after_a_period_update(tmp_path):
+    from ljarchive.sync import Scope, SyncExporter
+    from test_sync import Journal
+
+    class Screened(Journal):
+        def entry(self, eid):
+            return {**super().entry(eid), 'reply_count': 0, 'props': {'hasscreened': 1}}
+
+        def call(self, method, **params):
+            result = super().call(method, **params)
+            return {'comments': []} if method == 'getcomments' else result
+
+    folder = tmp_path / 'fixture'
+    SyncExporter(folder, Screened(), Scope('full')).run()
+    assert settled(Jobs(tmp_path))[0]['unavailable_discussions'] == 2
+    report = SyncExporter(folder, Screened(), Scope('period', '2026-11-01', '2026-11-01')).run()
+    assert len(report['unavailable_comment_entry_ids']) == 1  # the last run's report covers only its entries
+    assert settled(Jobs(tmp_path))[0]['unavailable_discussions'] == 2
+
+
+def test_card_counts_images_the_browser_confirmed_gone_or_closed_apart_from_gaps(tmp_path, local_server):
+    folder = tmp_path / 'example_journal'
+    create_demo(folder)
+    gone, closed, refused = (f'https://pics.example/{name}.png' for name in ('gone', 'closed', 'refused'))
+    store = Store(folder)
+    with store.db:
+        eid = str(store.db.execute('select id from entries order by id limit 1').fetchone()[0])
+        store.set('entry_materials', {eid: {'urls': [gone, closed, refused]}})
+        store.set('media', {gone: None, closed: None, refused: None})
+        # Answers the browser with the user's login received: settled, not gaps to fetch again.
+        store.set('media_errors', {gone: {'reason': 'browser_http', 'http_status': 404, 'availability': 'unavailable', 'closed': True},
+                                   closed: {'reason': 'browser_http', 'http_status': 403, 'availability': 'unavailable', 'closed': True},
+                                   refused: {'reason': 'http', 'http_status': 403, 'attempts': 3, 'closed': True}})
+    store.close()
+    jobs = Jobs(tmp_path)
+    first = jobs.archives()['archives'][0]
+    assert first.get('gaps_pending') and 'removed_images' not in first  # the list does not wait for the count
+    for thread in list(jobs.gaps_pending.values()):
+        thread.join(10)
+    row = jobs.archives()['archives'][0]
+    assert (row['unavailable_images'], row['removed_images']) == (1, 2)
+    # Written to all the time: the card keeps its count and does not ask again until the pause passes.
+    store = Store(folder)
+    with store.db:
+        store.set('entry_materials', {eid: {'urls': [gone, closed]}})
+    store.close()
+    row = jobs.archives()['archives'][0]
+    assert (row['unavailable_images'], row['removed_images']) == (1, 2) and not row.get('gaps_pending') and not jobs.gaps_pending
+    row = settled(jobs)[0]
+    assert (row['unavailable_images'], row['removed_images']) == (0, 2)
+    store = Store(folder)
+    with store.db:
+        store.set('entry_materials', {eid: {'urls': [gone, closed, refused]}})
+    store.close()
+    plan = jobs.recovery_plan('example_journal', whole=True)
+    assert plan['confirmed'] == {'images_missing': 1, 'images_refused': 1}
+    assert 'confirmed' not in jobs.recovery_plan('example_journal')
+    server, base = local_server
+    with requests.Session() as session:
+        session.get(base)
+        assert session.get(base + '/api/recovery/example_journal?whole=1').json()['confirmed'] == plan['confirmed']
+        assert 'confirmed' not in session.get(base + '/api/recovery/example_journal').json()
+
+
+def test_a_failing_card_count_is_not_retried_on_every_poll(tmp_path, monkeypatch, capsys):
+    create_demo(tmp_path / 'example_journal')
+    calls = []
+    def broken(folder, **kw):
+        calls.append(folder)
+        raise KeyError('unexpected record')
+    monkeypatch.setattr('ljarchive.recovery.read_inventory', broken)
+    jobs = Jobs(tmp_path)
+    rows = settled(jobs)
+    assert len(calls) == 1 and 'open_gaps' not in rows[0] and not rows[0].get('gaps_pending')
+    for _ in range(3):
+        assert not jobs.archives()['archives'][0].get('gaps_pending')
+    assert len(calls) == 1 and 'KeyError' in capsys.readouterr().err
+
+
+def test_a_job_lifts_the_recount_pause_for_its_archive(tmp_path, monkeypatch):
+    import time
+    monkeypatch.setattr('ljarchive.server.sync', lambda *args, **kwargs: result())
+    jobs = Jobs(tmp_path)
+    jobs.gaps_started.update(fixture=time.monotonic(), other=time.monotonic())
+    jobs.start({'username': 'fixture', 'password': 'x'})
+    jobs.thread.join(5)
+    assert 'fixture' not in jobs.gaps_started and 'other' in jobs.gaps_started
+
+
+def test_a_finished_material_task_lifts_the_recount_pause_for_its_archive(tmp_path, monkeypatch):
+    import time
+    from test_on_demand import URL, wait
+    from test_targeted_materials import prepare
+    prepare(tmp_path)
+    monkeypatch.setattr('ljarchive.on_demand.download_one', lambda *a, **k: (_ for _ in ()).throw(ExportError('HTTP 404 · file')))
+    jobs = Jobs(tmp_path)
+    jobs.gaps_started.update(fixture=time.monotonic(), other=time.monotonic())
+    task = jobs.materials.start({'archive': 'fixture', 'entry_id': 1, 'kind': 'image', 'value': URL})
+    wait(jobs.materials, task['id'])
+    for _ in range(100):
+        if not jobs.materials.running:
+            break
+        time.sleep(0.05)
+    assert 'fixture' not in jobs.gaps_started and 'other' in jobs.gaps_started

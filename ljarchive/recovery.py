@@ -74,7 +74,7 @@ def check_cancel(cancel):
         raise Cancelled('Проверка остановлена. Можно продолжить позже.')
 
 
-def inventory_snapshot(data, *, cancel=None, progress=None):
+def inventory_snapshot(data, *, cancel=None, progress=None, whole=False):
     def tick(completed, total, message):
         check_cancel(cancel)
         if progress and (completed == 1 or completed % 100 == 0 or completed == total):
@@ -91,8 +91,11 @@ def inventory_snapshot(data, *, cancel=None, progress=None):
         if reason:
             reasons[key][(reason, final)] += 1
     pictures = Counter()
+    # Settled answers, not gaps: the browser with the user's login was told the file is gone or closed.
+    confirmed = Counter()
     sync = settings.get('sync_job', {})
-    selected = sync.get('selected') if sync.get('phase') != 'posts' else None
+    # A resume plan covers the entries of the current task; the library card covers the whole archive.
+    selected = sync.get('selected') if sync.get('phase') != 'posts' and not whole else None
     selected = set(selected) if selected is not None else None
     statuses, materials, mapping = (settings.get(key, {}) for key in ('entry_comments', 'entry_materials', 'media'))
     errors = settings.get('media_errors', {})
@@ -164,6 +167,8 @@ def inventory_snapshot(data, *, cancel=None, progress=None):
         if not path or not (data['folder'] / path).is_file():
             error = settle_browser_answer(url, errors.get(url, {}))
             if error.get('availability') == 'unavailable':
+                # 403 is a refusal; 404/410 means the file is gone. They are told apart, not merged.
+                confirmed['images_refused' if error.get('http_status') == 403 else 'images_missing'] += 1
                 continue
             gap('images', fingerprint(url), error, plain_reason(error) if error else NOT_YET)
     for url, record in settings.get('videos', {}).items():
@@ -200,11 +205,11 @@ def inventory_snapshot(data, *, cancel=None, progress=None):
         status, reason = sections.get(key, (None, None))
         if status not in ('captured', 'source_exhausted'):
             gap('personal', key, None, reason or ('раздел получен частично' if status else NOT_YET))
-    return {'units': units, 'closed': shut, 'reasons': reasons, 'pictures': dict(pictures),
+    return {'units': units, 'closed': shut, 'reasons': reasons, 'pictures': dict(pictures), 'confirmed': dict(confirmed),
             'discovery_complete': bool(settings.get('posts_done')), 'counts': data['counts']}
 
 
-def read_inventory(folder, *, cancel=None, progress=None):
+def read_inventory(folder, *, cancel=None, progress=None, whole=False):
     check_cancel(cancel)
     if progress:
         progress(message='Читаем сохранённый прогресс…', completed=0, total=0)
@@ -216,7 +221,7 @@ def read_inventory(folder, *, cancel=None, progress=None):
             data = metadata_snapshot(store)
         finally:
             store.close()
-        return inventory_snapshot(data, cancel=cancel, progress=progress)
+        return inventory_snapshot(data, cancel=cancel, progress=progress, whole=whole)
     except (OSError, sqlite3.Error, ValueError, TypeError):
         check_cancel(cancel)
         return None

@@ -166,7 +166,7 @@ a.year-mark{display:block;width:fit-content;text-decoration:none}a.year-mark:hov
 .gap{padding:8px 0;border-bottom:1px solid var(--line)}
 .gap:last-child{border-bottom:0}
 .gap-head{display:flex;justify-content:space-between;align-items:baseline;gap:16px}
-.gap-count{font-weight:600;font-variant-numeric:tabular-nums}
+.gap-count{font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}
 .is-closed .gap-count{color:var(--muted)}
 .gap-bar{display:block;height:3px;margin:6px 0 0;border-radius:3px;background:var(--line);overflow:hidden}
 .gap-bar i{display:block;height:100%;background:var(--action)}
@@ -340,3 +340,115 @@ a.year-mark{display:block;width:fit-content;text-decoration:none}a.year-mark:hov
 }
 
 .heading h1{min-width:0;overflow-wrap:anywhere}
+
+/* ── Страница «Архивы» — карточка на журнал, задача — состояние карточки; хронология с рамкой ── */
+.library-heading{align-items:baseline;margin-bottom:22px}
+.library-heading h1{display:flex;align-items:baseline;flex-wrap:wrap;gap:2px 10px}
+.library-count{font-size:var(--type-caption);font-weight:400;letter-spacing:0;color:var(--muted)}
+.shelf{display:grid;gap:16px}
+.shelf-list{list-style:none;margin:0;padding:0;display:grid;gap:16px}
+.shelf-list:empty{display:none}
+.volume{position:relative;min-width:0;margin:0;padding:20px 24px 16px;border:1px solid var(--line);border-radius:10px;background:var(--bg);box-shadow:0 1px 2px rgb(22 30 42 / 5%),0 8px 24px -16px rgb(22 30 42 / 18%)}
+.volume.active{border-color:color-mix(in srgb,var(--action) 38%,var(--line))}
+:root[data-theme=dark] .volume{box-shadow:0 1px 2px rgb(0 0 0 / 30%)}
+.volume.job{margin:0;padding:20px 24px 16px}
+.volume .vol-meter{position:absolute;inset:-1px -1px auto;display:block;width:calc(100% + 2px);height:3px;margin:0;border:0;border-radius:10px 10px 0 0;background:transparent;appearance:none;-webkit-appearance:none;overflow:hidden}
+.volume .vol-meter[hidden]{display:none}
+.volume .vol-meter::-webkit-progress-bar{background:transparent}
+.vol-meter::-webkit-progress-value{background:var(--action);transition:width .4s}
+.vol-meter::-moz-progress-bar{background:var(--action)}
+.volume[data-tone=wait] .vol-meter::-webkit-progress-value{background:var(--warning)}
+.volume[data-tone=wait] .vol-meter::-moz-progress-bar{background:var(--warning)}
+.vol-meter:indeterminate{background:linear-gradient(90deg,transparent,var(--action),transparent) 0 0/40% 100% no-repeat;animation:vol-scan 1.6s linear infinite}
+@keyframes vol-scan{from{background-position:-40% 0}to{background-position:140% 0}}
+.vol-head{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 20px;align-items:start}
+.vol-title{grid-column:1;display:flex;align-items:center;flex-wrap:wrap;gap:4px 12px;min-width:0}
+.vol-name{margin:0;min-width:0;font:600 var(--type-heading)/1.25 var(--sans);letter-spacing:-.02em}
+.vol-name .journal-name,.job .vol-name .journal-name{font:inherit;letter-spacing:inherit;color:var(--ink);overflow-wrap:anywhere}
+.vol-name a.journal-name:hover{text-decoration:underline}
+.vol-stat{display:inline-flex;align-items:center;gap:5px;padding:3px 8px;border-radius:6px;font:400 var(--type-caption)/1.4 var(--sans);letter-spacing:0;color:var(--muted)}
+.vol-stat:hover{color:var(--ink);background:var(--hover);text-decoration:none}
+.vol-stat svg{width:15px;height:15px}
+.vol-kind{font:400 12px/1.4 var(--sans);letter-spacing:0;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:1px 8px}
+.vol-facts{grid-column:1;margin:0;color:var(--muted);font-size:var(--type-caption);font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.vol-actions{grid-column:2;grid-row:1/span 2;display:flex;flex-wrap:wrap;justify-content:flex-end;align-items:center;gap:8px}
+.vol-actions .btn svg{width:16px;height:16px}
+.vol-actions .more>summary{width:36px;height:36px;border-radius:7px}
+.vol-actions .menu{top:42px;min-width:236px;border-radius:9px;padding:6px}
+.menu .menu-title{margin:6px 10px 2px;font-size:11px;font-weight:600;color:var(--muted);letter-spacing:.3px}
+.vol-status{display:flex;align-items:baseline;flex-wrap:wrap;gap:4px 12px;margin:16px 0 0;padding-top:12px;border-top:1px solid var(--line);color:var(--muted);font-size:var(--type-ui)}
+.vol-state{display:inline-flex;align-items:baseline;gap:8px;color:var(--ink);font-weight:500}
+.vol-state .job-dot{transform:translateY(-1px)}
+.vol-status{--tone:var(--action)}
+.vol-status[data-tone=done]{--tone:var(--green)}
+.vol-status[data-tone=wait],.vol-status[data-tone=warn]{--tone:var(--warning)}
+.vol-status[data-tone=error]{--tone:#b8422e}
+:root[data-theme=dark] .vol-status[data-tone=error]{--tone:#f0907a}
+.vol-status[data-tone=warn] .vol-state,.vol-status[data-tone=error] .vol-state{color:var(--tone)}
+.vol-status .job-dot{background:var(--tone)}
+.vol-status[data-tone=run] .job-dot{animation:job-pulse 1.6s ease-in-out infinite}
+.vol-status .job-now{margin:0;color:var(--ink)}
+.vol-status .job-now a{font-weight:500}
+.vol-fresh{color:var(--green);font-weight:500}
+.vol-photos{margin:6px 0 0;color:var(--muted);font-size:var(--type-caption)}
+.vol-status .vol-resume{color:var(--action);font-weight:500}
+.vol-status .vol-resume:hover{text-decoration:underline}
+.vol-meta,.volume .job-meta{margin:6px 0 0;color:var(--muted);font-size:var(--type-caption);font-variant-numeric:tabular-nums}
+.timeline-wait{margin:18px 0 0;padding:18px 16px;border:1px dashed var(--line);border-radius:6px;color:var(--muted);font-size:var(--type-caption);text-align:center}
+.volume>.timeline{margin:18px 0 0}
+.volume .gaps{margin-top:12px;padding-top:0;border-top:0}
+.volume .gaps>summary{width:fit-content;cursor:pointer;color:var(--ink);font-size:var(--type-ui)}
+.volume .gaps>summary .muted{margin-left:6px}
+.volume .gaps[open]>summary{margin-bottom:10px}
+.library-footer{gap:8px 20px}
+.library-footer .storage{margin:0;display:inline-flex;align-items:center;gap:8px;font-size:inherit}
+.library-footer .storage code{color:var(--ink);font:12px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.library-version{margin-left:auto}
+/* Chronology: the map shows the whole history; the frame is the stretch of entries visible below. */
+.timeline{--timeline-veil:rgb(255 255 255 / 50%)}
+:root[data-theme=dark] .timeline{--timeline-veil:rgb(24 27 32 / 55%)}
+.timeline-map{position:relative;height:60px;margin-top:4px;overflow:hidden;border-radius:4px;cursor:pointer;touch-action:pan-y;user-select:none;-webkit-user-select:none}
+.timeline-map .timeline-overview{position:absolute;inset:0;width:100%;height:100%;margin:0;cursor:inherit}
+.timeline-window{position:absolute;top:0;bottom:0;min-width:8px;border:1.5px solid var(--ink);border-radius:3px;box-shadow:0 0 0 2000px var(--timeline-veil);cursor:grab;outline-offset:2px}
+.timeline-window:active{cursor:grabbing}
+.timeline-years{position:relative;height:20px;margin-top:3px;overflow:hidden}
+.timeline-years .timeline-year{position:absolute;top:0;width:auto;min-height:0;transform:translateX(-50%);padding:0 3px;border:0;border-radius:3px;background:none;font-size:11px;line-height:20px;color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap;cursor:pointer}
+.timeline-years .timeline-year:hover:not(:disabled){color:var(--ink);background:var(--hover)}
+.timeline-years .timeline-year:disabled{opacity:.55;cursor:default}
+.timeline-years .timeline-year.in{color:var(--ink)}
+/* Labels that do not fit stay reachable from the keyboard and show up on focus. */
+.timeline-years .timeline-year.crowded{opacity:0;pointer-events:none}
+.timeline-years .timeline-year.crowded:focus-visible{opacity:1;z-index:2;background:var(--bg);box-shadow:0 0 0 1px var(--line)}
+.timeline-hint{margin:4px 0 0;font-size:12px;color:var(--muted)}
+.timeline-detail-head{margin-top:14px;align-items:center;flex-wrap:wrap}
+.timeline-range{display:flex;align-items:baseline;flex-wrap:wrap;gap:2px 12px}
+.timeline-range strong{display:inline;font-size:15px;font-weight:600;font-variant-numeric:tabular-nums}
+.timeline-range .small{display:inline;font-size:12.5px}
+.timeline-nav{flex-wrap:wrap;gap:2px}
+.timeline-nav .icon{width:32px;height:32px;font-size:16px;color:var(--muted)}
+.timeline-scale{display:inline-flex;margin-left:6px;border:1px solid var(--line);border-radius:6px;overflow:hidden}
+.timeline-scale button{border:0;background:none;padding:3px 9px;font-size:12px;color:var(--muted)}
+.timeline-scale button[aria-pressed=true]{background:var(--hover);color:var(--ink)}
+.timeline-help summary{display:grid;place-items:center;width:26px;height:26px;margin-left:6px}
+/* The help opens from the right edge of the chronology, wherever the «?» wrapped to. */
+.timeline-detail-head{position:relative}
+.timeline-detail-head .timeline-help{position:static}
+.timeline-detail-head .timeline-help p{right:0;left:auto;top:calc(100% + 4px);width:min(340px,100%);box-shadow:0 10px 28px -12px rgb(0 0 0 / 35%)}
+.timeline-detail .timeline-viewport{margin-top:6px}
+.timeline-legend{margin-top:8px}
+.timeline-legend[hidden]{display:none}
+@media (prefers-reduced-motion:reduce){.vol-status[data-tone=run] .job-dot,.volume .vol-meter:indeterminate{animation:none}.volume .vol-meter::-webkit-progress-value{transition:none}}
+@media (max-width:760px){
+  .volume,.volume.job{padding:16px 16px 14px}
+  .vol-head{grid-template-columns:minmax(0,1fr)}
+  .vol-title{padding-right:40px}
+  .vol-name{font-size:var(--type-subtitle)}
+  .vol-facts{grid-row:2}
+  .vol-actions{grid-column:1;grid-row:3;justify-content:stretch;margin-top:10px}
+  .vol-actions .btn{flex:1 1 max-content}
+  .vol-actions .more{position:absolute;top:10px;right:8px}
+  .timeline-map{height:48px}
+  .timeline-wide{display:none}
+  .library-version{margin-left:0}
+}
+/* ── /Страница «Архивы» ── */

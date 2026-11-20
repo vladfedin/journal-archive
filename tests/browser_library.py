@@ -118,9 +118,9 @@ def main():
                 assert page.evaluate('testTime.overviewBins.slice(0,Math.floor(testTime.overviewBins.length*.74)).every(b=>b.count===0)')
                 assert page.evaluate('testTime.overviewBins.reduce((n,b)=>n+b.count,0)') == 60
                 page.screenshot(path='/tmp/journal-timeline-time.png', full_page=True)
-                page.locator('.timeline-scale').select_option('posts')
+                page.locator('.timeline-scale [data-scale=posts]').click()
                 assert page.evaluate('testTime.overviewBins.slice(0,Math.floor(testTime.overviewBins.length*.5)).some(b=>b.count>0)')
-                page.locator('.timeline-scale').select_option('time')
+                page.locator('.timeline-scale [data-scale=time]').click()
                 assert page.evaluate('testTime.indexAt(.1)') == 0
                 assert not errors, errors
                 browser.close()
