@@ -139,12 +139,8 @@ function renderInspector(){
  selectedPosts.forEach(p=>{const b=postLink(p,'','',{'data-open':p.id,'data-gap':p.gap,'data-comments':p.comments,'data-expected':p.commentsExpected,'aria-label':`${validDate(p.date)?dateLabel(p.date):'Без даты'} · ${p.title} · ${postCommentLabel(p)}`,'title':`${p.date} · ${p.title} · ${postCommentLabel(p)}${issueLabel(p)?' · '+issueLabel(p):''}`});b.style.flex='0 0 5px';b.style.height=`${5+Math.log1p(p.comments)/Math.log1p(commentPeak)*29}px`;comb.append(b);});comb.hidden=!selectedPosts.length;
  const missing=missingSelected(),note=$('selection-note');
  note.hidden=!missing;
- note.replaceChildren();
- if(missing){
-  const link=el('a','',`Не получено записей: ${missing}`);
-  link.href='report.html';
-  note.append(link);
- }
+ const message=note.querySelector('a')||note;
+ message.textContent=missing?`Не получено записей: ${missing}`:'';
 const feed=$('period-feed'),s=state.selection;feed.hidden=!selectedPosts.length||['week','weekday','undated'].includes(s.type);feed.href='index.html?'+new URLSearchParams({view:'full',...(s.type==='day'?{date:s.key}:s.type==='month'?{month:`${state.year}-${String(s.month+1).padStart(2,'0')}`}:{year:state.year})});
  renderList();$('post-list').scrollTop=0;
  $('mobile-jump').hidden=state.selection.type==='year';$('mobile-jump').textContent=`${postsLabel(selectedPosts.length)} ↓`;

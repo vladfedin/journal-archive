@@ -986,7 +986,9 @@ def make_server(output: Path, port=8787):
                             elif target.name == 'index.html':
                                 html = preview_index(store)
                             elif target.name == 'calendar.html':
-                                html = ENV.get_template('calendar.html').render(user=store.get('username'), report={'created_at': store.get('started_at', '')})
+                                html = ENV.get_template('calendar.html').render(
+                                    user=store.get('username'), report={'created_at': store.get('started_at', '')},
+                                    report_pending=not (store.folder / 'report.html').is_file())
                             else:
                                 html = ENV.get_template("timeline.html").render(user=store.get("username"), report={"created_at": store.get("started_at", "")}, source="/api/timeline/" + relative.parts[0])
                         finally:

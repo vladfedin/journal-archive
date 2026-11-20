@@ -80,6 +80,12 @@ def test_first_export_can_show_a_feed_before_any_html_is_built(local_server):
             assert 'Полученный текст' in session.get(root + 'assets/posts/1.js').text
             assert '2024-02-29' in session.get(root + 'assets/calendar-data.js').text
             assert session.get(root + 'assets/calendar.js').status_code == 200
+            live_calendar = session.get(root + 'calendar.html')
+            assert 'id="selection-note"' in live_calendar.text
+            assert 'href="report.html"' not in live_calendar.text
+            (folder / 'report.html').write_text('<h1>Отчёт</h1>', encoding='utf-8')
+            assert 'href="report.html"' in session.get(root + 'calendar.html').text
+            assert session.get(root + 'report.html').status_code == 200
             assert session.get(root + 'assets/posts/999.js').status_code == 404
         assert not (folder / 'index.html').exists()
     finally:
