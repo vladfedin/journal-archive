@@ -451,6 +451,7 @@ class SyncExporter(Exporter):
                     store.set("journal_id", self.client.journal_id)
                     if getattr(self.client, "userpics", None) is not None:
                         store.set("userpic_catalog", self.client.userpics)
+                self.refresh_feed_pin(before_posts=True)
                 self.refresh_calendar()
                 failures = []
                 def stage(operation, label):
@@ -474,9 +475,9 @@ class SyncExporter(Exporter):
                         failures.append(str(exc))
                 if store.db.execute("SELECT 1 FROM days WHERE done!=1").fetchone():
                     self.checkpoint(phase="posts")
-                self.refresh_feed_pin()
                 text_processed = True
                 self.material_stage(personal)
+                self.refresh_feed_pin(before_posts=False)
                 error = " ".join(failures) or None
             except Cancelled as exc:
                 error, cancelled = str(exc), True

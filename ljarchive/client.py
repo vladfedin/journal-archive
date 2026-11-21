@@ -573,18 +573,21 @@ class LiveJournalClient:
             raw = self._request('GET', path, base_url=base, headers=headers, attempts=1)
             return page_pin(raw, self.user, self.journal_id, self.account, requested_home=True)
 
-        signed = ready(self, base + '/')
-        headers = {} if signed else {'Cookie': 'ljsession=' + self._cookie}
-        try:
-            did = read('/', headers)
-        except AuthenticationRequired:
-            if signed or not self.ensure_web_session():
-                return None
-            headers = {}
-            did = read('/', headers)
-        if did is None and (self.budget.limit is None or self.budget.used < self.budget.limit):
-            did = read('/?style=mine', headers)
-        return did
+        home = base + '/'
+        signed = ready(self, home)
+        for path in ('/', '/?style=mine'):
+            if self.budget.limit is not None and self.budget.used >= self.budget.limit:
+                break
+            try:
+                did = read(path, {} if signed else {'Cookie': 'ljsession=' + self._cookie})
+            except AuthenticationRequired:
+                if signed or not self.ensure_web_session(home):
+                    return None
+                signed = True
+                did = read(path, {})
+            if did is not None:
+                return did
+        return None
 
     def web_deleted_threads(self, ditemid, dtalkid):
         from .comment_page import deleted_threads

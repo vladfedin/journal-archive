@@ -397,6 +397,42 @@ def test_community_pin_can_use_readers_layout(monkeypatch):
         client.close()
 
 
+def test_reader_layout_pin_retries_with_web_session_for_journal(monkeypatch):
+    client, _ = community_client(monkeypatch)
+    try:
+        client.login()
+        home = 'https://bookclub.livejournal.com/'
+        calls = []
+        def request(method, url, **kwargs):
+            calls.append(url)
+            if url == home:
+                return Response(content=community_home().replace(b'Expressive', b'Air'))
+            if kwargs['headers'].get('Cookie'):
+                return Response(content=community_home(account='guest'))
+            return Response(content=community_home())
+        monkeypatch.setattr(client.session, 'request', request)
+        monkeypatch.setattr(client, 'ensure_web_session', lambda url: url == home)
+        assert client.journal_feed_pin() == 263
+        assert calls == [home, home + '?style=mine', home + '?style=mine']
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize('full', [True, False])
+def test_pin_is_saved_even_if_export_stops_after_posts(tmp_path, monkeypatch, full):
+    client, _ = community_client(monkeypatch)
+    client.budget.limit = None
+    exporter = (SyncExporter(tmp_path, client, Scope(), images=False) if full
+                else Exporter(tmp_path, client, entry_limit=2, images=False))
+    def stop():
+        raise ExportError('Comments unavailable')
+    monkeypatch.setattr(exporter, 'recent_comments', stop)
+    report = exporter.run()
+    assert report['status'] == 'partial'
+    rows = json.loads((tmp_path / 'assets/feed-data.js').read_text()[len('window.ARCHIVE='):-1])['entries']
+    assert (rows[0]['id'], rows[0]['sticky']) == (1, True)
+
+
 def test_repeated_calendar_read_uses_session_snapshot(monkeypatch):
     client, wire = community_client(monkeypatch)
     client.login()

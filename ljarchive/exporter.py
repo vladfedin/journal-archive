@@ -110,11 +110,14 @@ class Exporter:
             self._media.load_state(self.store)
         return self._media
 
-    def refresh_feed_pin(self):
+    def refresh_feed_pin(self, *, before_posts):
         source = getattr(self.client, 'source', {}) or {}
         if source.get('access', {}).get('status') != 'verified' or not hasattr(self.client, 'journal_feed_pin'):
             return
         budget = self.client.budget
+        # Limited runs spend their requests on archive content first.
+        if before_posts != (budget.limit is None):
+            return
         if budget.limit is not None and budget.used >= budget.limit:
             return
         self.update('posts', 'Проверяем верхнюю запись журнала…')
@@ -768,6 +771,7 @@ class Exporter:
                         self.retry_missing(operation, label)
                     except IncompleteData as exc:
                         failures.append(str(exc))
+                self.refresh_feed_pin(before_posts=True)
                 stage(self.posts, "записи")
                 if self.entry_limit is not None:
                     stage(self.recent_comments, "комментарии")
@@ -781,9 +785,9 @@ class Exporter:
                         failures.extend(reasons)
                 except IncompleteData as exc:
                     failures.append(str(exc))
-                self.refresh_feed_pin()
                 text_processed = True
                 self.material_stage(personal)
+                self.refresh_feed_pin(before_posts=False)
                 error = " ".join(failures) or None
             except Cancelled as exc:
                 error, cancelled = str(exc), True
