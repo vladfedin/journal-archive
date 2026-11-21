@@ -242,7 +242,8 @@ class BrowserBridge:
                 # The login window remains interactive. A download target only reads
                 # an image: unexpected HTML must not start scripts, workers or sockets
                 # outside Fetch interception and the request budget.
-                self._call('Emulation.setScriptExecutionDisabled', {'value': True}, session)
+                # The first renderer command also waits for the new tab to start.
+                self._call('Emulation.setScriptExecutionDisabled', {'value': True}, session, timeout=30)
                 self._call('Network.enable', {'maxTotalBufferSize': 24 * 1024 * 1024,
                                               'maxResourceBufferSize': 22 * 1024 * 1024}, session)
                 self._call('Network.setCacheDisabled', {'cacheDisabled': True}, session)
