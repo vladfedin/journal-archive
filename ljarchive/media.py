@@ -392,7 +392,7 @@ class Media:
                                          'http_status': None, 'at': int(time.time())})
                 self.budget.progress(phase='materials', message='Получаем изображение…')
                 self.budget.event("request", category, current, attempt=attempt + 1, max_attempts=ATTEMPTS,
-                                  request_url=safe_url(current))
+                                  method='GET', request_url=safe_url(current))
                 requests_made += 1
                 if attempt:
                     self.budget.progress(phase="materials", message=f"Загрузка изображения · попытка {attempt + 1} из {ATTEMPTS}")
@@ -468,7 +468,7 @@ class Media:
                     atomic_write(self.folder / path, b"".join(chunks))
                     self.mapping[url] = path
                     self.errors.pop(url, None)
-                    self.budget.event("success", category, current)
+                    self.budget.event("success", category, current, http_status=http_status, bytes=size)
                     return path
             if trusted_source and any(web_auth_host(address) for address, _ in visited):
                 raise WebLoginRequired()

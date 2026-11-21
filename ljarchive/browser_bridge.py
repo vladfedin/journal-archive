@@ -293,7 +293,7 @@ class BrowserBridge:
                         trace.append({'url': safe_url(address), 'transport': 'browser', 'http_status': None,
                                       'at': int(time.time())})
                         budget.progress(phase='running', message='Браузер: ' + safe_url(address))
-                        budget.event('request', category, address, transport='browser', request_url=safe_url(address))
+                        budget.event('request', category, address, method=p.get('request', {}).get('method'), transport='browser', request_url=safe_url(address))
                         self._send('Fetch.continueRequest', {'requestId': request_id}, session)
                         self.last_request = time.monotonic()
                     elif method == 'Network.requestWillBeSent' and p.get('redirectResponse'):

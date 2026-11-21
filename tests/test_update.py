@@ -46,6 +46,7 @@ def test_select_only_new_stable_matching_artifact():
 
 
 class Response:
+    status_code = 200
     def __init__(self, payload, meta=None):
         self.payload, self.meta, self.is_redirect = payload, meta, False
 

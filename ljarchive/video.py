@@ -366,7 +366,7 @@ class VideoArchive:
             from .browser_bridge import safe_url
             trace = {'url': safe_url(current), 'transport': 'http', 'http_status': None, 'stage': self.stage}
             self.trace.append(trace)
-            budget.event('request', 'videos', current, request_url=safe_url(current), attempt=attempt + 1, max_attempts=6)
+            budget.event('request', 'videos', current, method=method, request_url=safe_url(current), attempt=attempt + 1, max_attempts=6)
             try:
                 r = self.session.request(method, current, data=data, headers=dict(request.headers),
                                          stream=True, timeout=(10, 20), allow_redirects=False)

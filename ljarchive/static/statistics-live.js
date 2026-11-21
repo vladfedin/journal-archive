@@ -10,7 +10,7 @@
   if (!match || !['127.0.0.1','localhost'].includes(location.hostname) || match[1] === '_demo') return;
   async function refresh() {
     try {
-      const response = await fetch('/api/statistics/' + match[1] + (discussions ? '/discussions' : '') + '?version=' + encodeURIComponent(version), {cache:'no-store'});
+      const response = await OperationLog.fetchLocal(status,'/api/statistics/' + match[1] + (discussions ? '/discussions' : '') + '?version=' + encodeURIComponent(version), {cache:'no-store'});
       if (!response.ok) throw new Error();
       const state = await response.json();
       if (state.data) {

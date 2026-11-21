@@ -15,6 +15,7 @@ from tempfile import TemporaryFile
 from urllib.parse import unquote, urlsplit, parse_qs
 
 from . import __version__
+from .activity import record_activity
 from .client import Cancelled, ExportError, RequestBudget, username
 from .contact import has_contact_question, send_message
 from .demo import create_demo
@@ -64,6 +65,8 @@ class Jobs:
         self.formatting = set()
         from .sessions import Sessions
         self.sessions = Sessions()
+        from .communities import CommunityLookups
+        self.community_lookups = CommunityLookups()
         from .live_statistics import LiveStatistics
         self.statistics_cache = LiveStatistics()
         from .search_library import SearchLibrary
@@ -275,10 +278,11 @@ class Jobs:
             saved_report = json.loads(path.read_text(encoding='utf-8'))
             if saved_report.get('format_version') == ARCHIVE_FORMAT_VERSION and saved_report.get('calendar_version') == 2 and saved_report.get('gallery_version') == 4:
                 return None
-            self.preparations[slug] = {'phase': 'preparing', 'message': 'Чтение архива', 'completed': 0, 'total': 0}
+            self.preparations[slug] = {'events': [], 'started_at': time.time(), 'phase': 'preparing', 'message': 'Чтение архива', 'completed': 0, 'total': 0}
             self.formatting.add(slug)
             def update(**values):
                 with self.preparation_lock:
+                    record_activity(self.preparations[slug], {'activity': {'kind': 'step', 'message': values.get('message','')}})
                     self.preparations[slug].update({k: v for k, v in values.items() if k != 'phase'})
             def worker():
                 try:
@@ -396,10 +400,10 @@ class Jobs:
         with self.lock:
             self.tick_activity()
             previous = self.state.get("phase")
+            record_activity(self.state, values)
             event = values.pop('activity', None)
             if event:
                 self.state['last_activity'] = event
-                self.state['events'] = (self.state.get('events', []) + [event])[-30:]
                 if event['kind'] == 'success':
                     self.state['last_success_at'] = event['at']
                 if event['kind'] in ('response', 'success', 'redirect') or (event['kind'] == 'failure' and event.get('http_status')):
@@ -408,10 +412,6 @@ class Jobs:
                     self.state['request'] = event
                     if previous in ('waiting', 'retrying'):
                         values.update(phase='loading', message='Запрос отправлен. Получаем данные…')
-            if values.get('phase') == 'waiting':
-                info = values.get('wait', {})
-                if info != self.state.get('wait') or previous != 'waiting':
-                    self.state['events'] = (self.state.get('events', []) + [{'kind': 'wait', 'at': time.time(), **info}])[-30:]
             if "phase" in values and values["phase"] != previous:
                 for key in ("completed", "total", "retry_at", "wait"):
                     self.state.pop(key, None)
@@ -919,6 +919,11 @@ def make_server(output: Path, port=8787):
                 return
             if not self.authorized():
                 return self.json({"error": "Сначала откройте главную страницу приложения."}, 403)
+            if path.startswith('/api/communities/'):
+                try:
+                    return self.json(jobs.community_lookups.status(path.rsplit('/', 1)[1]))
+                except ExportError as exc:
+                    return self.json({'error': str(exc)}, 404)
             if path == '/api/search':
                 try:
                     params = {k:v[0] for k,v in parse_qs(urlsplit(self.path).query, max_num_fields=16).items()}
@@ -1093,7 +1098,7 @@ def make_server(output: Path, port=8787):
                     return
                 if len(relative.parts) == 3 and relative.parts[1] == 'assets' and relative.parts[2] in {'statistics.js', 'statistics-live.js', 'discussions.js'}:
                     return self.file(ROOT / 'static' / relative.parts[2])
-                if len(relative.parts) == 3 and relative.parts[1] == "assets" and relative.parts[2] in {"archive.css", "typography.css", "archive.js", "theme.js", "common.js", "timeline.js", "calendar.js", "calendar.css", "material-actions.js", "gallery.js", "profile.js", "favicon.svg", "favicon.ico"}:
+                if len(relative.parts) == 3 and relative.parts[1] == "assets" and relative.parts[2] in {"archive.css", "typography.css", "archive.js", "theme.js", "common.js", "operation-log.js", "timeline.js", "calendar.js", "calendar.css", "material-actions.js", "gallery.js", "profile.js", "favicon.svg", "favicon.ico"}:
                     if active or not target.exists():
                         return self.file(ROOT / "static" / relative.parts[2])
                 live_data = len(relative.parts) == 3 and relative.parts[1] == 'assets' and target.name in ('search-data.js', 'feed-data.js', 'calendar-data.js')
@@ -1225,14 +1230,18 @@ def make_server(output: Path, port=8787):
                     return self.json(jobs.deletion_target(data.get('archive')))
                 if self.path == '/api/archives/delete':
                     return self.json(jobs.delete_archive(data.get('archive'), data.get('token')))
+                if self.path == '/api/communities/cancel':
+                    return self.json(jobs.community_lookups.status(data.get('id'), cancel=True))
                 if self.path == '/api/communities':
                     from .client import LiveJournalClient
                     account, password = data.get('username'), data.pop('password', None)
                     if not isinstance(account, str) or not isinstance(password, str) or not 0 < len(password) <= 1024:
                         raise ExportError('Введите имя пользователя и пароль ЖЖ.')
+                    if data.get("background") is True:
+                        return self.json(jobs.community_lookups.start(account, password), 202)
                     client = LiveJournalClient(account, password, delay=1, max_attempts=1, budget=RequestBudget(6))
                     try:
-                        communities = client.managed_communities()
+                        communities = client.managed_communities(confirm_empty=True)
                     finally:
                         client.close()
                     return self.json({'communities': communities})

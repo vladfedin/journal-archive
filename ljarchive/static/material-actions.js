@@ -5,8 +5,9 @@ document.addEventListener('DOMContentLoaded', () => {
   const root=match?'/archive/'+encodeURIComponent(match[1])+'/':'';
   const seen=new WeakSet();
   const el=(tag,cls,text)=>{const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n;};
-  async function api(path,payload){
-    const response=await fetch(path,{method:payload?'POST':'GET',cache:'no-store',headers:payload?{'Content-Type':'application/json'}:{},body:payload?JSON.stringify(payload):undefined});
+  async function api(path,payload,status){
+    const options={method:payload?'POST':'GET',cache:'no-store',headers:payload?{'Content-Type':'application/json'}:{},body:payload?JSON.stringify(payload):undefined};
+    const response=status?await OperationLog.fetchLocal(status,path,options):await fetch(path,options);
     const data=await response.json();if(!response.ok)throw Error(data.error||'Не удалось выполнить запрос');return data;
   }
   const previousTasks=onlineApp?api('/api/materials/'+encodeURIComponent(match[1])).then(r=>r.tasks||[]).catch(()=>[]):Promise.resolve([]);
@@ -34,7 +35,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const evidence=el('details','material-evidence');evidence.hidden=true;
     const meter=el('progress','material-progress');meter.hidden=true;meter.setAttribute('aria-label','Загрузка файла');
     controls.append(button,browser,cancel,status,meter,evidence);slot.append(controls);
-    let taskId=null,inserted=false,auth=null,browserConfirmed=false,checkBrowser=false;
+    let started=false,taskId=null,inserted=false,auth=null,browserConfirmed=false,checkBrowser=false;
     const size=value=>(value/1000000).toLocaleString('ru-RU',{maximumFractionDigits:1})+' МБ';
     const stages={source:'Источник',access:'Доступ',download:'Скачивание',file:'Файл',index:'Архив'};
     function details(error){
@@ -78,6 +79,7 @@ document.addEventListener('DOMContentLoaded', () => {
       else if(state.total>0)text+=` · ${state.completed||0} / ${state.total}`;
       meter.hidden=state.progress_unit!=='bytes'||state.phase!=='running';meter.max=state.total||1;if(state.total)meter.value=state.completed||0;else meter.removeAttribute('value');
       if(state.requests_used)text+=` · ${state.requests_used}${state.request_limit?' / '+state.request_limit:''} запросов`;
+      window.OperationLog?.bind(status,state);
       status.textContent=text;
       const done=['complete','error','needs_auth','needs_browser','cancelled'].includes(state.phase);
       button.disabled=!done;browser.disabled=!done;cancel.hidden=done||inserted;
@@ -101,14 +103,14 @@ document.addEventListener('DOMContentLoaded', () => {
       catch(error){status.textContent=error.message;button.disabled=false;button.textContent='Повторить';cancel.hidden=true;}
     }
     async function start(password,transport){
-      button.disabled=true;browser.disabled=true;status.textContent='В очереди…';
+      started=true;button.disabled=true;browser.disabled=true;status.textContent='В очереди…';
       const payload={archive:match[1],entry_id:eid,kind,value};if(password)payload.password=password;
       if(transport){payload.transport=transport;payload.confirmed=browserConfirmed;payload.open_browser=checkBrowser;auth?.remove();auth=null;}
-      try{const state=await api('/api/material',payload);taskId=state.id;if(!show(state))setTimeout(poll,600);}
+      try{const state=await api('/api/material',payload,status);taskId=state.id;if(!show(state))setTimeout(poll,600);}
       catch(error){status.textContent=error.message;button.disabled=false;browser.disabled=false;}
       finally{payload.password='';}
     }
-    previousTasks.then(tasks=>{if(taskId)return;const previous=tasks.filter(t=>t.entry_id===eid&&t.kind===kind&&t.value===value).at(-1);if(previous){taskId=previous.id;if(!show(previous))setTimeout(poll,300);}});
+    previousTasks.then(tasks=>{if(started||taskId)return;const previous=tasks.filter(t=>t.entry_id===eid&&t.kind===kind&&t.value===value).at(-1);if(previous){taskId=previous.id;if(!show(previous))setTimeout(poll,300);}});
     button.onclick=()=>start();
     browser.onclick=()=>start(null,'browser');
     try{details(JSON.parse(slot.dataset.materialError||'null'));}catch{}

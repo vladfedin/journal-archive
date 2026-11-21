@@ -23,7 +23,7 @@ from .gaps import closed
 from .storage import Store, atomic_write, dumps
 
 # Bump when previously generated offline pages or assets need rebuilding.
-ARCHIVE_FORMAT_VERSION = "0.9.0.10"
+ARCHIVE_FORMAT_VERSION = "0.9.0.11"
 ROOT = Path(__file__).parent
 ENV = Environment(loader=FileSystemLoader(ROOT / "templates"), autoescape=select_autoescape(["html"]))
 TAGS = frozenset("p br div span a b strong i em u s del blockquote pre code ul ol li h1 h2 h3 h4 h5 h6 hr img video table thead tbody tr td th caption dl dt dd sub sup details summary figure figcaption".split())
@@ -453,7 +453,7 @@ def build_archive(store: Store, report: dict, *, images=False, userpics=False, c
     comment_ids = {int(c["id"]) for c in comments}
     (folder / "assets").mkdir(exist_ok=True)
     if update_assets:
-        for asset in ("archive.css", "typography.css", "archive.js", "theme.js", "common.js", "favicon.svg", "favicon.ico", "timeline.js", "statistics.js", "statistics-live.js", "calendar.js", "calendar.css", "material-actions.js", "gallery.js", "profile.js"):
+        for asset in ("archive.css", "typography.css", "archive.js", "theme.js", "common.js", "operation-log.js", "favicon.svg", "favicon.ico", "timeline.js", "statistics.js", "statistics-live.js", "calendar.js", "calendar.css", "material-actions.js", "gallery.js", "profile.js"):
             shutil.copyfile(ROOT / "static" / asset, folder / "assets" / asset)
             changed_assets.append('assets/' + asset)
     search, summaries = [], []

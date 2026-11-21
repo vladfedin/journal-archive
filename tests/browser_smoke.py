@@ -202,9 +202,36 @@ def main():
                 expect(page.locator('#submit-export')).to_be_disabled()
                 page.locator('#username').fill('manager')
                 page.locator('#password').fill('browser-test-secret')
-                page.route('**/api/communities', lambda r: r.fulfill(json={'communities': ['bookclub', 'readers']}))
-                page.locator('#load-communities').click()
-                expect(page.locator('#journal option')).to_have_count(3)
+                from test_sources import CommunityWire
+                from test_limited_export import Response
+                wire = CommunityWire()
+                answer = threading.Event()
+                initialize = LiveJournalClient.__init__
+                def picker_client(client, *args, **kwargs):
+                    initialize(client, *args, **kwargs)
+                    def send(method, url, **options):
+                        if url.endswith('/community/manage.bml'):
+                            assert answer.wait(12)
+                            return Response(content=b'<a href="/community/settings.bml?authas=bookclub">A</a>'
+                                b'<a href="/community/settings.bml?authas=readers">B</a>')
+                        return wire.request(method, url, **options)
+                    client.session.request = send
+                with patch.object(LiveJournalClient, '__init__', picker_client):
+                    page.locator('#load-communities').click()
+                    page.locator('#community-status').press('Enter')
+                    log = page.locator('dialog.operation-log')
+                    try:
+                        expect(log).to_be_visible()
+                        expect(log.locator('li').last).to_contain_text('GET · https://www.livejournal.com/community/manage.bml', timeout=10000)
+                        expect(log.locator('p')).to_contain_text('Ожидаем ответ')
+                        expect(log).not_to_contain_text('browser-test-secret')
+                    finally:
+                        answer.set()
+                    expect(log.locator('li').last).to_contain_text('HTTP 200')
+                    expect(log.locator('p')).to_contain_text('Найдено сообществ: 2')
+                    page.keyboard.press('Escape')
+                    expect(page.locator('#export-dialog')).to_be_visible()
+                    expect(page.locator('#journal option')).to_have_count(3)
                 expect(page.locator('#submit-export')).to_be_disabled()
                 page.locator('#journal').select_option('readers')
                 expect(page.locator('#submit-export')).to_be_enabled()

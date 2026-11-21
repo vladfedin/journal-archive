@@ -206,34 +206,46 @@ class LiveJournalClient:
         self.userpics = None
         self._reaction_token = None
         self.progress = progress or (lambda **kwargs: None)
+        self.deadline = None
         self.max_attempts = max_attempts
         self.not_before = 0.0
         self.save_cooldown = lambda deadline: None
 
     def check(self):
+        if self.deadline and time.monotonic() >= self.deadline:
+            raise ExportError("Истекло время поиска сообществ. Попробуйте ещё раз позже.")
         if self.cancel.is_set():
             raise Cancelled("Выгрузка остановлена. Уже полученные данные сохранены; можно продолжить после повторного входа.")
 
     def _wait(self, seconds: float):
+        self.check()
         deadline = time.monotonic() + max(0, seconds)
+        if self.deadline and deadline >= self.deadline:
+            raise ExportError("Ожидание превышает время поиска сообществ. Попробуйте позже.")
         while time.monotonic() < deadline:
             if self.cancel.wait(min(30, deadline - time.monotonic())):
                 self.check()
 
     def _defer(self, seconds, **details):
+        if self.deadline and details.get("attempt") == details.get("max_attempts"):
+            return  # This foreground operation has no further retry to schedule.
         self.not_before = max(self.not_before, time.time() + seconds)
         self.budget.not_before = self.not_before
         self.budget.describe_wait(self.not_before, **details)
         self.save_cooldown(self.not_before)
         self.budget.announce_wait(self.progress)
 
-    def _request(self, method: str, path: str, *, base_url=BASE_URL, category="livejournal", accepted_statuses=(200,), attempts=None, **kwargs) -> bytes:
+    def _request(self, method: str, path: str, *, base_url=BASE_URL, category="livejournal", accepted_statuses=(200,), attempts=None, rpc_method=None, **kwargs) -> bytes:
         user_directory = (base_url == 'https://users.livejournal.com'
                           and path == f'/{self.user}/profile/subslist/'
                           and (self.user.startswith('_') or self.user.endswith('_')))
         if not user_directory and base_url not in (BASE_URL, LIKES_URL, f"https://{self.user.replace('_', '-')}.livejournal.com"):
             raise ExportError("Неподдерживаемый адрес сервиса ЖЖ.")
         attempts = self.max_attempts if attempts is None else attempts
+        from .browser_bridge import safe_url
+        endpoint = {'method': method, 'request_url': safe_url(base_url + path)}
+        if rpc_method:
+            endpoint['rpc_method'] = rpc_method
         for attempt in range(attempts):
             self.check()
             if self.budget.limit is not None and self.budget.used >= self.budget.limit:
@@ -245,13 +257,17 @@ class LiveJournalClient:
             if attempt:
                 self.progress(phase="retrying", message=f"Повтор запроса к ЖЖ · попытка {attempt + 1} из {attempts}")
             self.budget.consume(category)
-            self.budget.event("request", category, base_url, attempt=attempt + 1, max_attempts=attempts)
+            self.budget.event("request", category, base_url, **endpoint, attempt=attempt + 1, max_attempts=attempts)
             self._last_request = time.monotonic()
             try:
-                with self.session.request(method, base_url + path, timeout=(15, 60),
+                timeout = (15, 60)
+                if self.deadline:
+                    left = max(.1, self.deadline - time.monotonic())
+                    timeout = (min(8, left), min(12, left))
+                with self.session.request(method, base_url + path, timeout=timeout,
                                           allow_redirects=False, stream=True, **kwargs) as response:
                     if response.status_code >= 400:
-                        self.budget.event('failure', category, base_url, reason='http', http_status=response.status_code)
+                        self.budget.event('failure', category, base_url, **endpoint, reason='http', http_status=response.status_code)
                     if response.status_code in (429, 500, 502, 503, 504):
                         self._defer(backoff(attempt, response.headers.get("Retry-After"), limited=response.status_code == 429),
                                     reason="http", category=category, url=base_url, http_status=response.status_code,
@@ -265,10 +281,11 @@ class LiveJournalClient:
                     if response.status_code in (401, 403):
                         raise AuthenticationRequired("ЖЖ отказал в доступе (HTTP 401/403). Проверьте вход в браузере; при ограничении запросов продолжите позже.", status=response.status_code)
                     if 300 <= response.status_code < 400 and response.status_code not in accepted_statuses:
-                        self.budget.event('failure', category, base_url, reason='redirects', http_status=response.status_code)
+                        self.budget.event('failure', category, base_url, **endpoint, reason='redirects', http_status=response.status_code)
                         raise AuthenticationRequired("ЖЖ перенаправил запрос. Возможно, требуется вход или подтверждение в браузере.", status=response.status_code)
                     if response.status_code not in accepted_statuses:
                         raise HTTPError(response.status_code)
+                    self.budget.event('response', category, base_url, **endpoint, http_status=response.status_code)
                     chunks, size = [], 0
                     for chunk in response.iter_content(65536):
                         self.check()
@@ -276,14 +293,16 @@ class LiveJournalClient:
                         if size > 64 * 1024 * 1024:
                             raise ExportError("Ответ ЖЖ превышает 64 МБ. Выгрузка остановлена без потери прогресса.")
                         chunks.append(chunk)
-                    self.budget.event("success", category, base_url)
+                    self.budget.event("success", category, base_url, **endpoint, http_status=response.status_code, bytes=size)
                     if attempt:
                         self.progress(phase="loading", message="Ответ ЖЖ получен. Продолжаем загрузку.")
                     return b"".join(chunks)
             except requests.exceptions.SSLError as exc:
-                self.budget.event('failure', category, base_url, reason='tls')
+                self.budget.event('failure', category, base_url, **endpoint, reason='tls')
                 raise ExportError("Не удалось проверить TLS-сертификат ЖЖ. Проверьте часы и сертификаты системы; проверка HTTPS не отключалась.") from exc
             except (requests.Timeout, requests.ConnectionError, requests.exceptions.ChunkedEncodingError) as exc:
+                self.budget.event('failure', category, base_url, **endpoint,
+                                  reason='timeout' if isinstance(exc, requests.Timeout) else 'connection')
                 self._defer(backoff(attempt), reason="timeout" if isinstance(exc, requests.Timeout) else "connection",
                             category=category, url=base_url, attempt=attempt + 1, max_attempts=attempts)
                 if attempt == attempts - 1:
@@ -293,13 +312,15 @@ class LiveJournalClient:
     def _rpc(self, method: str, args: dict | None = None) -> dict:
         body = xmlrpc.client.dumps(() if args is None else (args,),
                                    methodname="LJ.XMLRPC." + method, allow_none=False).encode("utf-8")
-        data = self._request("POST", "/interface/xmlrpc", data=body, headers={"Content-Type": "text/xml"})
+        data = self._request("POST", "/interface/xmlrpc", rpc_method=method, data=body, headers={"Content-Type": "text/xml"})
         try:
             result = normalized(xmlrpc.client.loads(data)[0][0])
             if not isinstance(result, dict):
                 raise ValueError("not a struct")
             return result
         except xmlrpc.client.Fault as exc:
+            self.budget.event('failure', 'livejournal', BASE_URL, rpc_method=method,
+                              rpc_code=exc.faultCode if type(exc.faultCode) is int else None)
             if exc.faultCode == 402:
                 raise APIRateLimited("ЖЖ сообщил об ограничении частоты запросов XML-RPC (402).") from exc
             # Never echo a remote fault string: it can contain request credentials.
@@ -376,8 +397,8 @@ class LiveJournalClient:
             self.journal_id = uid
         self.generate_session()
         if community:
-            if self.user not in self.managed_communities():
-                self.source['access']['status'] = 'unconfirmed'
+            self.source['access']['status'] = 'unconfirmed'
+            if self.user not in self.managed_communities(confirm_empty=True):
                 raise ExportError('ЖЖ не подтвердил управление этим сообществом. Проверьте аккаунт и права на странице «Мои сообщества»; право публикации или модерации недостаточно.')
             identity = self.call('login', usejournal=self.user, getcaps=1)
             if identity.get('username') != self.user or type(identity.get('userid')) is not int or identity['userid'] <= 0 or 'caps' not in identity:
@@ -402,14 +423,23 @@ class LiveJournalClient:
         path = '/community/manage.bml'
         try:
             page = self._request('GET', path, headers={'Cookie': 'ljsession=' + self._cookie})
+            # LJ can serve its sign-in form with HTTP 200 to an XML-RPC session.
+            from .web_session import LoginForm
+            names = managed_communities(page) - {self.account}
+            if not names and not re.search(rb'Site\.remote\s*=\s*\{[^}]*"username"\s*:\s*"[^"]+"', page):
+                form = LoginForm()
+                form.feed(page.decode('utf-8', errors='replace'))
+                if form.token:
+                    self.budget.event('step', 'livejournal', BASE_URL, message='ЖЖ вернул форму входа вместо списка сообществ.')
+                    raise AuthenticationRequired('ЖЖ вернул форму входа.')
         except AuthenticationRequired:
             try:
-                if not self.ensure_web_session():
+                if not self.ensure_web_session(BASE_URL + path):
                     raise WebLoginRequired()
             except WebLoginRequired:
                 raise AuthenticationRequired('ЖЖ не подтвердил вход для просмотра сообществ.') from None
             page = self._request('GET', path)
-        names = managed_communities(page) - {self.account}
+            names = managed_communities(page) - {self.account}
         if confirm_empty and not names:
             text = page.decode('utf-8', errors='replace')
             remote = re.search(r'\bSite\.remote\s*=\s*(\{)', text)
@@ -429,9 +459,9 @@ class LiveJournalClient:
                 raise IncompleteData('ЖЖ не подтвердил список управляемых сообществ.')
         return sorted(names)
 
-    def ensure_web_session(self):
+    def ensure_web_session(self, url="https://ic.pics.livejournal.com/"):
         from .web_session import establish
-        return establish(self)
+        return establish(self, url)
 
     def personal_page(self, path):
         if self.source['type'] == 'community':

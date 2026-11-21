@@ -107,11 +107,19 @@ document.addEventListener("DOMContentLoaded", () => {
       loadingSearch = true;
       const script = document.createElement('script');
       script.src = 'assets/search-data.js';
+      const started = Date.now()/1000, status = $('results-count');
+      const request = {kind:location.protocol==='file:'?'step':'request', at:started,
+        request_url:'assets/search-data.js',method:location.protocol==='file:'?'':'GET'};
+      const trace = (phase,message) => window.OperationLog?.bind(status,{phase,message,
+        events:phase==='loading'?[request]:[request,{kind:phase==='complete'?'success':'failure',at:Date.now()/1000}]});
+      trace('loading','Читаем поисковый индекс');
       script.onload = () => {
+        trace('complete','Поисковый индекс прочитан');
         normalized = normalizeDocs(window.ARCHIVE.documents);
         script.remove(); if (search.value.trim()) render();
       };
       script.onerror = () => {
+        trace('error','Не удалось прочитать поисковый индекс');
         loadingSearch = false; script.remove();
         if (search.value.trim()) $('results-count').textContent = 'Не удалось открыть поисковый индекс.';
       };

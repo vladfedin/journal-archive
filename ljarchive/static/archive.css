@@ -519,3 +519,11 @@ a.year-mark{display:block;width:fit-content;text-decoration:none}a.year-mark:hov
 #delete-dialog .dialog-actions{justify-content:flex-end}
 .menu .delete-action,#delete-error{color:var(--warning)}
 .btn.delete-confirm{background:#a52c32;border-color:#a52c32;color:white}
+
+.operation-trigger{font:inherit;color:inherit;background:none;border:0;padding:0;text-align:start;text-decoration:underline dotted;text-underline-offset:.25em;cursor:pointer}
+.operation-trigger:hover{text-decoration-style:solid}
+.operation-log{padding:20px;width:min(640px,calc(100% - 28px));overflow-wrap:anywhere}
+.operation-log .dialog-head{margin-bottom:12px}
+.operation-log p{margin:0}
+.operation-log ol{margin:12px 0 0;padding:0;list-style:none;font:var(--type-caption)/1.6 var(--sans)}
+.operation-log li{border-top:1px solid var(--line);padding:5px 0;font-variant-numeric:tabular-nums}

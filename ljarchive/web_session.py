@@ -41,14 +41,14 @@ class LoginForm(HTMLParser):
             self.inside = False
 
 
-def establish(client):
+def establish(client, url='https://ic.pics.livejournal.com/'):
     from .client import Cancelled, ExportError, RequestLimitReached, WebLoginRequired
-    if ready(client):
+    if ready(client, url):
         return True
     if client._web_login_attempted or not client._web_password:
         return False
     client._web_login_attempted = True
-    client.progress(phase='login', message='Входим в ЖЖ для загрузки изображений…')
+    client.progress(phase='login', message='Входим в ЖЖ через веб-форму…')
     headers = {'User-Agent': AGENT, 'Accept': 'text/html', 'Referer': 'https://www.livejournal.com/login.bml'}
     form_data = {}
     try:
@@ -66,7 +66,7 @@ def establish(client):
         client._request('POST', '/login.bml', data=form_data,
                         headers={**headers, 'Origin': 'https://www.livejournal.com'},
                         accepted_statuses=(200, 302, 303))
-        if not ready(client):
+        if not ready(client, url):
             raise WebLoginRequired()
         if client.session_ready:
             client.session_ready(client)

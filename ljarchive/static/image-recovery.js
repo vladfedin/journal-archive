@@ -48,7 +48,7 @@ window.ArchiveImages=(()=>{
       checkBrowser=['browser_login','browser_closed','browser_start'].includes(state.error.reason);
       if(checkBrowser)run.textContent='Проверить вход';
     }
-    const status=dialog.querySelector('[data-role=status]');status.textContent=state.message||'';
+    const status=dialog.querySelector('[data-role=status]');window.OperationLog?.bind(status,state);status.textContent=state.message||'';
     const photos=state.browser_images_progress,total=state.batch_total??state.total;
     const checked=photos?(photos.saved||0)+(photos.unavailable||0)+(photos.pending||0):state.completed||0;
     if(!done&&photos&&state.phase!=='saving')status.textContent=`Проверено ${checked} из ${total} · сохранено ${photos.saved||0} · недоступно ${photos.unavailable||0} · к повтору ${photos.pending||0}`;

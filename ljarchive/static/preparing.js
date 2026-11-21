@@ -11,6 +11,7 @@
       if (!response.ok) throw new Error();
       const state = await response.json();
       if (state.phase === 'complete') {location.reload(); return;}
+      window.OperationLog?.bind(stage,state);
       stage.textContent = state.message || 'Подготовка архива';
       if (state.phase === 'error') {progress.hidden = true; count.textContent = ''; retry.hidden = false; return;}
       if (state.total) {progress.max = state.total; progress.value = state.completed || 0; count.textContent = `${state.completed || 0} / ${state.total}`;}

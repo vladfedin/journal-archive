@@ -3,6 +3,7 @@ import json
 import secrets
 import sqlite3
 import threading
+from .activity import record_activity
 from collections import deque
 from html.parser import HTMLParser
 from urllib.parse import urljoin
@@ -394,6 +395,7 @@ class MaterialQueue:
                             (values.get('phase') and values['phase'] != current_state.get('phase'))):
                         for key in ('completed', 'total', 'progress_unit'):
                             current_state.pop(key, None)
+                    record_activity(current_state, values)
                     event = values.pop('activity', None)
                     if event:
                         self.states[task_id]['last_activity'] = event

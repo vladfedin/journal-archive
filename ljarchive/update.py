@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 
 import requests
 
+from .activity import record_activity
 from . import __version__
 from .client import ExportError
 from .launcher import version_tuple
@@ -57,12 +58,17 @@ def candidate(release, suffix):
     raise ExportError(f'Для версии {version} пакет вашей системы ещё не опубликован.')
 
 
-def fetch_package(session, package, path, progress):
+def fetch_package(session, package, path, progress, event=None):
     url = package['url']
     digest = hashlib.sha256()
     count = 0
     for _ in range(5):
+        address = url.split('?', 1)[0]
+        if event:
+            event('request', method='GET', request_url=address)
         with session.get(url, allow_redirects=False, stream=True, timeout=(10, 45)) as response:
+            if event:
+                event('redirect' if response.is_redirect else 'response', http_status=response.status_code)
             if response.is_redirect:
                 url = response.headers['Location']
                 target = urlsplit(url)
@@ -95,7 +101,7 @@ def receipt(folder):
     return value if re.fullmatch('[0-9a-f]{64}', value) else None
 
 
-def stage(session, package, root, executable, progress):
+def stage(session, package, root, executable, progress, event=None):
     root.mkdir(parents=True, mode=0o700, exist_ok=True)
     with exclusive_lock(root / 'install.lock'), tempfile.TemporaryDirectory(dir=root, prefix='.staging-') as tmp:
         target = root / package['version']
@@ -103,7 +109,7 @@ def stage(session, package, root, executable, progress):
             return
         work = Path(tmp)
         archive = work / 'package'
-        fetch_package(session, package, archive, progress)
+        fetch_package(session, package, archive, progress, event)
         folder = work / 'app'
         folder.mkdir()
         binary = folder / executable
@@ -195,6 +201,9 @@ class DesktopUpdate:
             return self.state.copy()
 
     def _work(self, action):
+        def event(kind, **values):
+            with self.lock:
+                record_activity(self.state, {'activity': {'kind':kind, **values}})
         def progress(count):
             with self.lock:
                 self.state['bytes'] = count
@@ -206,14 +215,16 @@ class DesktopUpdate:
                     if installed:
                         state = {'phase':'ready', 'version':installed.name}
                     else:
+                        event('request', method='GET', request_url=LATEST)
                         with session.get(LATEST, timeout=(8, 15), allow_redirects=False) as response:
+                            event('response', http_status=response.status_code)
                             response.raise_for_status()
                             package = candidate(response.json(), self.suffix)
                         with self.lock:
                             self.package = package
                         state = {'phase':'available', 'version':package['version']} if package else {'phase':'current'}
                 else:
-                    stage(session, self.package, self.root, self.executable, progress)
+                    stage(session, self.package, self.root, self.executable, progress, event)
                     state = {'phase':'ready', 'version':self.package['version']}
         except ExportError as exc:
             state = {'phase':'error', 'message':str(exc)}
@@ -221,7 +232,7 @@ class DesktopUpdate:
             state = {'phase':'error', 'message':'Не удалось проверить релиз на GitHub.' if action == 'check'
                      else 'Не удалось подготовить обновление. Проверьте соединение и свободное место.'}
         with self.lock:
-            self.state = state
+            self.state = {**state, 'events': self.state.get('events', [])}
             self.checked = time.monotonic()
             if state['phase'] == 'available' and (self.root / 'automatic').is_file():
                 self.start('install')

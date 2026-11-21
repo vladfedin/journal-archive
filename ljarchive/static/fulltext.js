@@ -27,12 +27,27 @@
   }
   function loadPortable() {
     if (!loading) {
+      const files = root.dataset.parts.split(' ').filter(Boolean);
+      const status = $('ft-status');
+      const state = {phase:'loading', message:'Читаем поисковый индекс', started_at:Date.now()/1000,
+        total:files.length, completed:0, events:[]};
+      function record(kind, file, message) {
+        if (state.phase !== 'loading') return;
+        state.events.push({kind, at:Date.now()/1000, request_url:file, message});
+        if (state.events.length > 30) state.events.shift();
+        OperationLog.bind(status,state);
+      }
       window.searchPart = data => parts.push(data);
-      loading = Promise.all(root.dataset.parts.split(' ').map(part => new Promise((resolve,reject) => {
+      loading = Promise.all(files.map(part => new Promise((resolve,reject) => {
         const script = document.createElement('script');
-        script.src = 'assets/fulltext-' + part + '.js';
-        script.onload = resolve;
-        script.onerror = () => reject(new Error('Не удалось открыть поисковые файлы архива.'));
+        const file = 'assets/fulltext-' + part + '.js';
+        script.src = file;
+        record('step',file,'Открываем файл');
+        script.onload = () => {state.completed++; record('step',file,'Прочитан'); resolve();};
+        script.onerror = () => {
+          record('failure',file,'Ошибка чтения');
+          reject(new Error('Не удалось открыть ' + file));
+        };
         document.head.append(script);
       }))).then(() => {
         for (const part of parts) {
@@ -45,6 +60,15 @@
           }
         }
         parts.length = 0;
+        state.phase='complete';
+        state.message='Индекс прочитан';
+      }).catch(error => {
+        state.phase='error';
+        state.message=error.message;
+        throw error;
+      }).finally(() => {
+        state.ended_at=Date.now()/1000;
+        OperationLog.bind(status,state);
       });
     }
     return loading;
@@ -120,7 +144,7 @@
       let data;
       if (root.dataset.api) {
         const params = new URLSearchParams({...p,archive:root.dataset.archive});
-        const response = await fetch(root.dataset.api+'?'+params);
+        const response = await OperationLog.fetchLocal($('ft-status'),root.dataset.api+'?'+params);
         if (!response.ok) throw new Error('Не удалось выполнить поиск.');
         data = await response.json();
       } else data = await portable(clauses,p);
