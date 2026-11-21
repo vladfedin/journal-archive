@@ -75,7 +75,9 @@ class Jobs:
         for file in self.tasks.glob("*.json"):
             try:
                 record = json.loads(file.read_text(encoding="utf-8"))
-                self.task_path(record["parameters"]["archive"])
+                task = self.task_path(record["parameters"]["archive"])
+                if task != file or task.with_suffix('.deleting').exists():
+                    continue
                 records.append(record)
             except (OSError, ValueError, KeyError, TypeError, ExportError):
                 continue
@@ -144,6 +146,58 @@ class Jobs:
         if not isinstance(slug, str) or not re.fullmatch(r"[a-z0-9_]{1,15}(?:-latest-[1-9][0-9]?)?", slug):
             raise ExportError("Некорректный архив.")
         return self.tasks / (slug + ".json")
+
+    def delete_archive(self, slug, token):
+        from .deletion import remove_files
+
+        with self.lock:
+            task = self.task_path(slug)
+            folder = self.output / slug
+            if self.stopping or self.archive_busy(slug):
+                raise ExportError('Дождитесь завершения работы с архивом.')
+            materials = self.materials
+            material_ids = {key for key, state in materials.states.items() if state['_identity'][0] == slug}
+            if materials.current in material_ids or any(key in material_ids for key, _ in materials.queue):
+                raise ExportError('В очереди есть материалы этого архива. Завершите или отмените докачку.')
+            try:
+                if self.deletion_target(slug)['token'] != token:
+                    raise ExportError('Архив изменился. Закройте окно и подтвердите удаление заново.')
+                remove_files(folder, task)
+            except OSError as exc:
+                if task.with_suffix('.deleting').is_dir():
+                    self.forget_archive(slug, folder, material_ids)
+                    raise ExportError('Часть файлов осталась на диске. Проверьте права на папку, закройте открытые файлы и повторите удаление.') from exc
+                raise ExportError('Не удалось удалить архив. Проверьте доступ к папке и закройте открытые файлы.') from exc
+            self.forget_archive(slug, folder, material_ids)
+        return {'deleted': slug}
+
+    def deletion_target(self, slug):
+        from .deletion import deletion_target
+        with self.lock:
+            task = self.task_path(slug)
+            try:
+                return deletion_target(self.output / slug, task)
+            except OSError as exc:
+                raise ExportError('Не удалось прочитать папку архива.') from exc
+
+    def forget_archive(self, slug, folder, material_ids):
+        if (self.current or {}).get('archive') == slug or self.state.get('slug') == slug:
+            self.state, self.current, self.history = {'phase': 'idle'}, None, []
+            self.recovery_before = self.contact_cookie = None
+            self.contact_receipts.clear()
+        self.gaps_cache.pop(slug, None)
+        self.gaps_started.pop(slug, None)
+        self.gaps_pending.pop(slug, None)
+        with self.preparation_lock:
+            self.preparations.pop(slug, None)
+        with self.search_library.lock:
+            cached = self.search_library.indexes.pop(folder, None)
+            if cached:
+                cached[1].close()
+        with self.statistics_cache.lock:
+            self.statistics_cache.records.pop(str(folder), None)
+        for key in material_ids:
+            self.materials.states.pop(key, None)
 
     def persist(self):
         if self.current:
@@ -439,6 +493,8 @@ class Jobs:
             self.cancel = threading.Event()
             self.browser_confirmation = threading.Event()
             slug = "_demo" if demo else data["archive"]
+            if self.task_path(slug).with_suffix('.deleting').exists():
+                raise ExportError('Сначала завершите удаление прежнего архива.')
             if slug in self.formatting:
                 raise ExportError('Обновляются страницы этого архива. Дождитесь завершения.')
             self.recovery_before = None
@@ -653,6 +709,13 @@ class Jobs:
                            resumable=state["phase"] != "complete", message=state.get("message", ""))
             except (OSError, ValueError, KeyError, TypeError, ExportError):
                 continue
+        for staged in self.tasks.glob('*.deleting'):
+            if staged.is_dir() and not staged.is_symlink():
+                try:
+                    self.task_path(staged.stem)
+                except ExportError:
+                    continue
+                found[staged.stem] = {'slug': staged.stem, 'username': staged.stem, 'deletion_pending': True}
         return {"output": str(self.output), "relocation": dict(self.relocation), "archives": sorted(found.values(), key=lambda row: row.get("created_at") or "", reverse=True)}
 
     def card_gaps(self, slug, folder):
@@ -704,8 +767,9 @@ class Jobs:
             traceback.print_exc()
         finally:
             with self.lock:
-                self.gaps_cache[slug] = (stamp, value)
-                self.gaps_pending.pop(slug, None)
+                if self.gaps_pending.get(slug) is threading.current_thread():
+                    self.gaps_cache[slug] = (stamp, value)
+                    self.gaps_pending.pop(slug, None)
 
     def diagnostics(self, slug):
         from .diagnostics import build_diagnostics
@@ -969,6 +1033,8 @@ def make_server(output: Path, port=8787):
                 icon = relative.parts[1:] in {("assets", "favicon.svg"), ("assets", "favicon.ico")}
                 if any(part.startswith(".") for part in relative.parts) or not target.is_relative_to(jobs.output) or (not icon and target.suffix not in {".html", ".css", ".js", ".json", ".jpg", ".png", ".gif", ".webp", ".avif", ".mp4", ".webm", ".ogv", ".mov", ".m4v"}):
                     return self.json({"error": "Нет доступа."}, 403)
+                if not (jobs.output / relative.parts[0]).is_dir():
+                    return self.json({"error": "Архив не найден."}, 404)
                 if len(relative.parts) == 2 and target.name == 'search.html':
                     from .render import ENV
                     slug = relative.parts[0]
@@ -1086,6 +1152,8 @@ def make_server(output: Path, port=8787):
                     activity = extension == ".activitystreams.json"
                     filename = "activitystreams.json" if activity else "archive.json"
                     with jobs.lock:
+                        if not (folder / "index.html").is_file():
+                            return self.json({"error": "Архив не найден."}, 404)
                         if jobs.archive_busy(slug) or jobs.materials.running:
                             return self.json({"error": "Дождитесь окончания выгрузки перед скачиванием JSON."}, 409)
                         if not (folder / "archive.sqlite3").is_file():
@@ -1115,6 +1183,8 @@ def make_server(output: Path, port=8787):
                         return self.file(target, download=slug + ".json")
                 # Hold the job lock through ZIP construction to avoid mixing snapshots.
                 with jobs.lock:
+                    if not (folder / "index.html").is_file():
+                        return self.json({"error": "Архив не найден."}, 404)
                     if jobs.archive_busy(slug) or jobs.materials.running:
                         return self.json({"error": "Дождитесь окончания выгрузки перед скачиванием ZIP."}, 409)
                     try:
@@ -1151,6 +1221,10 @@ def make_server(output: Path, port=8787):
             except (ValueError, UnicodeDecodeError):
                 return self.json({"error": "Некорректный JSON."}, 400)
             try:
+                if self.path == '/api/archives/delete-preview':
+                    return self.json(jobs.deletion_target(data.get('archive')))
+                if self.path == '/api/archives/delete':
+                    return self.json(jobs.delete_archive(data.get('archive'), data.get('token')))
                 if self.path == '/api/communities':
                     from .client import LiveJournalClient
                     account, password = data.get('username'), data.pop('password', None)

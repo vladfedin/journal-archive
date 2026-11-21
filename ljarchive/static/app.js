@@ -243,6 +243,44 @@ const kinds={full:'весь журнал',period:'за период',urls:'по 
 function yearsOf(data){const dates=(data?.entries||[]).map(e=>e.date).concat((data?.gaps||[]).map(g=>g.date)).filter(d=>/^\d{4}-/.test(d||'')).sort();if(!dates.length)return '';const a=dates[0].slice(0,4),z=dates.at(-1).slice(0,4);return a===z?a:`${a} — ${z}`;}
 function updatedText(iso){const d=new Date(iso||'');if(isNaN(d))return '';const months='января февраля марта апреля мая июня июля августа сентября октября ноября декабря'.split(' ');return `${d.getDate()} ${months[d.getMonth()]}${d.getFullYear()!==new Date().getFullYear()?' '+d.getFullYear():''} в ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;}
 function unavailableText(a){const parts=[];if(a.unavailable_discussions)parts.push(count(a.unavailable_discussions,['обсуждение','обсуждения','обсуждений']));const images=(a.unavailable_images||0)+(a.removed_images||0);if(images)parts.push(count(images,IMAGE_FORMS));return parts.length?'недоступно: '+parts.join(', '):'';}
+async function confirmDelete(slug){
+  const dialog=$('delete-dialog');
+  let target;
+  try{target=await api('/api/archives/delete-preview',{archive:slug});}
+  catch(err){error(err.message);return;}
+  if(dialog.open)return;
+  dialog.dataset.slug=slug;
+  dialog.dataset.token=target.token;
+  $('delete-title').textContent='Удалить архив «'+slug+'»?';
+  $('delete-path').textContent=target.path;
+  $('delete-error').hidden=true;
+  dialog.showModal();
+  $('delete-cancel').focus();
+}
+$('delete-cancel').onclick=()=>$('delete-dialog').close();
+$('delete-dialog').oncancel=e=>{if($('delete-confirm').disabled)e.preventDefault();};
+$('delete-form').onsubmit=async e=>{
+  e.preventDefault();
+  const dialog=$('delete-dialog'),slug=dialog.dataset.slug,submit=$('delete-confirm');
+  if(submit.disabled)return;
+  submit.disabled=$('delete-cancel').disabled=true;
+  submit.textContent='Удаляем…';
+  try{
+    await api('/api/archives/delete',{archive:slug,token:dialog.dataset.token});
+    dialog.close();
+    timelines.delete(slug);
+    showStatus(await api('/api/status'));
+    await library();
+    announce('Архив «'+slug+'» удалён.');
+    document.querySelector('[data-new]').focus();
+  }catch(err){
+    if(dialog.open){$('delete-error').textContent=err.message;$('delete-error').hidden=false;}
+    else error(err.message);
+  }finally{
+    submit.disabled=$('delete-cancel').disabled=false;
+    submit.textContent='Удалить с диска';
+  }
+};
 // The archive's menu: its sections, downloads and maintenance. Ids only on the running card.
 function archiveMenu(a,{job=false,resume=false,update=false}={}){
   const menu=el('div','menu'),group=title=>menu.append(el('h5','menu-title',title));const base=a.url?a.url.replace(/index\.html$/,''):'';
@@ -260,6 +298,7 @@ function archiveMenu(a,{job=false,resume=false,update=false}={}){
   action('Изображения: файлы и докачка',()=>window.ArchiveImages.open(a.slug),job?'job-images':'');
   if(a.url){link('Состояние архива',a.report_url||base+'report.html',job?'job-report':'');if(job)link('Пропущенные материалы и обсуждения',base+'report.html#skipped','job-skips');}
   action('Диагностика',()=>showDiagnostics(a.slug),job?'job-diagnostics':'');
+  if(!job||terminal.has(lastState.phase)){menu.append(el('hr'));action('Удалить архив…',()=>confirmDelete(a.slug)).classList.add('delete-action');}
   return menu;
 }
 function gapsSummary(data,{running,plan}={}){
@@ -414,6 +453,12 @@ function refreshCounts(card,a){
 }
 function buildCard(a,index,firstFolded){
   const li=el('li','volume');li.dataset.archive=a.slug;
+  if(a.deletion_pending){
+    const retry=el('button','btn','Завершить удаление');
+    retry.onclick=()=>confirmDelete(a.slug);
+    const head=el('div','vol-head');head.append(el('h2','vol-name',a.slug),retry);
+    li.append(head);return {li,view:null};
+  }
   const head=el('div','vol-head'),title=el('div','vol-title'),name=el('h2','vol-name'),link=el(a.url?'a':'span','journal-name',a.username);if(a.url)link.href=a.url;name.append(link);title.append(name);
   if(a.url){const stat=el('a','vol-stat');stat.href=a.url.replace(/index\.html$/,'statistics.html');stat.innerHTML=svg('statistics');stat.append('Статистика');title.append(stat);}
   const actions=el('div','vol-actions'),resumable=a.resumable&&!a.finished_with_skips;
@@ -459,7 +504,8 @@ async function library(){const data=await api('/api/archives');storageStatus(dat
       const wasOpen=card?.li.querySelector('details.more')?.open;
       card?.view?.destroy();const built=buildCard(a,visibleIndex,firstFolded&&visibleIndex>0);
       if(built.view&&visibleIndex>0)firstFolded=false;
-      if(wasOpen)built.li.querySelector('details.more').open=true;
+      const nextMenu=built.li.querySelector('details.more');
+      if(wasOpen&&nextMenu)nextMenu.open=true;
       if(card)card.li.replaceWith(built.li);
       card={...built,key:cardKey,counts};cards.set(a.slug,card);
     }else{

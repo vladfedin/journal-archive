@@ -505,3 +505,8 @@ a.year-mark{display:block;width:fit-content;text-decoration:none}a.year-mark:hov
 }
 
 .profile-directory .profile-social-heading{margin:22px 0 3px;font-size:var(--type-subtitle)}
+
+#delete-path{overflow-wrap:anywhere}
+#delete-dialog .dialog-actions{justify-content:flex-end}
+.menu .delete-action,#delete-error{color:var(--warning)}
+.btn.delete-confirm{background:#a52c32;border-color:#a52c32;color:white}
