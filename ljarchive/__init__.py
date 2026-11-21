@@ -1,4 +1,4 @@
 """Local, owner-authenticated LiveJournal archive."""
 
-__version__ = "0.9.4"
+__version__ = "0.9.5"
 
