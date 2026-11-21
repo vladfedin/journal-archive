@@ -4,7 +4,7 @@
 
 **Скачать для Windows, macOS или Linux** · [staerum.ru](https://staerum.ru/journal-archive/) · [GitHub Releases](https://github.com/vladfedin/journal-archive/releases/latest)
 
-[Пошаговый гайд для Windows со скриншотами](docs/guide/README.md) · [PDF](docs/guide/guide.pdf)
+[Как сохранить свой ЖЖ — гайд для Windows со скриншотами](docs/guide/README.md) · [Веб-версия](https://staerum.ru/journal-archive/guide/) · [PDF](docs/guide/guide.pdf)
 
 ## Запуск
 

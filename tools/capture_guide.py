@@ -7,6 +7,7 @@ from pathlib import Path
 import json
 import tempfile
 import threading
+import time
 
 from playwright.sync_api import expect, sync_playwright
 
@@ -37,12 +38,10 @@ def main():
             target = page.locator(selector) if selector else page
             target.screenshot(path=str(IMAGES / (name + '.png')), animations='disabled')
 
-        # GitHub is captured as served, with an outline around the actual download link.
-        page.goto(f'https://github.com/vladfedin/journal-archive/releases/tag/v{__version__}', wait_until='domcontentloaded')
-        download = page.get_by_role('link', name=f'JournalArchive-{__version__}-windows-x64.exe', exact=True)
-        download.wait_for()
-        download.evaluate("e => {e.style.outline='3px solid #2563eb';e.style.outlineOffset='5px';}")
-        download.locator('xpath=ancestor::details[1]').screenshot(path=str(IMAGES / '01-download.png'))
+        page.goto('https://staerum.ru/journal-archive/', wait_until='domcontentloaded')
+        release = page.locator('section').filter(has=page.get_by_role('heading', name=__version__ + ' ', exact=False)).first
+        release.get_by_role('link', name='Windows x64').wait_for()
+        shot('01-download', 'main > section:has(a[href*="JournalArchive-' + __version__ + '-windows-x64.exe"])')
 
         # All subsequent browser requests stay on the disposable local server.
         page.route('**/*', lambda route: route.continue_() if route.request.url.startswith(base + '/') else route.abort())
@@ -61,6 +60,11 @@ def main():
         page.locator('#images').check()
         page.locator('#videos').check()
         shot('04-login', '#export-dialog')
+        page.evaluate("""localStorage.setItem('ljarchive.communities.example_journal',
+            JSON.stringify({names:['bookclub','readers'], savedAt:Date.now()}))""")
+        page.locator('#source-type').select_option('community')
+        page.locator('#journal').select_option('bookclub')
+        shot('04-community', '#export-dialog')
         page.keyboard.press('Escape')
         expect(page.locator('#password')).to_have_value('')
 
@@ -73,10 +77,22 @@ def main():
         server.jobs.state = {'phase': 'comments', 'username': 'example_journal', 'slug': 'example_journal',
                              'entries': 6, 'comments': 12, 'entry_id': 4, 'requests_used': 31,
                              'archive_url': '/archive/example_journal/index.html'}
+        now = int(time.time())
+        endpoint = 'https://www.livejournal.com/interface/xmlrpc'
+        server.jobs.state['events'] = [
+            {'kind': 'request', 'at': now - 2, 'method': 'POST', 'request_url': endpoint, 'rpc_method': 'getcomments'},
+            {'kind': 'response', 'at': now - 1, 'http_status': 200},
+            {'kind': 'success', 'at': now, 'bytes': 2480},
+        ]
+        page.route('**/api/status', lambda route: route.fulfill(json={**server.jobs.state, 'worker_alive': True}))
         page.reload()
         expect(page.locator('#job-timeline .timeline-bar')).to_have_count(6)
-        expect(page.locator('#job-stage')).to_have_text('Комментарии')
+        expect(page.locator('#job-stage')).to_contain_text('комментарии', ignore_case=True)
         shot('05-progress', '#job')
+        page.locator('#job-stage').click()
+        expect(page.locator('.operation-log')).to_contain_text('HTTP 200')
+        shot('05-log', '.operation-log')
+        page.keyboard.press('Escape')
 
         store = Store(folder)
         with store.db:
@@ -88,8 +104,8 @@ def main():
         store.close()
         server.jobs.state.update(phase='complete', requests_used=42)
         page.reload()
-        expect(page.locator('#job-stage')).to_have_text('Готов')
-        shot('06-ready', '#job')
+        expect(page.locator('#archives .vol-status')).to_contain_text('Готов')
+        shot('06-ready', '#archives .volume')
 
         page.goto(base + '/archive/example_journal/index.html')
         expect(page.locator('.entry-card')).to_have_count(6)
@@ -98,6 +114,13 @@ def main():
         expect(page.locator('#comment-4')).to_be_visible()
         shot('06-post')
 
+        page.goto(base + '/archive/example_journal/index.html')
+        page.get_by_role('button', name='Поиск по ленте').click()
+        page.get_by_role('link', name='Расширенный поиск').click()
+        page.wait_for_url('**/search.html*', wait_until='load')
+        page.locator('#ft-query').fill('книги')
+        expect(page.locator('#ft-results a').first).to_be_visible()
+        shot('06-search')
         page.goto(base + '/archive/example_journal/report.html')
         page.locator('.form-advanced summary').click()
         shot('07-report')
@@ -111,10 +134,10 @@ def main():
 
         server.jobs.state = {'phase': 'idle'}
         page.goto(base)
-        expect(page.locator('#archives tr')).to_have_count(1)
-        page.locator('#archives summary').click()
+        expect(page.locator('#archives > li')).to_have_count(1)
+        page.locator('#archives .more summary').click()
         shot('09-files')
-        page.get_by_role('button', name='Обновить', exact=True).click()
+        page.locator('#archives [data-update]').click()
         page.locator('[data-scope=urls]').click()
         page.locator('#entry-urls').fill('https://example-journal.livejournal.com/769.html')
         page.locator('#images').check()
