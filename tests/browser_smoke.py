@@ -471,8 +471,26 @@ def main():
                 assert big.evaluate('a => a.scrollWidth <= a.clientWidth')
                 page.locator('.stats-totals a[href=\"discussions.html?kind=posts&year=2008\"]').click()
                 expect(page.locator('#discussion-count')).to_contain_text('Записей: 1')
-                page.locator('#discussion-back').click()
+                # Return with a partial snapshot, then deliver the complete one after selecting all years.
+                def partial_statistics(route):
+                    response = route.fetch()
+                    route.fulfill(response=response, body=response.text() + '''
+                        window.testFullStats = structuredClone(window.ARCHIVE_STATS);
+                        delete window.ARCHIVE_STATS.generated_at;
+                        window.ARCHIVE_STATS.years = ['2008'];''')
+                page.route('**/assets/statistics-data.js', partial_statistics, times=1)
+                page.route('**/assets/statistics-live.js', lambda route: route.fulfill(
+                    content_type='application/javascript', body=''), times=1)
+                pending_script = []
+                page.route('**/assets/statistics.js', pending_script.append, times=1)
+                with page.expect_request('**/assets/statistics.js'):
+                    page.locator('#discussion-back').click(no_wait_after=True)
+                expect(page.locator('#stats-year')).to_be_disabled()
+                pending_script.pop().continue_()
+                expect(page.locator('#stats-year')).to_have_value('2008')
                 page.locator('#stats-year').select_option('')
+                page.evaluate("window.dispatchEvent(new CustomEvent('archive-statistics', {detail: window.testFullStats}))")
+                expect(page.locator('#stats-year')).to_have_value('')
                 for width in (1440, 320):
                     page.set_viewport_size({'width': width, 'height': 1100})
                     scroll = page.locator('.stats-scroll').first

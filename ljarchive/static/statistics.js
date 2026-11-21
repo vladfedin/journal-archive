@@ -209,7 +209,11 @@
   $('stats-more-edges').addEventListener('click', () => {edgeLimit+=40; render();});
   let hydrated = !!data.generated_at;
   window.addEventListener('archive-statistics', event => {
-    const year = $('stats-year').value || (!hydrated ? initial.get('year') : ''), focus = document.activeElement;
+    const select = $('stats-year');
+    // A URL year missing from the initial snapshot leaves no selection. An
+    // explicit selection of the first option means all years, even during loading.
+    const year = !hydrated && select.selectedIndex === -1 ? initial.get('year') : select.value;
+    const focus = document.activeElement;
     const href = focus?.getAttribute('href'), scroll = [window.scrollX, window.scrollY];
     const scrolls = [...document.querySelectorAll('.stats-scroll')].map(el => [el, el.scrollLeft]);
     data = event.detail; people = new Map(data.people.map(p => [p.id, p]));
@@ -229,4 +233,5 @@
     window.scrollTo(...scroll);
   });
   render(); findings();
+  $('stats-year').disabled = false;
 })();
