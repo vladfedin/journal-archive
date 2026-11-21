@@ -50,7 +50,13 @@
       <button type="button" class="btn" data-answer>Замахнуться кочергой</button>
     </div>
   </div>
-  <div class="field" id="contact-editor"><label for="contact-body">Напишите автору ваши замечания, вопросы и благодарности</label><textarea id="contact-body" rows="4" maxlength="3000" required></textarea></div>
+  <div id="contact-editor">
+    <div class="field"><label for="contact-body">Напишите автору ваши замечания, вопросы и благодарности</label><textarea id="contact-body" rows="4" maxlength="3000" required></textarea></div>
+    <a class="author-transfer" href="https://t.tb.ru/c2c-qr-choose-bank?requisiteNumber=+79104213011&amp;bankCode=100000000004" target="_blank" rel="noopener noreferrer">
+      <img src="/static/author-transfer.svg" width="135" height="135" alt="">
+      <span>поблагодарить автора</span>
+    </a>
+  </div>
   <p id="contact-account" class="fine"></p><p id="contact-status" role="status"></p>
   <div class="dialog-buttons"><button class="btn" type="button" id="contact-dismiss" data-contact-close>Закрыть</button><button id="contact-send" class="btn primary" type="submit" disabled>Отправить</button></div>
 </form></dialog>

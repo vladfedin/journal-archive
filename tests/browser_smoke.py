@@ -34,6 +34,7 @@ def check_contact_question(browser, base, job_id):
                     page.goto(base)
                     dialog = page.locator('#contact-dialog')
                     expect(dialog.get_by_role('heading')).to_have_text(title)
+                    expect(dialog.locator('.author-transfer')).to_be_hidden()
                     expect(dialog.get_by_text('Выбранный ответ будет отправлен автору личным сообщением в ЖЖ.')).to_be_visible()
                     expect(page.locator('#contact-dismiss')).to_be_focused()
                     send.assert_not_called()
@@ -244,6 +245,22 @@ def main():
                 expect(page.locator('#contact-body')).to_be_focused()
                 expect(page.locator('#contact-send')).to_be_disabled()
                 page.locator('#contact-body').fill('Спасибо за архив!')
+                transfer = page.get_by_role('link', name='поблагодарить автора')
+                qr = transfer.locator('img')
+                expect(qr).to_be_visible()
+                assert qr.evaluate('img => img.complete && img.naturalWidth > 0')
+                editor = page.locator('#contact-body')
+                assert qr.bounding_box()['x'] >= editor.bounding_box()['x'] + editor.bounding_box()['width']
+                page.set_viewport_size({'width': 320, 'height': 700})
+                assert qr.bounding_box()['y'] >= editor.bounding_box()['y'] + editor.bounding_box()['height']
+                assert page.locator('#contact-dialog').evaluate('el => el.scrollWidth <= el.clientWidth')
+                page.context.route('https://t.tb.ru/**', lambda route: route.fulfill(body=''))
+                with page.expect_popup() as bank_tab:
+                    transfer.click()
+                expect(bank_tab.value).to_have_url(transfer.get_attribute('href'))
+                bank_tab.value.close()
+                expect(editor).to_have_value('Спасибо за архив!')
+                page.set_viewport_size({'width': 1440, 'height': 1100})
                 with patch('ljarchive.server.send_message', return_value={'status':'sent','message_id':'17'}) as send:
                     page.locator('#contact-send').click()
                     expect(page.locator('#contact-status')).to_have_text('Сообщение отправлено.')
