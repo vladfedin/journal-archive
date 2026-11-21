@@ -489,6 +489,7 @@ class SyncExporter(Exporter):
                 self.personal()
                 self.video_stage()
                 self.retry_materials()
+                self.refresh_feed_pin()
                 error = " ".join(failures) or None
             except Cancelled as exc:
                 error, cancelled = str(exc), True

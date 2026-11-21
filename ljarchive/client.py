@@ -227,13 +227,14 @@ class LiveJournalClient:
         self.save_cooldown(self.not_before)
         self.budget.announce_wait(self.progress)
 
-    def _request(self, method: str, path: str, *, base_url=BASE_URL, category="livejournal", accepted_statuses=(200,), **kwargs) -> bytes:
+    def _request(self, method: str, path: str, *, base_url=BASE_URL, category="livejournal", accepted_statuses=(200,), attempts=None, **kwargs) -> bytes:
         user_directory = (base_url == 'https://users.livejournal.com'
                           and path == f'/{self.user}/profile/subslist/'
                           and (self.user.startswith('_') or self.user.endswith('_')))
         if not user_directory and base_url not in (BASE_URL, LIKES_URL, f"https://{self.user.replace('_', '-')}.livejournal.com"):
             raise ExportError("Неподдерживаемый адрес сервиса ЖЖ.")
-        for attempt in range(self.max_attempts):
+        attempts = self.max_attempts if attempts is None else attempts
+        for attempt in range(attempts):
             self.check()
             if self.budget.limit is not None and self.budget.used >= self.budget.limit:
                 self.budget.consume(category)  # Raise before waiting for a request that cannot be sent.
@@ -242,9 +243,9 @@ class LiveJournalClient:
             self._wait(self.budget.not_before - time.time())
             self._wait(self.delay - (time.monotonic() - self._last_request))
             if attempt:
-                self.progress(phase="retrying", message=f"Повтор запроса к ЖЖ · попытка {attempt + 1} из {self.max_attempts}")
+                self.progress(phase="retrying", message=f"Повтор запроса к ЖЖ · попытка {attempt + 1} из {attempts}")
             self.budget.consume(category)
-            self.budget.event("request", category, base_url, attempt=attempt + 1, max_attempts=self.max_attempts)
+            self.budget.event("request", category, base_url, attempt=attempt + 1, max_attempts=attempts)
             self._last_request = time.monotonic()
             try:
                 with self.session.request(method, base_url + path, timeout=(15, 60),
@@ -254,9 +255,9 @@ class LiveJournalClient:
                     if response.status_code in (429, 500, 502, 503, 504):
                         self._defer(backoff(attempt, response.headers.get("Retry-After"), limited=response.status_code == 429),
                                     reason="http", category=category, url=base_url, http_status=response.status_code,
-                                    attempt=attempt + 1, max_attempts=self.max_attempts,
+                                    attempt=attempt + 1, max_attempts=attempts,
                                     server_delay=bool(response.headers.get("Retry-After")))
-                        if attempt == self.max_attempts - 1:
+                        if attempt == attempts - 1:
                             if response.status_code == 429:
                                 raise HTTPRateLimited("HTTP 429 · ЖЖ ограничил частоту запросов. Срок повтора сохранён.")
                             raise ExportError("ЖЖ временно ограничивает запросы или недоступен. Данные сохранены, продолжите позже.")
@@ -284,8 +285,8 @@ class LiveJournalClient:
                 raise ExportError("Не удалось проверить TLS-сертификат ЖЖ. Проверьте часы и сертификаты системы; проверка HTTPS не отключалась.") from exc
             except (requests.Timeout, requests.ConnectionError, requests.exceptions.ChunkedEncodingError) as exc:
                 self._defer(backoff(attempt), reason="timeout" if isinstance(exc, requests.Timeout) else "connection",
-                            category=category, url=base_url, attempt=attempt + 1, max_attempts=self.max_attempts)
-                if attempt == self.max_attempts - 1:
+                            category=category, url=base_url, attempt=attempt + 1, max_attempts=attempts)
+                if attempt == attempts - 1:
                     raise ExportError("Не удалось связаться с ЖЖ. Проверьте соединение и продолжите выгрузку.") from exc
         raise ExportError("Не удалось получить ответ ЖЖ.")
 
@@ -487,6 +488,28 @@ class LiveJournalClient:
         if not isinstance(result, list):
             raise ExportError("ЖЖ не вернул список реакций.")
         return result
+
+    def community_feed_pin(self):
+        from .feed_pin import page_pin
+        from .web_session import ready
+
+        base = f"https://{self.user.replace('_', '-')}.livejournal.com"
+        def read(path, headers):
+            raw = self._request('GET', path, base_url=base, headers=headers, attempts=1)
+            return page_pin(raw, self.user, self.journal_id, self.account, requested_home=True)
+
+        signed = ready(self, base + '/')
+        headers = {} if signed else {'Cookie': 'ljsession=' + self._cookie}
+        try:
+            did = read('/', headers)
+        except AuthenticationRequired:
+            if signed or not self.ensure_web_session():
+                return None
+            headers = {}
+            did = read('/', headers)
+        if did is None and (self.budget.limit is None or self.budget.used < self.budget.limit):
+            did = read('/?style=mine', headers)
+        return did
 
     def web_deleted_threads(self, ditemid, dtalkid):
         from .comment_page import deleted_threads

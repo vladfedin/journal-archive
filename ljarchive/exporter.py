@@ -109,6 +109,23 @@ class Exporter:
             self._media.load_state(self.store)
         return self._media
 
+    def refresh_feed_pin(self):
+        source = getattr(self.client, 'source', {}) or {}
+        if source.get('type') != 'community' or source['access']['status'] != 'verified':
+            return
+        budget = self.client.budget
+        if budget.limit is not None and budget.used >= budget.limit:
+            return
+        self.update('posts', 'Проверяем верхнюю запись сообщества…')
+        try:
+            did = self.client.community_feed_pin()
+        except Cancelled:
+            raise
+        except ExportError:
+            return  # A private or unreadable journal page supplies no new observation.
+        with self.store.db:
+            self.store.observe_feed_pin(did)
+
     def retry_materials(self):
         """After every stage, repeat this task's failed downloads until saved or closed."""
         selected = getattr(self, "selected_ids", None)
@@ -696,6 +713,7 @@ class Exporter:
                 self.personal()
                 self.video_stage()
                 self.retry_materials()
+                self.refresh_feed_pin()
                 error = " ".join(failures) or None
             except Cancelled as exc:
                 error, cancelled = str(exc), True

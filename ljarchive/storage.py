@@ -91,6 +91,9 @@ class Store:
         self.db.execute("INSERT OR REPLACE INTO settings VALUES (?,?)", (key, dumps(value)))
 
     def sticky_entry_id(self):
+        page_pin = self.get('feed_page_pin')
+        if page_pin:
+            return self._archived_pin_id(page_pin['ditemid'])
         saved = self.get('sticky_entry_id')
         if saved is not None:
             return saved
@@ -112,16 +115,53 @@ class Store:
             return 0
         return rows[0]['id']
 
+    def _archived_pin_id(self, did):
+        from .reactions import display_id
+        from .sync import url_id
+
+        if not did:
+            return 0
+        eid = did // 256
+        row = self.db.execute('SELECT payload FROM entries WHERE id=?', (eid,)).fetchone()
+        if not row:
+            return 0
+        entry = json.loads(row[0])
+        try:
+            actual = display_id(entry)
+            if actual is None and entry.get('url'):
+                actual = url_id(self.get('username'), entry['url'])
+        except (TypeError, ValueError, ExportError):
+            return 0
+        return eid if actual == did else 0
+
+    def observe_feed_pin(self, did):
+        """Keep the web observation separate from the lossless XML records."""
+        if did is not None:
+            self.set('feed_page_pin', {'ditemid': did, 'source': 'journal_page'})
+            self.set('sticky_entry_id', self._archived_pin_id(did))
+
     def save_entry(self, item):
-        # getevents marks the journal's current pin. A partial update can move
-        # it without refreshing the source record for the previously pinned post.
-        if item.get('source_status') != 'not_returned':
-            if is_sticky(item):
-                self.set('sticky_entry_id', int(item['itemid']))
-            elif self.get('sticky_entry_id') == int(item['itemid']):
-                self.set('sticky_entry_id', 0)
         self._version("post", "entries", int(item["itemid"]), item)
         self.db.execute("INSERT OR REPLACE INTO entries VALUES (?,?)", (int(item["itemid"]), dumps(item)))
+
+        if item.get('source_status') == 'not_returned':
+            return
+        eid = int(item['itemid'])
+        page = self.get('feed_page_pin')
+        if is_sticky(item):
+            if page and self._archived_pin_id(page['ditemid']) != eid:
+                self.db.execute("DELETE FROM settings WHERE key='feed_page_pin'")
+            self.set('sticky_entry_id', eid)
+        elif page:
+            if page['ditemid'] // 256 == eid:
+                matched = self._archived_pin_id(page['ditemid'])
+                props = item.get('props') or {}
+                if matched and isinstance(props, dict) and props.get('sticky') in (0, '0'):
+                    self.db.execute("DELETE FROM settings WHERE key='feed_page_pin'")
+                    matched = 0
+                self.set('sticky_entry_id', matched)
+        elif self.get('sticky_entry_id') == eid:
+            self.set('sticky_entry_id', 0)
 
     def save_comment(self, item):
         self._version("comment", "comments", int(item["id"]), item)

@@ -79,6 +79,7 @@ python -m ljarchive sync username --mode full           # проверка и п
 python -m ljarchive json archives/username --format activitystreams --output journal.json
 python -m ljarchive json archives/username --format source --output source.json
 python -m ljarchive build archives/username            # пересобрать HTML без сети
+python -m ljarchive build archives/username --journal-page journal.html  # проверить закреп по сохранённой главной странице ЖЖ
 python -m ljarchive verify archives/username           # проверить локальные данные без сети
 ```
 

@@ -15,6 +15,21 @@ from test_limited_export import Response
 from test_render_server import local_server
 
 
+def community_home(journal='bookclub', account='manager', *, icon=True):
+    url = f'https://{journal}.livejournal.com/263.html'
+    first = {'itemid': 263, 'journalid': 900, 'url': url}
+    image = '<img src="https://l-stat.livejournal.net/img/icon_sticky.png?v=1">'
+    return f"""<div id="asset-{journal}-263" class="post-asset"><div class="asset-header">
+        <h2 class="asset-name"><span class="lj-entry-securityicon">{image if icon else ''}</span>
+        <a href="{url}" class="subj-link">First post</a></h2></div>
+        <div class="asset-body">{image}<b data-widget-options='{{"sticky":false}}'>cut</b></div></div>
+        <script>
+        Site.page = {json.dumps({'styleLayout': 'Expressive', 'entries': [first]})};
+        Site.journal = {json.dumps({'username': journal, 'id': 900})};
+        Site.remote = {json.dumps({'username': account})};
+        </script>""".encode()
+
+
 class CommunityWire:
     """Actual client authentication, routing and budgets against synthetic responses."""
     def __init__(self, *, manager='manager', journal='bookclub', managed=True, caps=True, denied=False, reactors=False):
@@ -31,6 +46,11 @@ class CommunityWire:
                 'url': f'https://{self.journal}.livejournal.com/{eid * 256 + 7}.html'}
 
     def request(self, method, url, **kwargs):
+        if method == 'GET' and url in (f'https://{self.journal}.livejournal.com/',
+                                       f'https://{self.journal}.livejournal.com/?style=mine'):
+            self.calls.append(('feed_page', {}))
+            assert kwargs['headers']['Cookie'] == 'ljsession=test-session'
+            return Response(content=community_home(self.journal, self.manager))
         if method == 'GET' and url == 'https://www.livejournal.com/':
             self.calls.append(('reaction_token', {}))
             return Response(content=b'<script>Site={"auth_token":"test-token"}</script>')
@@ -103,6 +123,9 @@ def community_client(monkeypatch, **kwargs):
 def test_community_export_preserves_authors_hidden_threads_and_source(tmp_path, monkeypatch):
     client, wire = community_client(monkeypatch, reactors=True)
     report = SyncExporter(tmp_path, client, Scope(), images=False, account=True, messages=True).run()
+    rows = json.loads((tmp_path / 'assets/feed-data.js').read_text()[len('window.ARCHIVE='):-1])['entries']
+    assert [(r['id'], r['sticky']) for r in rows] == [(1, True), (2, False)]
+    assert sum(name == 'feed_page' for name, _ in wire.calls) == 1
     assert report['status'] == 'complete', report['issues']
     assert report['username'] == 'bookclub'
     assert report['requests_used'] == len(wire.calls)
@@ -290,3 +313,85 @@ def test_community_picker_lists_managed_journals_without_creating_archive(local_
     assert response.json() == {'communities': [wire.journal]}
     assert [name for name, _ in wire.calls] == ['getchallenge', 'sessiongenerate', 'manage']
     assert client._cookie is None and not list(server.jobs.tasks.glob('*.json'))
+
+def test_community_pin_evidence_and_offline_build(tmp_path, monkeypatch):
+    import sys
+    from ljarchive.__main__ import main
+    from ljarchive.feed_pin import page_pin
+
+    home = community_home()
+    def parse(page):
+        return page_pin(page, 'bookclub', 900, 'manager')
+    assert parse(home) == 263
+    assert parse(community_home(icon=False)) is None
+    assert page_pin(community_home(icon=False), 'bookclub', 900, 'manager', requested_home=True) == 0
+    local = home.replace(b'https://l-stat.livejournal.net/img/icon_sticky.png?v=1"',
+                         './saved_files/icon_sticky.png" alt="Верхняя запись" title="Верхняя запись"'.encode())
+    assert parse(local) == 263
+    assert parse(community_home(account='guest')) is None
+    assert parse(home.replace(b'asset-bookclub-263', b'asset-other-263')) is None
+    assert parse(home.replace(b'class="asset-header"', b'class="asset-body"')) is None
+    assert parse(home.replace(b'Expressive', b'other')) is None
+    assert parse(home.replace(b'icon_sticky.png', b'icon_protected.gif')) is None
+    assert parse(b'<p>No entries.</p>') is None
+
+    client, _ = community_client(monkeypatch)
+    SyncExporter(tmp_path, client, Scope(), images=False).run()
+    store = Store(tmp_path)
+    try:
+        early, later = sorted(store.entries(), key=lambda e: e['itemid'])
+        with store.db:
+            store.save_entry(early)
+            store.observe_feed_pin(None)
+            assert store.sticky_entry_id() == 1
+            store.save_entry({**later, 'props': {'sticky': 1}})
+            assert store.sticky_entry_id() == 2
+            assert store.get('feed_page_pin') is None
+    finally:
+        store.close()
+    saved = tmp_path / 'home.html'
+    saved.write_bytes(home)
+    monkeypatch.setattr(sys, 'argv', ['lj-archive', 'build', str(tmp_path), '--journal-page', str(saved)])
+    main()
+    data = json.loads((tmp_path / 'data/archive.json').read_text())
+    assert data['journal']['feed_pin'] == {'source': 'journal_page', 'ditemid': 263}
+    assert 'sticky' not in data['entries'][0]['props']
+    assert source_snapshot(json.loads((tmp_path / 'data/activitystreams.json').read_text())) == data
+    store = Store(tmp_path)
+    try:
+        with store.db:
+            store.save_entry({**early, 'props': {'sticky': 0}})
+            assert store.sticky_entry_id() == 0
+    finally:
+        store.close()
+
+
+def test_pin_outside_current_export_matches_full_id_when_entry_arrives(tmp_path):
+    store = Store(tmp_path)
+    try:
+        with store.db:
+            store.set('username', 'bookclub')
+            store.observe_feed_pin(263)
+            assert store.sticky_entry_id() == 0
+            store.save_entry({'itemid': 1, 'anum': 8})
+            assert store.sticky_entry_id() == store.get('sticky_entry_id') == 0
+            store.save_entry({'itemid': 1, 'url': 'https://bookclub.livejournal.com/263.html'})
+            assert store.sticky_entry_id() == store.get('sticky_entry_id') == 1
+    finally:
+        store.close()
+
+def test_community_pin_can_use_readers_layout(monkeypatch):
+    client, wire = community_client(monkeypatch)
+    try:
+        client.login()
+        seen = []
+        def request(method, url, **kwargs):
+            seen.append(url)
+            if url == 'https://bookclub.livejournal.com/':
+                return Response(content=community_home().replace(b'Expressive', b'other'))
+            return wire.request(method, url, **kwargs)
+        monkeypatch.setattr(client.session, 'request', request)
+        assert client.community_feed_pin() == 263
+        assert seen == ['https://bookclub.livejournal.com/', 'https://bookclub.livejournal.com/?style=mine']
+    finally:
+        client.close()

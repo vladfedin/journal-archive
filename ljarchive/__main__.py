@@ -35,6 +35,7 @@ def main():
     demo.add_argument("--output", type=Path, default=Path("archives/_demo"))
     build = sub.add_parser("build", help="Пересобрать HTML из сохранённой базы, без сети")
     build.add_argument("folder", type=Path)
+    build.add_argument('--journal-page', type=Path, help='Уточнить закреп по сохранённой главной странице ЖЖ')
     refresh = sub.add_parser("refresh-reactions", help="Дозагрузить реакции и их авторов в существующий архив")
     refresh.add_argument("folder", type=Path)
     refresh.add_argument("--max-requests", type=int, default=50)
@@ -102,6 +103,15 @@ def main():
                     report = exporter.report("Архив восстановлен после прерывания. Требуется продолжить выгрузку.")
                 if not report.get("username"):
                     raise ExportError("В базе нет данных авторизованного журнала.")
+                if args.command == 'build' and args.journal_page:
+                    from .feed_pin import page_pin
+                    from .sources import stored_source
+                    identity = stored_source(store)
+                    did = page_pin(args.journal_page.read_bytes(), identity['username'], identity['id'], identity['login_username'])
+                    if did is None:
+                        raise ExportError('На этой странице не удалось проверить закрепление для данного архива.')
+                    with store.db:
+                        store.observe_feed_pin(did)
                 if args.command == "refresh-reactions":
                     from .client import LiveJournalClient, RequestBudget
                     from .exporter import now
