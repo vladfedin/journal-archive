@@ -17,7 +17,7 @@ def snapshot(store):
         "account": account_data(store),
         "schema_version": SCHEMA_VERSION,
         "journal": {"username": store.get("username"), "id": store.get("journal_id"),
-                    **({"feed_pin": pin} if (pin := store.get("feed_page_pin")) else {})},
+                    **({"feed_pin": pin} if (pin := store.feed_pin()) else {})},
         "scope": {"entry_limit": store.get("entry_limit"), "started_at": store.get("started_at"),
                   "last_sync": store.get("sync_job", {}).get("scope")},
         "entries": sorted(store.entries(), key=lambda item: int(item["itemid"])),

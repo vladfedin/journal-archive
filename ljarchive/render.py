@@ -23,7 +23,7 @@ from .gaps import closed
 from .storage import Store, atomic_write, dumps
 
 # Bump when previously generated offline pages or assets need rebuilding.
-ARCHIVE_FORMAT_VERSION = "0.9.0.9"
+ARCHIVE_FORMAT_VERSION = "0.9.0.10"
 ROOT = Path(__file__).parent
 ENV = Environment(loader=FileSystemLoader(ROOT / "templates"), autoescape=select_autoescape(["html"]))
 TAGS = frozenset("p br div span a b strong i em u s del blockquote pre code ul ol li h1 h2 h3 h4 h5 h6 hr img video table thead tbody tr td th caption dl dt dd sub sup details summary figure figcaption".split())
@@ -519,9 +519,12 @@ def build_archive(store: Store, report: dict, *, images=False, userpics=False, c
     image_map = {url: media.mapping[url] for url in media.used_urls["images"]}
     report["images_saved"] = sum(bool(path) for path in image_map.values())
     from .media import error_message
+    error_urls = media.mapping
+    if store.get('entry_limit') is not None:
+        error_urls = media.used_urls['images'] | media.used_urls['userpics']
     report["media_errors"] = {url: {**media.errors.get(url, {"status": "unknown", "reason": "unknown"}),
                                     "message": error_message(media.errors.get(url, {}))}
-                              for url in sorted(media.mapping) if not media.mapping[url]}
+                              for url in sorted(error_urls) if url in media.mapping and not media.mapping[url]}
     report["images_failed"] = [url for url, error in report["media_errors"].items() if error["status"] == "failed"]
     report["images_unavailable"] = sum(path is None for path in image_map.values())
     # Asked for several times and not given: final, shown as original links, not a reason to resume.
@@ -602,6 +605,13 @@ def build_archive(store: Store, report: dict, *, images=False, userpics=False, c
     atomic_write(folder / "report.html", ENV.get_template("report.html").render(user=user, report=report))
     if entry_ids is None:
         atomic_write(folder / "help.html", ENV.get_template("help.html").render(user=user, report=report))
+        retired = store.get('retired_recent_ids', [])
+        if retired:
+            for eid in set(retired) - real_ids:
+                (folder / 'entries' / f'{int(eid)}.html').unlink(missing_ok=True)
+                (folder / 'assets' / 'posts' / f'{int(eid)}.js').unlink(missing_ok=True)
+            with store.db:
+                store.set('retired_recent_ids', [])
     from .integrity import write_manifest
     if progress:
         progress(phase='render', message='Проверка файлов', completed=0, total=0)

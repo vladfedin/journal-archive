@@ -247,3 +247,43 @@ def test_dates_validate_without_twenty_year_limit():
     assert validate_scope('fixture', 'period', '1999-01-01', '2026-11-15').includes('2005-01-02')
     with pytest.raises(ExportError): validate_scope('fixture', 'period', '2026-11-15', '1999-01-01')
     with pytest.raises(ExportError): validate_scope('fixture', 'period', '2026-02-31')
+
+
+def test_pin_survives_sparse_updates_and_offline_rebuild(tmp_path):
+    from ljarchive.data import snapshot
+    from ljarchive.live import summaries
+    from ljarchive.render import build_archive
+
+    class PinnedJournal(Journal):
+        def __init__(self, flags):
+            super().__init__()
+            self.flags = flags
+
+        def entry(self, eid):
+            entry = super().entry(eid)
+            if eid in self.flags:
+                entry['props'] = {'sticky': self.flags[eid]}
+            return entry
+
+    for scope, flags, expected in (
+            (Scope(), {1: 1}, 1),
+            (validate_scope('fixture', 'urls', urls='https://fixture.livejournal.com/263.html'), {}, 1),
+            (Scope('period', '2005-01-01', '2005-12-31'), {}, 1),
+            (Scope(), {}, 1),
+            (Scope(), {2: 1}, 2),
+            (Scope(), {2: 0}, 0)):
+        report = run(tmp_path, PinnedJournal(flags), scope)
+        assert report['status'] == 'complete', report['issues']
+        store = Store(tmp_path)
+        try:
+            assert store.sticky_entry_id() == expected
+            assert [r['id'] for r in summaries(store)[1] if r['sticky']] == ([expected] if expected else [])
+            build_archive(store, report)
+            pin = snapshot(store)['journal']['feed_pin']
+            assert pin['source'] == 'getevents'
+            rows = json.loads((tmp_path/'assets/feed-data.js').read_text()[len('window.ARCHIVE='):-1])['entries']
+            assert [r['id'] for r in rows if r['sticky']] == ([expected] if expected else [])
+            if expected:
+                assert rows[0]['id'] == expected
+        finally:
+            store.close()

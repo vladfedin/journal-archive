@@ -39,6 +39,9 @@ class Wire:
         self.placeholder = placeholder
 
     def request(self, method, url, **kwargs):
+        if method == "GET" and url == "https://owner.livejournal.com/":
+            self.calls.append(("feed_pin", {}))
+            return Response(status=404)
         if method == "GET" and url == "https://www.livejournal.com/":
             self.calls.append(("reaction_token", {}))
             return Response(content=b'<script>Site={"auth_token":"fixture-read-token"}</script>')
@@ -107,7 +110,7 @@ def test_latest_ten_with_screened_comments_and_reactions_share_budget(tmp_path, 
     assert report["status"] == "complete", report
     assert report["entries_saved"] == 10 and report["comments_saved"] == 20
     assert report["screened_comments"] == 10
-    assert report["requests_used"] == len(wire.calls) == 31
+    assert report["requests_used"] == len(wire.calls) == 32
     assert report["reactions"]["posts_saved"] == 10
     assert report["reactions"]["comments_saved"] == 20
     assert report["reactions"]["authors_complete"]
@@ -122,7 +125,7 @@ def test_latest_ten_with_screened_comments_and_reactions_share_budget(tmp_path, 
     assert all(c["reactions"]["count"] == 3 for c in comments)
     assert all(e["reactions"]["groups"] == [1, 0, 2] for e in entries)
     assert all(c["reactions"]["authors"]["status"] == "complete" for c in comments)
-    assert "31 / 50" in (tmp_path / "owner-latest-10/report.html").read_text(encoding="utf-8")
+    assert "32 / 50" in (tmp_path / "owner-latest-10/report.html").read_text(encoding="utf-8")
     for file in (tmp_path / "owner-latest-10").rglob("*.json"):
         assert "fixture-read-token" not in file.read_text(encoding="utf-8") and "fixture-session" not in file.read_text(encoding="utf-8")
     assert not (tmp_path / "owner").exists()
@@ -140,7 +143,7 @@ def test_limit_stops_before_next_request_and_keeps_ten_posts(tmp_path, monkeypat
     assert json.loads((folder / "export-report.json").read_text(encoding="utf-8"))["request_limit"] == 10
     resumed, resumed_wire = export_fixture(tmp_path, monkeypatch)
     assert resumed["status"] == "complete"
-    assert resumed["requests_used"] == len(resumed_wire.calls) == 25
+    assert resumed["requests_used"] == len(resumed_wire.calls) == 26
     assert not any(name == "getevents" for name, _ in resumed_wire.calls)
 
 
@@ -233,3 +236,106 @@ def test_resume_reaction_only_trial_does_not_repeat_saved_comments(tmp_path, mon
     resumed, wire = export_fixture(tmp_path, monkeypatch)
     assert resumed["status"] == "complete"
     assert not any(name in ("getevents", "getcomments") for name, _ in wire.calls)
+
+
+def test_repeat_sample_keeps_previous_snapshot_until_selection_is_confirmed(tmp_path, monkeypatch):
+    from ljarchive.integrity import verify_archive
+    from ljarchive.storage import Store
+
+    folder = tmp_path / 'owner-latest-10'
+    assert export_fixture(tmp_path, monkeypatch)[0]['status'] == 'complete'
+    store = Store(folder)
+    try:
+        with store.db:
+            store.observe_feed_pin(4 * 256 + 7)
+            store.set('videos', {'old': {'status': 'not_requested', 'entries': [3]},
+                                 'shared': {'status': 'not_requested', 'entries': [3, 4]}})
+        old_counts = store.counts()
+    finally:
+        store.close()
+
+    # Login succeeded, but the request for the new list exceeded the budget.
+    report, _ = export_fixture(tmp_path, monkeypatch, limit=4)
+    assert report['status'] == 'partial'
+    store = Store(folder)
+    try:
+        assert store.counts() == old_counts
+        assert store.sticky_entry_id() == 4
+        assert verify_archive(store)['ok']
+    finally:
+        store.close()
+
+    original_request = Wire.request
+    def shifted(self, method, url, **kwargs):
+        response = original_request(self, method, url, **kwargs)
+        if method == 'POST' and url.endswith('/interface/xmlrpc') and self.calls[-1][0] == 'getevents':
+            events = xmlrpc.client.loads(response.content)[0][0]['events']
+            events[-1].update(itemid=13, eventtime='2026-11-13 12:00:00')
+            return Response({'events': events})
+        return response
+    monkeypatch.setattr(Wire, 'request', shifted)
+    assert export_fixture(tmp_path, monkeypatch)[0]['status'] == 'complete'
+    store = Store(folder)
+    try:
+        assert {e['itemid'] for e in store.entries()} == set(range(4, 14))
+        assert {c['jitemid'] for c in store.comments()} == set(range(4, 14))
+        assert len(store.comments()) == 20 and store.sticky_entry_id() == 4
+        assert store.get('videos') == {'shared': {'status': 'not_requested', 'entries': [4]}}
+        assert not (folder / 'entries/3.html').exists()
+        assert not (folder / 'assets/posts/3.js').exists()
+        assert verify_archive(store)['ok']
+    finally:
+        store.close()
+
+
+def test_repeat_string_ids_retain_discussions_before_first_comment_request(tmp_path, monkeypatch):
+    from ljarchive.storage import Store
+
+    assert export_fixture(tmp_path, monkeypatch)[0]['status'] == 'complete'
+    original = Wire.request
+    def string_ids(self, method, url, **kwargs):
+        response = original(self, method, url, **kwargs)
+        if method == 'POST' and url.endswith('/interface/xmlrpc') and self.calls[-1][0] == 'getevents':
+            events = xmlrpc.client.loads(response.content)[0][0]['events']
+            return Response({'events': [{**event, 'itemid': str(event['itemid'])} for event in events]})
+        return response
+    monkeypatch.setattr(Wire, 'request', string_ids)
+    assert export_fixture(tmp_path, monkeypatch, limit=6)[0]['status'] == 'partial'
+    store = Store(tmp_path / 'owner-latest-10')
+    try:
+        assert store.counts() == {'entries': 10, 'comments': 20, 'comment_meta': 20}
+        assert len(store.reactions('comment')) == 20
+    finally:
+        store.close()
+
+def test_trial_refresh_keeps_missing_reply_and_reports_failed_reaction_refresh(tmp_path, monkeypatch):
+    from ljarchive.storage import Store
+
+    assert export_fixture(tmp_path, monkeypatch)[0]['status'] == 'complete'
+    original = Wire.request
+    def fewer_replies(self, method, url, **kwargs):
+        if url == 'https://likes.services.livejournal.com/get':
+            return Response(status=404)
+        response = original(self, method, url, **kwargs)
+        if method == 'POST' and url.endswith('/interface/xmlrpc'):
+            name, params = self.calls[-1]
+            if name in ('getevents', 'getcomments'):
+                result = xmlrpc.client.loads(response.content)[0][0]
+                if name == 'getevents':
+                    for entry in result['events']:
+                        if entry['itemid'] == 3:
+                            entry['reply_count'] = 1
+                elif params['itemid'] == 3:
+                    result['comments'][0]['children'] = []
+                return Response(result)
+        return response
+    monkeypatch.setattr(Wire, 'request', fewer_replies)
+    report, _ = export_fixture(tmp_path, monkeypatch)
+    assert report['status'] == 'partial' and any('404' in reason for reason in report['issues'])
+    store = Store(tmp_path / 'owner-latest-10')
+    try:
+        reply = next(c for c in store.comments(3) if c['id'] == 311)
+        assert reply['source_status'] == 'not_returned' and reply['body'] == 'Reply'
+        assert not store.get('finished') and len(store.reactions('comment')) == 20
+    finally:
+        store.close()

@@ -19,7 +19,7 @@ def test_pin_moves_between_posts_in_live_and_saved_feeds(tmp_path):
     def check(expected, pinned=None, *, legacy=False):
         with store.db:
             if legacy:
-                store.db.execute("DELETE FROM settings WHERE key='sticky_entry_id'")
+                store.db.execute("DELETE FROM settings WHERE key IN ('sticky_entry_id','feed_pin')")
         build_archive(store, report)
         published = (tmp_path / 'index.html').read_text(encoding='utf-8')
         for html in (published, preview_index(store)):

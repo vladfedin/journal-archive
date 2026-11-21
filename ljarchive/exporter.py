@@ -7,7 +7,7 @@ from pathlib import Path
 
 from .client import HTTPRateLimited, APIRateLimited, APIError, Cancelled, ExportError, IncompleteData, LiveJournalClient, RequestBudget, RequestLimitReached, username
 from .storage import Store, atomic_write, dumps
-from .comment_state import DELETED, merge_comment
+from .comment_state import DELETED
 from .entries import is_repost
 from .sources import bind_source
 from .retry import restored_deadline
@@ -111,14 +111,14 @@ class Exporter:
 
     def refresh_feed_pin(self):
         source = getattr(self.client, 'source', {}) or {}
-        if source.get('type') != 'community' or source['access']['status'] != 'verified':
+        if source.get('access', {}).get('status') != 'verified' or not hasattr(self.client, 'journal_feed_pin'):
             return
         budget = self.client.budget
         if budget.limit is not None and budget.used >= budget.limit:
             return
-        self.update('posts', 'Проверяем верхнюю запись сообщества…')
+        self.update('posts', 'Проверяем верхнюю запись журнала…')
         try:
-            did = self.client.community_feed_pin()
+            did = self.client.journal_feed_pin()
         except Cancelled:
             raise
         except ExportError:
@@ -211,21 +211,32 @@ class Exporter:
             raise ExportError("ЖЖ не вернул корректный список последних записей.")
         entries = sorted({int(e["itemid"]): e for e in entries}.values(),
                          key=lambda e: (e["eventtime"], int(e["itemid"])), reverse=True)[:self.entry_limit]
-        with store.db:
-            for entry in entries:
-                store.save_entry(entry)
-            store.set("recent_expected", self.entry_limit)
-        atomic_write(self.folder / "raw" / "recent-posts.json", dumps(response))
         expected = self.entry_limit
+        replacing = store.get("refresh_recent", False)
         if len(entries) < expected:
+            if not replacing:
+                # Even a first, incomplete selection is useful if the calendar request fails.
+                with store.db:
+                    for entry in entries:
+                        store.save_entry(entry)
             calendar = self.client.call("getdaycounts").get("daycounts")
             if not isinstance(calendar, list):
                 raise ExportError("ЖЖ вернул меньше запрошенных записей; проверить размер журнала не удалось.")
             expected = min(expected, sum(int(d["count"]) for d in calendar))
-        with store.db:
-            store.set("recent_expected", expected)
-            store.set("posts_done", len(entries) == expected)
-        if len(entries) != expected:
+        complete = len(entries) == expected
+        if complete or not replacing:
+            with store.db:
+                if complete:
+                    if replacing:
+                        store.set("entry_comments", {})
+                    store.retain_recent_entries([entry["itemid"] for entry in entries])
+                    store.set("refresh_recent", False)
+                for entry in entries:
+                    store.save_entry(entry)
+                store.set("recent_expected", expected)
+                store.set("posts_done", complete)
+            atomic_write(self.folder / "raw" / "recent-posts.json", dumps(response))
+        if not complete:
             raise IncompleteData(f"Запрошены последние {expected} записей, ЖЖ вернул {len(entries)}.")
 
     def discussion_complete(self, entry, status):
@@ -369,6 +380,8 @@ class Exporter:
                     raise IncompleteData(f"Не все комментарии к записи #{eid} получены.")
             with store.db:
                 store.set("entry_comments", statuses)
+                if status.get("done"):
+                    store.mark_absent_comments(eid, set(status.get("seen_ids", [])))
             if page >= pages:
                 return
             page += 1
@@ -396,11 +409,8 @@ class Exporter:
     def save_thread(self, items, users, *, evidence="getcomments"):
         store = self.store
         with store.db:
-            import json
             for item in items:
-                row = store.db.execute("SELECT payload FROM comments WHERE id=?", (item["id"],)).fetchone()
-                current = merge_comment(json.loads(row[0]) if row else None, item, evidence=evidence)
-                store.save_comment(current)
+                current = store.save_comment(item, evidence=evidence)
                 store.db.execute("INSERT OR REPLACE INTO comment_meta VALUES (?,?,?)",
                                  (current["id"], current["posterid"], current["state"]))
             for uid, name in users.items():
@@ -554,7 +564,7 @@ class Exporter:
             atomic_write(self.folder / "raw" / f"comment-body-{cursor}.xml", raw)
             with store.db:
                 for item in page.comments:
-                    store.save_comment(item)
+                    store.save_comment(item, evidence="comment_body")
                 for uid, name in page.users.items():
                     store.db.execute("INSERT OR REPLACE INTO users VALUES (?,?)", (uid, name))
                 store.set("body_cursor", nextid)
@@ -672,11 +682,14 @@ class Exporter:
             finally:
                 with store.db:
                     bind_source(store, self.client)
-            # A new complete run is a new snapshot. Old readable files remain until rebuilt.
+            # Start a new observation cycle without discarding the previous snapshot.
             with store.db:
                 if store.get("finished", False):
-                    for table in ("entries", "comments", "comment_meta", "users", "days", "settings", "reactions"):
-                        store.db.execute(f"DELETE FROM {table}")
+                    store.db.execute("DELETE FROM days")
+                    store.db.executemany("DELETE FROM settings WHERE key=?", ((key,) for key in (
+                        "days_loaded", "posts_done", "meta_done", "meta_cursor", "body_cursor", "bodies_done",
+                        "trial_reaction_counts", "finished", "started_at")))
+                    store.set("refresh_recent", self.entry_limit is not None)
                 bind_source(store, self.client)
                 if getattr(self.client, "journal_id", None):
                     store.set("journal_id", self.client.journal_id)
@@ -707,7 +720,9 @@ class Exporter:
                     self.comment_metadata()
                     self.comment_bodies()
                 try:
-                    self.reactions()
+                    if not self.reactions():
+                        reasons = store.get('reaction_issues') or ['Не удалось обновить реакции.']
+                        failures.extend(reasons)
                 except IncompleteData as exc:
                     failures.append(str(exc))
                 self.personal()

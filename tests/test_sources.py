@@ -346,7 +346,7 @@ def test_community_pin_evidence_and_offline_build(tmp_path, monkeypatch):
             assert store.sticky_entry_id() == 1
             store.save_entry({**later, 'props': {'sticky': 1}})
             assert store.sticky_entry_id() == 2
-            assert store.get('feed_page_pin') is None
+            assert store.feed_pin() == {'ditemid': later['ditemid'], 'source': 'getevents'}
     finally:
         store.close()
     saved = tmp_path / 'home.html'
@@ -391,7 +391,7 @@ def test_community_pin_can_use_readers_layout(monkeypatch):
                 return Response(content=community_home().replace(b'Expressive', b'other'))
             return wire.request(method, url, **kwargs)
         monkeypatch.setattr(client.session, 'request', request)
-        assert client.community_feed_pin() == 263
+        assert client.journal_feed_pin() == 263
         assert seen == ['https://bookclub.livejournal.com/', 'https://bookclub.livejournal.com/?style=mine']
     finally:
         client.close()

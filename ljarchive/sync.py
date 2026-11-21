@@ -345,20 +345,15 @@ class SyncExporter(Exporter):
         incomplete_entries = set()
         comments = self.store.comments()
         screened_ids = {c["id"] for c in comments if c["state"] == "S"}
-        with self.store.db:
-            for item in comments:
-                eid = int(item.get("jitemid", 0))
-                if eid not in self.selected_ids or not statuses.get(str(eid), {}).get("done") or statuses.get(str(eid), {}).get("skipped") == "repost":
-                    continue
-                if item["id"] not in statuses[str(eid)].get("seen_ids", []):
-                    # Absence is not proof of deletion; retain earlier text explicitly.
-                    row = self.store.db.execute("SELECT payload FROM comments WHERE id=?", (item["id"],)).fetchone()
-                    original = json.loads(row[0])
-                    original["source_status"] = "not_returned"
-                    self.store.save_comment(original)
-                elif ("body" not in item or item.get("source_status") == "body_not_returned") and item.get("state") not in ("D", "X"):
-                    missing.append(item["id"])
-                    incomplete_entries.add(eid)
+        for item in comments:
+            eid = int(item.get("jitemid", 0))
+            if eid not in self.selected_ids or not statuses.get(str(eid), {}).get("done") or statuses.get(str(eid), {}).get("skipped") == "repost":
+                continue
+            if item["id"] not in statuses[str(eid)].get("seen_ids", []):
+                continue
+            if ("body" not in item or item.get("source_status") == "body_not_returned") and item.get("state") not in ("D", "X"):
+                missing.append(item["id"])
+                incomplete_entries.add(eid)
         for entry in self.store.entries():
             eid = int(entry["itemid"])
             if is_repost(entry):

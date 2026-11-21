@@ -74,8 +74,13 @@ class Store:
                 PRIMARY KEY(kind,object_id,digest));
         """)
         with self.db:
+            if self.get('feed_page_pin'):
+                self.set('feed_pin', self.get('feed_page_pin'))
+                self.db.execute("DELETE FROM settings WHERE key='feed_page_pin'")
             if self.get('sticky_entry_id') is None:
                 self.set('sticky_entry_id', self.sticky_entry_id())
+            if not self.feed_pin() and (eid := self.get('sticky_entry_id')):
+                self.set('feed_pin', {'itemid': eid, 'source': 'getevents'})
             if self.get('username') and not self.get('source'):
                 from .sources import stored_source
                 self.set('source', stored_source(self))
@@ -91,9 +96,12 @@ class Store:
         self.db.execute("INSERT OR REPLACE INTO settings VALUES (?,?)", (key, dumps(value)))
 
     def sticky_entry_id(self):
-        page_pin = self.get('feed_page_pin')
-        if page_pin:
-            return self._archived_pin_id(page_pin['ditemid'])
+        pin = self.feed_pin()
+        if pin:
+            if 'ditemid' in pin:
+                return self._archived_pin_id(pin['ditemid'])
+            eid = pin['itemid']
+            return eid if self.db.execute('SELECT 1 FROM entries WHERE id=?', (eid,)).fetchone() else 0
         saved = self.get('sticky_entry_id')
         if saved is not None:
             return saved
@@ -132,41 +140,88 @@ class Store:
                 actual = url_id(self.get('username'), entry['url'])
         except (TypeError, ValueError, ExportError):
             return 0
+        if actual is None:
+            # A sparse refresh of a known record need not repeat its public URL.
+            prior = self.feed_pin() or {}
+            return eid if prior.get('ditemid') == did and self.get('sticky_entry_id') == eid else 0
         return eid if actual == did else 0
 
+    def feed_pin(self):
+        # Read-only previews can open older archives before their first migration.
+        return self.get('feed_pin') or self.get('feed_page_pin')
+
     def observe_feed_pin(self, did):
-        """Keep the web observation separate from the lossless XML records."""
         if did is not None:
-            self.set('feed_page_pin', {'ditemid': did, 'source': 'journal_page'})
-            self.set('sticky_entry_id', self._archived_pin_id(did))
+            eid = self._archived_pin_id(did)
+            self.set('feed_pin', {'ditemid': did, 'source': 'journal_page'})
+            self.set('sticky_entry_id', eid)
 
     def save_entry(self, item):
-        self._version("post", "entries", int(item["itemid"]), item)
-        self.db.execute("INSERT OR REPLACE INTO entries VALUES (?,?)", (int(item["itemid"]), dumps(item)))
+        from .reactions import display_id
 
+        eid = int(item['itemid'])
+        self._version("post", "entries", eid, item)
+        self.db.execute("INSERT OR REPLACE INTO entries VALUES (?,?)", (eid, dumps(item)))
         if item.get('source_status') == 'not_returned':
             return
-        eid = int(item['itemid'])
-        page = self.get('feed_page_pin')
+        props = item.get('props')
         if is_sticky(item):
-            if page and self._archived_pin_id(page['ditemid']) != eid:
-                self.db.execute("DELETE FROM settings WHERE key='feed_page_pin'")
+            did = display_id(item)
+            pin = {'ditemid': did} if did else {'itemid': eid}
+            self.set('feed_pin', {**pin, 'source': 'getevents'})
             self.set('sticky_entry_id', eid)
-        elif page:
-            if page['ditemid'] // 256 == eid:
-                matched = self._archived_pin_id(page['ditemid'])
-                props = item.get('props') or {}
-                if matched and isinstance(props, dict) and props.get('sticky') in (0, '0'):
-                    self.db.execute("DELETE FROM settings WHERE key='feed_page_pin'")
-                    matched = 0
-                self.set('sticky_entry_id', matched)
-        elif self.get('sticky_entry_id') == eid:
+        elif isinstance(props, dict) and props.get('sticky') in (0, '0') and self.sticky_entry_id() == eid:
+            self.set('feed_pin', {'ditemid': 0, 'source': 'getevents'})
             self.set('sticky_entry_id', 0)
+        else:
+            pin = self.feed_pin()
+            if pin and pin.get('ditemid', 0) // 256 == eid:
+                self.set('sticky_entry_id', self.sticky_entry_id())
 
-    def save_comment(self, item):
+    def retain_recent_entries(self, ids):
+        """Replace membership only after validating the new bounded selection."""
+        keep = {int(eid) for eid in ids}
+        removed = [r[0] for r in self.db.execute('SELECT id FROM entries') if r[0] not in keep]
+        for eid in removed:
+            for table in ('reactions', 'record_hashes'):
+                self.db.execute(f"DELETE FROM {table} WHERE kind='comment' AND object_id IN "
+                                "(SELECT id FROM comments WHERE entry_id=?)", (eid,))
+                self.db.execute(f"DELETE FROM {table} WHERE kind='post' AND object_id=?", (eid,))
+            self.db.execute("DELETE FROM comment_meta WHERE id IN (SELECT id FROM comments WHERE entry_id=?)", (eid,))
+            self.db.execute("DELETE FROM comments WHERE entry_id=?", (eid,))
+            self.db.execute("DELETE FROM entries WHERE id=?", (eid,))
+        if removed:
+            self.set('retired_recent_ids', sorted(set(self.get('retired_recent_ids', [])) | set(removed)))
+            for key in ('entry_comments', 'entry_materials'):
+                saved = self.get(key, {})
+                self.set(key, {k: v for k, v in saved.items() if int(k) in keep})
+            for key in ('videos', 'external_embeds'):
+                records = self.get(key, {})
+                for url, record in list(records.items()):
+                    if 'entries' in record:
+                        record['entries'] = sorted(keep.intersection(record['entries']))
+                        if not record['entries']:
+                            del records[url]
+                self.set(key, records)
+            if self.get('sticky_entry_id') in removed:
+                self.set('sticky_entry_id', 0)
+
+    def mark_absent_comments(self, eid, seen):
+        for row in self.db.execute("SELECT id, payload FROM comments WHERE entry_id=?", (eid,)):
+            if row['id'] not in seen:
+                previous = json.loads(row['payload'])
+                if previous.get('source_status') != 'not_returned':
+                    self.save_comment({**previous, 'source_status': 'not_returned'})
+
+    def save_comment(self, item, *, evidence=None):
+        if evidence:
+            from .comment_state import merge_comment
+            previous = self.db.execute("SELECT payload FROM comments WHERE id=?", (item["id"],)).fetchone()
+            item = merge_comment(json.loads(previous[0]) if previous else None, item, evidence=evidence)
         self._version("comment", "comments", int(item["id"]), item)
         self.db.execute("INSERT OR REPLACE INTO comments VALUES (?,?,?,?)",
                         (int(item["id"]), int(item.get("jitemid", 0)), int(item.get("parentid", 0)), dumps(item)))
+        return item
 
     def _version(self, kind, table, object_id, item):
         payload = dumps(item)

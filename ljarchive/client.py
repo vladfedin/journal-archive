@@ -489,7 +489,7 @@ class LiveJournalClient:
             raise ExportError("ЖЖ не вернул список реакций.")
         return result
 
-    def community_feed_pin(self):
+    def journal_feed_pin(self):
         from .feed_pin import page_pin
         from .web_session import ready
 
