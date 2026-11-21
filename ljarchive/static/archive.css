@@ -454,3 +454,54 @@ a.year-mark{display:block;width:fit-content;text-decoration:none}a.year-mark:hov
   .library-version{margin-left:0}
 }
 /* ── /Страница «Архивы» ── */
+
+/* The archived profile keeps author content above the account directories. */
+.profile-main{overflow-wrap:anywhere}
+.profile-identity{display:flex;align-items:center;gap:18px;margin-bottom:22px}
+.profile-identity h1{margin:0 0 4px}
+.profile-avatar{flex:none;width:76px;height:76px;object-fit:contain;border-radius:12px;background:var(--subtle)}
+.profile-avatar-empty{display:grid;place-items:center;color:var(--muted)}
+.profile-avatar-empty svg{width:34px;height:34px}
+.profile-mail{margin-left:auto}
+.profile-journal,.profile-block{padding:22px 0;border-bottom:1px solid var(--line)}
+.profile-main .profile-journal h2,.profile-main .profile-block h2{margin:0 0 12px;font-size:var(--type-subtitle)}
+.profile-main .profile-journal h2{margin-bottom:4px}
+.profile-journal p{margin:0;color:var(--muted)}
+.profile-count{color:var(--muted);font-size:var(--type-ui);font-weight:400;margin-inline-start:4px}
+.profile-main summary{cursor:pointer}
+.profile-main details>summary:focus-visible{outline:2px solid currentColor;outline-offset:2px}
+.profile-prose,.bio-excerpt{max-width:68ch;font-size:var(--type-reading);line-height:1.55}
+.profile-prose{white-space:pre-line;overflow-x:auto}
+.profile-prose pre{white-space:pre-wrap;overflow-wrap:anywhere}
+.profile-prose img{max-width:100%;height:auto}
+.profile-prose p{margin:.6em 0}
+.profile-biography summary,.profile-more summary{color:var(--action);width:fit-content}
+.profile-biography summary{list-style:none}
+.bio-excerpt{white-space:pre-line;display:block;color:var(--ink);margin-bottom:5px}
+.profile-main details:not([open])>summary .when-open,.profile-main details[open]>summary :is(.when-closed,.bio-excerpt){display:none}
+.profile-interests{display:flex;flex-wrap:wrap;gap:7px}
+.profile-interests>*{background:var(--subtle);border-radius:6px;padding:3px 9px;font-size:var(--type-ui)}
+.profile-more{margin-top:11px}
+.profile-more[open]>summary{margin-bottom:12px}
+.profile-portraits{display:grid;grid-template-columns:repeat(auto-fill,minmax(92px,1fr));gap:16px 10px}
+.profile-portraits figure{margin:0;min-width:0}
+.profile-portraits img,.portrait-missing{display:block;width:88px;max-width:100%;height:88px;object-fit:contain;border-radius:7px;background:var(--subtle)}
+.portrait-missing{display:grid;place-items:center}
+.profile-portraits figcaption{font-size:var(--type-ui);line-height:1.35;margin-top:5px}
+.profile-portraits small{display:block;color:var(--muted);font-size:var(--type-caption)}
+.profile-directory>details{border-bottom:1px solid var(--line);padding:12px 0}
+.profile-directory>details>summary{font-size:var(--type-section);font-weight:550}
+.profile-directory>details[open]>summary{margin-bottom:12px}
+.profile-main .friend-list{grid-template-columns:repeat(auto-fit,minmax(min(100%,200px),1fr))}
+.profile-facts{display:grid;grid-template-columns:minmax(6em,max-content) minmax(0,1fr);gap:8px 18px}
+.profile-facts dt,.profile-issue{color:var(--muted)}
+.profile-facts dd{margin:0}
+@media(max-width:530px){
+ .profile-identity{flex-wrap:wrap;gap:10px}
+ .profile-avatar{width:54px;height:54px}
+ .profile-identity>div{flex:1;min-width:9em}
+ .profile-portraits{grid-template-columns:repeat(3,minmax(0,1fr))}
+ .profile-journal,.profile-block{padding:16px 0}
+}
+
+.profile-directory .profile-social-heading{margin:22px 0 3px;font-size:var(--type-subtitle)}

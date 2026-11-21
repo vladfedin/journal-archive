@@ -228,7 +228,10 @@ class LiveJournalClient:
         self.budget.announce_wait(self.progress)
 
     def _request(self, method: str, path: str, *, base_url=BASE_URL, category="livejournal", accepted_statuses=(200,), **kwargs) -> bytes:
-        if base_url not in (BASE_URL, LIKES_URL, f"https://{self.user.replace('_', '-')}.livejournal.com"):
+        user_directory = (base_url == 'https://users.livejournal.com'
+                          and path == f'/{self.user}/profile/subslist/'
+                          and (self.user.startswith('_') or self.user.endswith('_')))
+        if not user_directory and base_url not in (BASE_URL, LIKES_URL, f"https://{self.user.replace('_', '-')}.livejournal.com"):
             raise ExportError("Неподдерживаемый адрес сервиса ЖЖ.")
         for attempt in range(self.max_attempts):
             self.check()
@@ -391,7 +394,7 @@ class LiveJournalClient:
             raise ExportError("ЖЖ не выдал сессию для этого аккаунта.")
         self._cookie = cookie
 
-    def managed_communities(self):
+    def managed_communities(self, *, confirm_empty=False):
         from .sources import managed_communities
         if not self._cookie:
             self.generate_session()
@@ -405,7 +408,25 @@ class LiveJournalClient:
             except WebLoginRequired:
                 raise AuthenticationRequired('ЖЖ не подтвердил вход для просмотра сообществ.') from None
             page = self._request('GET', path)
-        return sorted(managed_communities(page) - {self.account})
+        names = managed_communities(page) - {self.account}
+        if confirm_empty and not names:
+            text = page.decode('utf-8', errors='replace')
+            remote = re.search(r'\bSite\.remote\s*=\s*(\{)', text)
+            try:
+                identity = json.JSONDecoder().raw_decode(text[remote.start(1):])[0] if remote else {}
+            except ValueError:
+                identity = {}
+            from .fulltext import visible
+            empty_message = re.search(
+                r"you (?:do not|don't|currently do not) (?:manage|maintain) any communit(?:y|ies)"
+                r"|you are not managing any communities|вы не управляете сообществами"
+                r"|you are not (?:a |the )?(?:maintainer|owner) of any communit(?:y|ies)"
+                r"|вы не (?:управляете ни одним сообществом|являетесь смотрителем ни одного сообщества)"
+                r"|у вас нет (?:управляемых сообществ|сообществ, которыми вы управляете)",
+                visible(text), re.I)
+            if identity.get('username') != self.account or not empty_message:
+                raise IncompleteData('ЖЖ не подтвердил список управляемых сообществ.')
+        return sorted(names)
 
     def ensure_web_session(self):
         from .web_session import establish
@@ -415,6 +436,34 @@ class LiveJournalClient:
         if self.source['type'] == 'community':
             raise ExportError('Личные настройки аккаунта не входят в архив сообщества.')
         return self._request("GET", path, category="personal", headers={"Cookie": "ljsession=" + self._cookie})
+
+    def subscription_preview(self):
+        from .social import subscription_page
+        if self.source['type'] != 'own':
+            raise ExportError('Подписки доступны в профиле своего журнала.')
+        from urllib.parse import urlsplit
+        from .social import social_profile_url
+        profile = urlsplit(social_profile_url({}, self.user))
+        raw = self._request('GET', profile.path + 'subslist/', base_url='https://' + profile.netloc, category='personal',
+                            headers={'Cookie': 'ljsession=' + self._cookie} if self._cookie else {})
+        return subscription_page(raw, self.user)
+
+    def full_subscription_list(self, name, token):
+        from .social import SUBSCRIPTIONS, subscription_data
+        if self.source['type'] != 'own' or name not in SUBSCRIPTIONS.values() or not token:
+            raise IncompleteData('ЖЖ не предоставил полный список подписок.')
+        batch = [{'jsonrpc': '2.0', 'id': 1, 'method': 'profile.get_friends',
+                  'params': {'user': self.user, 'get_list': name, 'mode_full': True, 'auth_token': token}}]
+        raw = self._request('POST', '/__api/', category='personal', data=json.dumps(batch),
+                            headers={'Content-Type': 'text/plain;charset=UTF-8',
+                                     **({'Cookie': 'ljsession=' + self._cookie} if self._cookie else {})})
+        try:
+            reply, = json.loads(raw)
+            if reply.get('id') != 1 or reply.get('error') or reply['result'].get('status') != 'ok':
+                raise ValueError()
+            return subscription_data(reply['result'], name)
+        except (ValueError, KeyError, TypeError, AttributeError) as exc:
+            raise IncompleteData('ЖЖ не вернул полный список подписок.') from exc
 
     def personal_feed(self, name):
         if self.source['type'] == 'community':

@@ -10,6 +10,7 @@ from .comment_state import comment_view
 from .entries import author, is_repost
 from .personal import preference_rows, profile_fields
 from .storage import atomic_write, dumps
+from .social import social_lists
 
 JOURNAL_PARTS = tuple(f'journal-{i}' for i in range(8))
 PARTS = (*JOURNAL_PARTS, 'personal', 'materials')
@@ -111,9 +112,10 @@ def personal_docs(user, data):
         yield doc('profile', 'account.html', profile.get('fullname') or user,
                   ' '.join(f"{r['label']} {r['value']}" for r in fields), who=user)
     friends = sections.get('friends', {}).get('data') or {}
-    for key, label in [('friends','Друзья и подписки'), ('friendofs','Добавили в друзья')]:
-        for person in friends.get(key, []):
-            yield doc('profile', 'account.html#'+key, person.get('username') or '', person.get('fullname') or '', context=label)
+    for group in social_lists(sections):
+        for person in group['users'] or []:
+            yield doc('profile', 'account.html#' + group['id'], person.get('username') or '',
+                      person.get('fullname') or '', context=group['label'])
     for key, rows in preference_rows(sections).items():
         for row in rows:
             yield doc('profile', 'account.html#'+key, row['label'], str(row['value']), who=user)

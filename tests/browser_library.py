@@ -26,7 +26,9 @@ def main():
             with store.db:
                 store.set('personal_requested', {'account': True, 'messages': False})
                 for key, value in {'profile': {'fullname': 'Владелец журнала'},
-                    'friends': {'friends': [{'username': 'reader', 'fullname': 'Читатель'}], 'friendofs': [{'username': 'reader'}]},
+                    'foaf': {'fields': [{'name': 'bio', 'value': '<p>Об авторе<br>Вторая строка</p>' * 15},
+                        *[{'name': 'interest', 'value': f'Тема {i}'} for i in range(20)]]},
+                    'friends': {'friends': [{'username': 'reader', 'fullname': 'Читатель'}] * 700, 'friendofs': []},
                     'settings_display': {'controls': [{'name': 'LJ__Setting__TimeZone_timezone', 'type': 'select', 'options': [{'label': 'UTC', 'selected': True}]}]}}.items():
                     store.db.execute('INSERT OR REPLACE INTO account_sections VALUES (?,?)',
                         (key, json.dumps({'status': 'captured', 'data': value})))
@@ -39,12 +41,24 @@ def main():
                 entry = (folder / 'entries/6.html').read_bytes()
                 page.goto(base.split('/archive/')[0])
                 page.goto(base + 'account.html')
+                if not page.locator('#profile-action').is_visible():
+                    page.locator('#profile-details summary').click()
                 expect(page.locator('#profile-action')).to_be_visible()
                 page.locator('#profile-load').click()
                 page.locator('#profile-password').fill('browser-fixture-password')
                 page.locator('#profile-form button').click()
                 expect(page.locator('h1')).to_have_text('Владелец журнала')
-                expect(page.locator('.friend-list a').first).to_contain_text('reader')
+                expect(page.locator('.friend-list a').first).to_be_hidden()
+                page.locator('#friends summary').press('Enter')
+                expect(page.locator('.friend-list a').first).to_be_visible()
+                page.locator('#friends summary').press('Enter')
+                expect(page.get_by_text('Тема 19', exact=True)).to_be_hidden()
+                page.get_by_text('Ещё 8', exact=True).click()
+                expect(page.get_by_text('Тема 19', exact=True)).to_be_visible()
+                page.get_by_text('Читать полностью', exact=True).click()
+                expect(page.locator('.profile-prose br').first).to_be_attached()
+                page.goto(base + 'account.html#settings_display')
+                expect(page.locator('.profile-settings')).to_be_visible()
                 expect(page.locator('.profile-settings')).to_contain_text('Часовой пояс')
                 assert calls == ['profile'] and (folder / 'entries/6.html').read_bytes() == entry
                 assert 'browser-fixture-password' not in (folder / 'data/archive.json').read_text()

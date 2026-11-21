@@ -2,16 +2,90 @@
 {% set archive_section = 'account' %}
 {% block title %}Профиль · {{ user }}{% endblock %}
 {% block head %}<script defer src="assets/profile.js"></script>{% endblock %}
-{% block body %}<main class="main archive-main profile-main"><div class="heading"><h1 class="section-title"><span data-icon="account" aria-hidden="true"></span>{{ profile.fullname or user }}</h1><a class="btn" href="messages.html">Переписка</a></div>
-{% include 'archive-nav.html' %}
-{% if not sections %}<p class="muted">Личные данные не загружены.</p>{% endif %}
-{% if sections and report.personal and not report.personal.complete %}<p class="muted">Профиль загружен частично.</p>{% endif %}
-{% if not report.source or report.source.type == 'own' %}<div id="profile-action" hidden><button type="button" class="btn" id="profile-load">{{ 'Обновить профиль' if sections else 'Загрузить профиль' }}</button><form id="profile-form" hidden><label>Пароль ЖЖ <input class="input" type="password" required maxlength="1024" autocomplete="current-password" id="profile-password"></label><button class="btn" type="submit">Загрузить</button></form><button class="btn text" id="profile-cancel" type="button" hidden>Отмена</button><p id="profile-status" role="status" class="muted small"></p></div>{% endif %}
-{% for key,section in sections.items() if section.error %}<p class="notice">{{ labels.get(key,key) }}: {{ section.error }}{% if section.captured_at %} · показана сохранённая версия{% endif %}</p>{% endfor %}
-{% if pictures %}<h2>Юзерпики</h2><div class="profile-pictures">{% for pic in pictures %}{% if pic.path %}<a href="{{ pic.path }}"><img src="{{ pic.path }}" loading="lazy" alt="Юзерпик"></a>{% endif %}{% endfor %}</div>{% endif %}
-{% if fields %}<h2>О себе</h2><dl class="preferences">{% for field in fields %}<dt>{{ field.label }}</dt><dd>{{ field.value }}</dd>{% endfor %}</dl>{% endif %}
-{% if sections.get('friends') %}<div class="profile-relations">{% for key,title in [('friends','Друзья и подписки'),('friendofs','Добавили в друзья')] %}<section id="{{ key }}"><h2>{{ title }} <span class="muted">{{ friends[key]|length if key in friends else "—" }}</span></h2>{% if key in sections.friends.get("retained_fields",[]) %}<p class="muted small">Ранее сохранённый список</p>{% endif %}<div class="friend-list">{% for person in friends.get(key,[]) %}<a href="{{ person.username|profile_url }}" target="_blank" rel="noreferrer noopener">{{ person.username }}{% if person.fullname %}<span class="muted">{{ person.fullname }}</span>{% endif %}</a>{% else %}<span class="muted">{{ "Список пуст" if key in friends else "Не получено" }}</span>{% endfor %}</div></section>{% endfor %}</div>{% endif %}
-{% if friends.get('friendgroups') or profile.get('friendgroups') %}<h2>Группы друзей</h2><ul>{% for group in friends.get('friendgroups',profile.get('friendgroups',[])) %}<li>{{ group.name }}</li>{% endfor %}</ul>{% endif %}
-{% for key,rows in preferences.items() %}<section class="profile-settings" id="{{ key }}"><h2>{{ labels.get(key,key) }}</h2>{% if rows %}<dl class="preferences">{% for row in rows %}<dt>{{ row.label }}</dt><dd>{{ row.value }}</dd>{% endfor %}</dl>{% else %}<p class="muted">Настройки не получены.</p>{% endif %}</section>{% endfor %}
-{% if sections.get('tags') and sections.tags.data %}<details class="account-section"><summary>Метки</summary><div class="tags">{% for tag in sections.tags.data.get('tags',[]) %}<span>{{ tag.name }}</span>{% endfor %}</div></details>{% endif %}
-<p class="muted small"><a href="help.html#personal">Состав выгрузки</a> · <a href="data/archive.json">Исходные данные JSON</a></p></main>{% endblock %}
+
+{% macro portrait(pic) %}
+<figure>
+  {% set caption = pic.keywords|join(', ') or pic.title or 'Юзерпик' %}
+  {% if pic.path %}<a href="{{ pic.path }}" aria-label="Открыть юзерпик «{{ caption }}»"><img src="{{ pic.path }}" alt="" width="88" height="88" loading="lazy"></a>
+  {% else %}<a class="portrait-missing" href="{{ pic.url }}" target="_blank" rel="noopener noreferrer">Оригинал ↗</a>{% endif %}
+  <figcaption>{{ caption }}{% if pic.default %}<small>Основной</small>{% endif %}</figcaption>
+</figure>
+{% endmacro %}
+{% macro interest(item) %}{% if item.url %}<a href="{{ item.url }}" target="_blank" rel="noopener noreferrer">{{ item.value }}</a>{% else %}<span>{{ item.value }}</span>{% endif %}{% endmacro %}
+{% macro count(n) %}<span class="profile-count">{{ n }}</span>{% endmacro %}
+{% block body %}
+<main class="main archive-main profile-main">
+  {% set default_pic = pictures|selectattr('default')|first %}
+  {% set name = profile.fullname or overview.name or user %}
+  <header class="profile-identity">
+    {% if default_pic and default_pic.path %}<img class="profile-avatar" width="76" height="76" src="{{ default_pic.path }}" alt="Основной юзерпик">
+    {% else %}<span class="profile-avatar profile-avatar-empty" data-icon="account" aria-hidden="true"></span>{% endif %}
+    <div><h1>{{ name }}</h1><a href="{{ original_profile }}" target="_blank" rel="noopener noreferrer">{{ user }} в ЖЖ ↗</a></div>
+    <a class="btn profile-mail" href="messages.html">Переписка</a>
+  </header>
+  {% include 'archive-nav.html' %}
+  {% if overview.journaltitle or overview.journalsubtitle %}
+  <div class="profile-journal">{% if overview.journaltitle %}<h2>{{ overview.journaltitle }}</h2>{% endif %}
+  {% if overview.journalsubtitle %}<p>{{ overview.journalsubtitle }}</p>{% endif %}</div>
+  {% endif %}
+  {% if bio_html %}
+  <section class="profile-block"><h2>О себе</h2>
+    {% if bio_excerpt %}<details class="profile-biography"><summary><span class="bio-excerpt">{{ bio_excerpt }}…</span><span class="when-closed">Читать полностью</span><span class="when-open">Свернуть</span></summary>
+      <div class="profile-prose">{{ bio_html|safe }}</div></details>
+    {% else %}<div class="profile-prose">{{ bio_html|safe }}</div>{% endif %}
+  </section>
+  {% endif %}
+  {% if overview.interests %}
+  <section class="profile-block"><h2>Интересы {{ count(overview.interests|length) }}</h2>
+    <div class="profile-interests">{% for item in overview.interests[:12] %}{{ interest(item) }}{% endfor %}</div>
+    {% if overview.interests|length > 12 %}<details class="profile-more"><summary><span class="when-closed">Ещё {{ overview.interests|length - 12 }}</span><span class="when-open">Свернуть интересы</span></summary>
+    <div class="profile-interests">{% for item in overview.interests[12:] %}{{ interest(item) }}{% endfor %}</div></details>{% endif %}
+  </section>
+  {% endif %}
+  {% if pictures %}
+  <section class="profile-block" id="profile-pictures"><h2>Юзерпики {{ count(pictures|length) }}</h2>
+    <div class="profile-portraits">{% for pic in pictures[:6] %}{{ portrait(pic) }}{% endfor %}</div>
+    {% if pictures|length > 6 %}<details class="profile-more"><summary><span class="when-closed">Ещё {{ pictures|length - 6 }}</span><span class="when-open">Свернуть юзерпики</span></summary>
+    <div class="profile-portraits">{% for pic in pictures[6:] %}{{ portrait(pic) }}{% endfor %}</div></details>{% endif %}
+  </section>
+  {% endif %}
+  {% if not has_profile %}<p class="muted">Профиль ещё не загружен.</p>{% endif %}
+  <div class="profile-directory">
+    {% if overview.facts %}<details><summary>Сведения профиля</summary><dl class="profile-facts">
+      {% for field in overview.facts %}<dt>{{ field.label }}</dt><dd>{% if field.url %}<a href="{{ field.url }}" target="_blank" rel="noopener noreferrer">{{ field.value }}</a>{% else %}{{ field.value }}{% endif %}</dd>{% endfor %}
+    </dl></details>{% endif %}
+    {% if has_profile %}
+    {% for family in ['Люди', 'Сообщества', 'Ленты'] %}
+    {% if family != 'Ленты' %}<h2 class="profile-social-heading" id="{{ 'social-people' if family == 'Люди' else 'social-communities' }}">{{ family }}</h2>{% endif %}
+    {% for group in social if group.family == family %}
+    <details id="{{ group.id }}"><summary>{{ group.label }} {{ count(group.users|length if group.users is not none else '—') }}</summary>
+      {% if group.retained %}<p class="muted">Обновление неполное{% if group.total is not none %} · ЖЖ указал {{ group.total }}{% endif %}</p>{% endif %}
+      <div class="friend-list">{% for person in group.users or [] %}
+        {% if person.href %}<a href="{{ person.href }}" target="_blank" rel="noreferrer noopener">{% else %}<span>{% endif %}{{ person.username }}{% if person.fullname and person.fullname != person.username %}<span class="muted">{{ person.fullname }}</span>{% endif %}{% if person.href %}</a>{% else %}</span>{% endif %}
+        {% else %}<span class="muted">{% if group.users is none %}Список ещё не получен{% elif group.retained and group.total %}Не удалось получить имена{% elif group.retained %}Ранее сохранённый список пуст{% else %}Список пуст{% endif %}</span>{% endfor %}
+      </div>
+      {% if group.users is none %}<a href="#profile-details">Данные архива</a>{% endif %}
+    </details>
+    {% endfor %}
+    {% if family == 'Люди' %}
+    {% set groups = friends.get('friendgroups', profile.get('friendgroups',[])) %}
+    {% if groups %}<details><summary>Группы друзей {{ count(groups|length) }}</summary><ul>{% for group in groups %}<li>{{ group.name }}</li>{% endfor %}</ul></details>{% endif %}
+    {% endif %}
+    {% endfor %}
+    {% endif %}
+    {% set tags = (sections.get('tags',{}).data or {}).get('tags',[]) %}
+    {% if tags %}<details><summary>Метки {{ count(tags|length) }}</summary><div class="profile-interests">{% for tag in tags %}<span>{{ tag.name }}</span>{% endfor %}</div></details>{% endif %}
+    <details id="profile-details"{% if not has_profile %} open{% endif %}><summary>Данные архива{% if report.personal and not report.personal.complete %} <span class="profile-count">Есть пропуски</span>{% endif %}</summary>
+      {% if not report.source or report.source.type == 'own' %}
+      <div id="profile-action" hidden><button type="button" class="btn" id="profile-load">{{ 'Обновить профиль' if has_profile else 'Загрузить профиль' }}</button>
+        <form id="profile-form" hidden><label>Пароль ЖЖ <input class="input" type="password" required maxlength="1024" autocomplete="current-password" id="profile-password"></label><button class="btn" type="submit">Загрузить</button></form>
+        <button class="btn text" id="profile-cancel" type="button" hidden>Отмена</button><p id="profile-status" role="status" class="muted"></p></div>{% endif %}
+      {% if report.personal.userpics.saved < report.personal.userpics.total %}<p class="profile-issue"><a href="#profile-pictures">Юзерпики</a> · локальных файлов {{ report.personal.userpics.saved }} из {{ report.personal.userpics.total }}</p>{% endif %}
+      {% for key,section in sections.items() if section.error %}<p class="profile-issue"><strong>{{ labels.get(key,key) }}</strong> · {{ section.error }}{% if section.captured_at and section.data %} · показана сохранённая версия{% endif %}</p>{% endfor %}
+      {% for key in missing_sections if not sections.get(key,{}).error %}<p class="profile-issue"><strong>{{ labels.get(key,key) }}</strong> · {{ states.get(sections[key].status, 'Нет данных') if key in sections else 'Раздел не получен' }}</p>{% endfor %}
+      {% for key,rows in preferences.items() if rows or not sections[key].error %}<section class="profile-settings" id="{{ key }}"><h3>{{ labels.get(key,key) }}</h3>{% if rows %}<dl class="profile-facts">{% for row in rows %}<dt>{{ row.label }}</dt><dd>{{ row.value }}</dd>{% endfor %}</dl>{% else %}<p class="muted">Настройки не получены.</p>{% endif %}</section>{% endfor %}
+      <p><a href="help.html#personal">Состав выгрузки</a> · <a href="data/archive.json">Исходные данные JSON</a></p>
+    </details>
+  </div>
+</main>
+{% endblock %}

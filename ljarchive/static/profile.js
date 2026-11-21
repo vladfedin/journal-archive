@@ -1,5 +1,15 @@
 'use strict';
 document.addEventListener('DOMContentLoaded',()=>{
+ function revealSection(){
+  const target=document.getElementById(location.hash.slice(1));
+  if(!target)return;
+  for(let node=target;node;node=node.parentElement){
+   if(node.tagName==='DETAILS')node.open=true;
+  }
+  target.scrollIntoView();
+ }
+ revealSection();
+ window.addEventListener('hashchange',revealSection);
  const action=document.getElementById('profile-action'),match=location.pathname.match(/^\/archive\/([a-z0-9_-]+)\//);
  if(!action||!match||document.body.dataset.libraryUrl!=='/'||location.protocol!=='http:')return;
  action.hidden=false;

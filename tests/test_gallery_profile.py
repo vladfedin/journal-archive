@@ -61,6 +61,8 @@ def test_profile_download_preserves_post_queue_and_refreshes_only_personal_pages
         client._cookie = 'fixture-session'; client.source['id'] = 123; client.source['access']['status'] = 'verified'
     monkeypatch.setattr('ljarchive.client.LiveJournalClient.login', login)
     monkeypatch.setattr('ljarchive.client.LiveJournalClient.call', lambda self, method, **kw: fixture.call(method, **kw))
+    monkeypatch.setattr('ljarchive.client.LiveJournalClient.subscription_preview', lambda self: fixture.subscription_preview())
+    monkeypatch.setattr('ljarchive.client.LiveJournalClient.managed_communities', lambda self, **kwargs: [])
     monkeypatch.setattr('ljarchive.client.LiveJournalClient.personal_page', lambda self, path: fixture.personal_page(path))
     monkeypatch.setattr('ljarchive.client.LiveJournalClient.personal_feed', lambda self, name: fixture.personal_feed(name))
     monkeypatch.setattr('ljarchive.media.Media.get', lambda *a, **k: None)
@@ -151,5 +153,39 @@ def test_gallery_tag_pages_use_matching_comment_and_include_every_page(tmp_path)
             store.save_entry({'itemid': 1, 'event': ''})
         write_gallery(store, {'username': 'fixture'})
         assert not list(tmp_path.glob(stem + '*.html'))
+    finally:
+        store.close()
+
+
+def test_profile_renders_named_pictures_and_missing_files_from_an_old_catalog(tmp_path):
+    from ljarchive.personal import render_personal
+
+    store = Store(tmp_path)
+    first = 'https://example.org/first.png'
+    second = 'https://example.org/second.png'
+    try:
+        (tmp_path / 'media').mkdir()
+        (tmp_path / 'media/first.png').write_bytes(b'picture')
+        with store.db:
+            store.set('personal_requested', {'account': True})
+            store.set('media', {first: 'media/first.png', second: 'media/missing.png'})
+            sections = {
+                'userpics': {'catalog': {'defaultpicurl': first, 'pickwurls': [first, first, second],
+                                         'pickws': ['Portrait', 'Reader', 'Bird']}},
+                'foaf': {'fields': [{'name': 'mbox', 'attributes': {'resource': 'mailto:reader@example.org'}},
+                                    {'name': 'bio', 'value': 'Строка\n' * 12 + '<script>unsafeFixture()</script>'}]},
+            }
+            for key, value in sections.items():
+                store.db.execute('INSERT INTO account_sections VALUES (?,?)',
+                                 (key, json.dumps({'status': 'captured', 'data': value})))
+        report = {'username': 'fixture', 'status': 'complete', 'issues': []}
+        render_personal(store, report)
+        page = (tmp_path / 'account.html').read_text()
+        assert 'Portrait, Reader<small>Основной</small>' in page
+        assert 'href="https://example.org/second.png"' in page and 'media/missing.png' not in page
+        assert '<figcaption>Bird</figcaption>' in page
+        assert report['personal']['userpics'] == {'total': 2, 'saved': 1}
+        assert 'href="mailto:reader@example.org"' in page and 'unsafeFixture' not in page
+        assert 'class="profile-biography"' in page and 'Раздел не получен' in page
     finally:
         store.close()

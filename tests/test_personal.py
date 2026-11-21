@@ -1,3 +1,4 @@
+import base64
 import json
 import threading
 from types import SimpleNamespace
@@ -22,6 +23,12 @@ class PersonalClient:
         self.calls = []
         self.items = [{'qid': i, 'when': 123456 if tie else 123000+i//3, 'type': 18,
                        'body': f'<p>Текст {i}</p>', 'subject': 'Личное', 'from': 'reader', 'state': 'N'} for i in range(1,count+1)]
+    def subscription_preview(self):
+        return {key: {'list_name': key, 'count': 0, 'list': []} for key in ('subscribers', 'subscribersof')}, None
+
+    def managed_communities(self, *, confirm_empty=False):
+        return []
+
     def check(self):
         pass
     def call(self, method, **params):
@@ -96,6 +103,9 @@ def test_inbox_resume_uses_committed_cursor_and_has_no_duplicates(owner):
 
 
 def test_profile_friends_preferences_catalog_and_messages_round_trip(owner, monkeypatch):
+    image = owner.store.folder / 'media/test.png'
+    image.parent.mkdir(exist_ok=True)
+    image.write_bytes(base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aWQAAAABJRU5ErkJggg=='))
     monkeypatch.setattr('ljarchive.media.Media.get', lambda self, url, **kwargs: self.mapping.setdefault(url, 'media/test.png'))
     with owner.store.db:
         owner.store.set('personal_requested', {'account': True, 'messages': True})

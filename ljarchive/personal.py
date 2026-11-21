@@ -1,11 +1,13 @@
 """Read-only personal export. Source coverage is explicit; credentials never enter data."""
 import json
+import re
 import time
 from html.parser import HTMLParser
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from .client import APIError, HTTPError, AuthenticationRequired, HTTPRateLimited, APIRateLimited, IncompleteData, ExportError, Cancelled, RequestLimitReached
 from .storage import dumps
+from .social import SOCIAL_LABELS, SUBSCRIPTIONS, social_lists, social_profile_url, subscription_data
 
 
 PROFILE_ISSUE = 'Личные данные сохранены частично. Подробности — в разделе «Профиль».'
@@ -59,6 +61,7 @@ def account_data(store):
 class Personal:
     def __init__(self, exporter):
         self.exporter, self.store, self.client = exporter, exporter.store, exporter.client
+        self.subscription_tabs = None
         self.cycle = getattr(exporter, 'personal_cycle', None) or self.store.get('started_at')
 
     def section(self, key):
@@ -75,6 +78,9 @@ class Personal:
                 record[name] = value
             elif data is None and name in old:
                 record[name] = old[name]
+        if key == 'friends' and data is None and old.get('cycle') != self.cycle and old.get('data'):
+            record['retained_fields'] = list(old['data'])
+            record.pop('latest_response', None)
         with self.store.db:
             self.store._version('account', 'account_sections', key, record)
             self.store.db.execute('INSERT OR REPLACE INTO account_sections VALUES (?,?)', (key, dumps(record)))
@@ -83,7 +89,7 @@ class Personal:
         previous = self.section(key)
         if previous.get('cycle') == self.cycle and previous.get('status') in ('captured', 'source_exhausted'):
             return
-        self.exporter.update('personal', {'profile': 'Профиль', 'friends': 'Друзья и подписки', 'tags': 'Метки',
+        self.exporter.update('personal', {**SOCIAL_LABELS, 'profile': 'Профиль', 'friends': 'Друзья и подписки', 'tags': 'Метки',
                                          'userpics': 'Юзерпики'}.get(key, 'Настройки'))
         try:
             data = operation()
@@ -119,6 +125,46 @@ class Personal:
                       retained_fields=retained, latest_response=result)
             raise IncompleteData('ЖЖ не вернул полный список связей.')
         return result
+
+    def save_subscription_page(self):
+        self.subscription_tabs = self.client.subscription_preview()
+        tabs, _ = self.subscription_tabs
+        # Both directions arrive in one response. Checkpoint both before requesting more.
+        for key, name in SUBSCRIPTIONS.items():
+            previous = self.section(key)
+            if previous.get('cycle') == self.cycle and previous.get('status') == 'captured':
+                continue
+            try:
+                data = subscription_data(tabs.get(name), name)
+            except IncompleteData:
+                continue
+            if len(data['users']) == data['total']:
+                self.save(key, status='captured', data=data, source='profile/subslist/')
+            else:
+                self.save_partial_subscriptions(key, data)
+
+    def save_partial_subscriptions(self, key, data):
+        previous = self.section(key).get('data') or {}
+        known = {p['username']: p for p in previous.get('users', [])}
+        known.update({p['username']: p for p in data['users']})
+        self.save(key, status='partial', data={**data, 'users': list(known.values())},
+                  source='profile/subslist/ · profile.get_friends',
+                  retained_fields=['users'] if len(known) > len(data['users']) else [],
+                  error='Получена часть списка подписок.')
+
+    def subscriptions(self, key):
+        if self.subscription_tabs is None:
+            self.save_subscription_page()
+        tabs, token = self.subscription_tabs
+        name = SUBSCRIPTIONS[key]
+        data = subscription_data(tabs.get(name), name)
+        if len(data['users']) == data['total']:
+            return data
+        full = self.client.full_subscription_list(name, token)
+        if len(full['users']) != full['total']:
+            self.save_partial_subscriptions(key, full)
+            raise IncompleteData('ЖЖ вернул только часть списка подписок.')
+        return full
 
     def preferences(self, category):
         parser = Preferences()
@@ -258,6 +304,8 @@ class Personal:
 
     def run(self, account, messages):
         if account:
+            with self.store.db:
+                self.store.set('profile_social_requested', True)
             self.capture('profile', lambda: getattr(self.client, 'profile', {}), 'LJ.XMLRPC.login (profile fields)')
             self.capture('foaf', self.foaf, 'data/foaf (FOAF/RDF)')
             self.capture('friends', self.friends, 'LJ.XMLRPC.getfriends')
@@ -265,6 +313,11 @@ class Personal:
             self.capture('userpics', self.userpics, 'data/userpics (Atom) + login')
             for category in ('display', 'privacy', 'notifications'):
                 self.capture('settings_' + category, lambda c=category: self.preferences(c), 'manage/settings/?cat=' + category)
+            for key in SUBSCRIPTIONS:
+                self.capture(key, lambda key=key: self.subscriptions(key), 'profile/subslist/ · profile.get_friends')
+            self.capture('managed_communities',
+                         lambda: {'users': [{'username': name} for name in self.client.managed_communities(confirm_empty=True)]},
+                         'community/manage.bml')
         if messages:
             for direction, event_type in (('incoming', 18), ('outgoing', 19)):
                 self.capture('messages_' + direction, lambda d=direction, t=event_type: self.inbox(d, t), 'LJ.XMLRPC.getinbox')
@@ -310,6 +363,69 @@ def profile_fields(sections):
         if value:
             fields.append({'label': labels.get(key, key), 'value': value})
     return fields
+
+
+def profile_overview(sections):
+    from .userpics import picture_url
+    info = {'facts': [], 'interests': []}
+    labels = {'birthday': 'День рождения', 'dateOfBirth': 'Дата рождения', 'country': 'Страна',
+              'city': 'Город', 'based_near': 'Местоположение', 'homepage': 'Сайт',
+              'school': 'Учёба', 'schoolHomepage': 'Учёба', 'workplaceHomepage': 'Работа',
+              'icqChatID': 'ICQ', 'jabberID': 'Jabber', 'mbox': 'Почта'}
+    for field in (sections.get('foaf', {}).get('data') or {}).get('fields', []):
+        key = field['name'].split('}')[-1]
+        attrs = {k.split('}')[-1]: v for k, v in field.get('attributes', {}).items()}
+        resource = attrs.get('resource', '')
+        url = picture_url(resource) or picture_url(unquote(resource))
+        if key == 'mbox' and resource.lower().startswith('mailto:'):
+            url = resource
+        value = (field.get('value') or attrs.get('title') or url or '').strip()
+        if key == 'mbox' and value.lower().startswith('mailto:'):
+            url = value
+            value = value[7:]
+        if not value:
+            continue
+        if key in ('name', 'journaltitle', 'journalsubtitle', 'bio'):
+            info[key] = value
+        elif key == 'interest':
+            info['interests'].append({'value': value, 'url': url})
+        elif key in labels:
+            info['facts'].append({'label': labels[key], 'value': unquote(value) if key == 'city' else value,
+                                  'url': url if key in ('homepage', 'school', 'schoolHomepage', 'workplaceHomepage', 'mbox') else None})
+    return info
+
+
+def profile_pictures(catalog, section, mapping, folder):
+    """Join the Atom descriptions to the login keyword catalog, including older exports."""
+    from .userpics import picture_url
+    source = section.get('data') or {}
+    catalog = {**(source.get('catalog') or {}), **catalog}
+    default = picture_url(catalog.get('defaultpicurl'))
+    pictures = {}
+
+    def add(url, names=(), title=None):
+        url = picture_url(url)
+        if not url:
+            return
+        if url not in pictures:
+            path = mapping.get(url)
+            if path and not ((folder / path).is_file() and (folder / path).resolve().is_relative_to(folder.resolve())):
+                path = None
+            pictures[url] = {'url': url, 'path': path, 'keywords': [], 'default': url == default, 'title': None}
+        pic = pictures[url]
+        for name in names:
+            if name and name not in pic['keywords']:
+                pic['keywords'].append(name)
+        if title:
+            pic['title'] = title
+
+    add(default)
+    keywords = catalog.get('pickws') or []
+    for i, url in enumerate(catalog.get('pickwurls') or []):
+        add(url, keywords[i:i + 1])
+    for entry in source.get('pictures', []):
+        add(entry.get('url'), entry.get('keywords') or [], entry.get('title'))
+    return list(pictures.values())
 
 
 def preference_rows(sections):
@@ -450,13 +566,14 @@ def render_personal(store, report):
     missing = [key for key, value in relevant.items() if value['status'] not in ('captured', 'source_exhausted')]
     if requested.get('account'):
         missing += [k for k in ('profile', 'foaf', 'friends', 'tags', 'userpics', 'settings_display', 'settings_privacy', 'settings_notifications') if k not in sections]
+        if store.get('profile_social_requested'):
+            missing.extend(key for key in SOCIAL_LABELS if key not in sections)
     if requested.get('messages'):
         missing += [k for k in ('messages_incoming', 'messages_outgoing') if k not in sections]
     catalog = data['userpic_catalog'] or {}
-    urls = set(catalog.get('pickwurls') or [])
-    urls.add(catalog.get('defaultpicurl'))
-    urls.update(p['url'] for p in (sections.get('userpics', {}).get('data') or {}).get('pictures', []))
-    urls.discard(None); urls.discard('')
+    pictures = profile_pictures(catalog, sections.get('userpics', {}), mapping, store.folder)
+    mapping = {**mapping, **{pic['url']: pic['path'] for pic in pictures}}
+    urls = {pic['url'] for pic in pictures}
     report['personal']['userpics'] = {'total': len(urls), 'saved': sum(bool(mapping.get(u)) for u in urls)}
     from .userpics import picture_url
     required_urls = set(urls) if requested.get('account') else set()
@@ -486,19 +603,36 @@ def render_personal(store, report):
         report['status'] = 'complete'
     profile = (sections.get('profile', {}).get('data') or {})
     friends = sections.get('friends', {}).get('data') or {}
-    pictures = [{'url': u, 'path': mapping.get(u)} for u in sorted(urls)]
+    overview = profile_overview(sections)
     labels = {'profile': 'Профиль', 'foaf': 'Интересы и сведения профиля', 'friends': 'Друзья и подписки', 'tags': 'Метки', 'userpics': 'Юзерпики',
               'settings_display': 'Отображение', 'settings_privacy': 'Приватность', 'settings_notifications': 'Уведомления',
               'messages_incoming': 'Входящие', 'messages_outgoing': 'Исходящие'}
+    labels.update(SOCIAL_LABELS)
     states = {'captured': 'Сохранено', 'source_exhausted': 'Выдача ЖЖ сохранена', 'partial': 'Есть пропуски', 'unavailable': 'Недоступно'}
-    atomic_write(store.folder / 'account.html', ENV.get_template('account.html').render(user=report['username'], report=report,
-                 sections=sections, profile=profile, friends=friends, pictures=pictures, labels=labels, states=states,
-                 requested=requested, fields=profile_fields(sections), preferences=preference_rows(sections)))
     media = Media(store.folder, False, threading.Event())
     media.mapping = mapping
     messages = sorted(data['messages'], key=lambda i: (i.get('when', 0), i.get('qid', 0)), reverse=True)
     pages = max(1, (len(messages) + 99) // 100)
     try:
+        from .fulltext import visible
+        bio = overview.get('bio', '')
+        journal = ENV.filters['profile_url'](report['username'])
+        bio_html = str(safe_content(bio, journal, {}, media, set())).replace('src="../media/', 'src="media/')
+        lines = re.split(r'<br\s*/?>|</(?:p|div|li|h[1-6]|tr|blockquote|pre)>|\r?\n', bio_html, flags=re.I)
+        preview_lines = [text for line in lines if (text := visible(line))]
+        excerpt = ''
+        if len(visible(bio_html)) > 520 or len(lines) > 9:
+            excerpt = '\n'.join(preview_lines[:3])
+            if len(excerpt) > 180:
+                excerpt = excerpt[:180].rsplit(' ', 1)[0]
+        atomic_write(store.folder / 'account.html', ENV.get_template('account.html').render(
+            user=report['username'], report=report, sections=sections, profile=profile,
+            original_profile=social_profile_url({}, report['username']),
+            friends=friends, social=social_lists(sections), pictures=pictures, labels=labels, states=states, overview=overview,
+            bio_html=bio_html, bio_excerpt=excerpt, missing_sections=missing,
+            has_profile=any(not key.startswith('messages_') and section.get('data') is not None
+                            for key, section in sections.items()),
+            preferences=preference_rows(sections)))
         for page in range(pages):
             batch = []
             from datetime import datetime, timezone

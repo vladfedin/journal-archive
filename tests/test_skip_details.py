@@ -9,6 +9,12 @@ from test_sync import Journal
 
 
 class ProfileRedirect(Journal):
+    def subscription_preview(self):
+        return {k: {'list_name': k, 'count': 0, 'list': []} for k in ('subscribers', 'subscribersof')}, None
+
+    def managed_communities(self, *, confirm_empty=False):
+        return []
+
     def personal_feed(self, name):
         raise AuthenticationRequired('ЖЖ перенаправил запрос.', status=302)
 
