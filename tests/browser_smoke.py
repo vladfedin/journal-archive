@@ -232,8 +232,36 @@ def main():
                     page.keyboard.press('Escape')
                     expect(page.locator('#export-dialog')).to_be_visible()
                     expect(page.locator('#journal option')).to_have_count(3)
+                picker_calls = []
+                def unavailable_picker(route):
+                    picker_calls.append(route.request.method)
+                    route.fulfill(status=503, json={'error':'ЖЖ временно недоступен'})
+                page.route('**/api/communities', unavailable_picker)
+                page.reload()
+                page.locator('.heading [data-new]').click()
+                page.locator('#username').fill('MANAGER')
+                page.locator('#password').fill('browser-test-secret')
+                page.locator('#source-type').select_option('community')
+                expect(page.locator('#journal option')).to_have_count(3)
+                expect(page.locator('#community-status')).to_contain_text('Список от')
+                page.locator('#community-status').press('Enter')
+                expect(log).to_contain_text('Запросов: 0')
+                page.keyboard.press('Escape')
+                assert not picker_calls
                 expect(page.locator('#submit-export')).to_be_disabled()
                 page.locator('#journal').select_option('readers')
+                expect(page.locator('#load-communities')).to_have_text('Обновить')
+                page.locator('#load-communities').click()
+                expect(page.locator('#community-status')).to_contain_text('Список не обновлён')
+                expect(page.locator('#journal')).to_have_value('readers')
+                assert picker_calls == ['POST']
+                page.unroute('**/api/communities')
+                page.route('**/api/communities', lambda r: r.fulfill(json={
+                    'started_at':1_600_000_000, 'communities':['readers','new_group']}))
+                page.locator('#load-communities').click()
+                expect(page.locator('#journal option[value=new_group]')).to_have_count(1)
+                expect(page.locator('#journal')).to_have_value('readers')
+                page.unroute('**/api/communities')
                 expect(page.locator('#submit-export')).to_be_enabled()
                 submitted = []
                 def check_community(route):
@@ -257,6 +285,9 @@ def main():
                 page.route('**/api/communities', lambda r: r.fulfill(json={'communities': ['readers']}))
                 page.locator('#source-type').select_option('own')
                 page.locator('#source-type').select_option('community')
+                expect(page.locator('#community-status')).to_contain_text('Нет управляемых сообществ')
+                expect(page.locator('#submit-export')).to_be_disabled()
+                page.locator('#load-communities').click()
                 expect(page.locator('#journal')).to_have_value('readers')
                 expect(page.locator('#submit-export')).to_be_enabled()
                 page.unroute('**/api/communities')

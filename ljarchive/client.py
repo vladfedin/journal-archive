@@ -7,7 +7,9 @@ import re
 import threading
 import time
 import xmlrpc.client
+from copy import deepcopy
 from dataclasses import dataclass
+from datetime import date
 from typing import Any
 
 import requests
@@ -203,6 +205,7 @@ class LiveJournalClient:
         self._last_request = 0.0
         self._cookie = None
         self.journal_id = None
+        self._calendar = None
         self.userpics = None
         self._reaction_token = None
         self.progress = progress or (lambda **kwargs: None)
@@ -328,7 +331,8 @@ class LiveJournalClient:
         except Exception as exc:
             raise ExportError(f"ЖЖ вернул некорректный ответ на {method}. Прогресс сохранён.") from exc
 
-    def call(self, method: str, **params) -> dict:
+    def call(self, method: str, *, refresh=False, **params) -> dict:
+        standard_calendar = method == 'getdaycounts' and not params
         capability = {'getdaycounts': 'calendar', 'getevents': 'posts', 'getcomments': 'comments', 'syncitems': 'sync'}.get(method)
         if self.source['type'] == 'community':
             if method in ('getfriends', 'getfriendof', 'getinbox', 'getusertags'):
@@ -342,6 +346,12 @@ class LiveJournalClient:
                 if 'journalid' in params and params['journalid'] != self.journal_id:
                     raise ExportError('ID запроса относится к другому журналу.')
                 params[key] = self.user
+        if standard_calendar and refresh:
+            self._calendar = None
+        if standard_calendar and self._calendar and time.monotonic() < self._calendar[0]:
+            self.check()
+            self.budget.event('step', 'livejournal', rpc_method=method, message='Календарь из текущей выгрузки')
+            return deepcopy(self._calendar[1])
         for attempt in range(self.max_attempts):
             try:
                 if attempt:
@@ -357,6 +367,8 @@ class LiveJournalClient:
                     self._validate_entries(result)
                 if capability:
                     self.source['capabilities'][capability] = 'available'
+                if standard_calendar and self._valid_calendar(result):
+                    self._calendar = (time.monotonic() + 60, deepcopy(result))
                 return result
             except APIRateLimited:
                 self._defer(backoff(attempt, limited=True), reason="api_limit", category="livejournal",
@@ -367,6 +379,18 @@ class LiveJournalClient:
                 if capability:
                     self.source['capabilities'][capability] = 'denied' if exc.code in (300, 301, 302, 303, 304) else 'error'
                 raise
+
+    @staticmethod
+    def _valid_calendar(result):
+        days = result.get('daycounts')
+        if not isinstance(days, list):
+            return False
+        try:
+            return all(date.fromisoformat(day['date']).isoformat() == day['date']
+                       and str(day['count']).isascii() and str(day['count']).isdecimal()
+                       for day in days)
+        except (ValueError, TypeError, KeyError):
+            return False
 
     def _validate_entries(self, result):
         from urllib.parse import urlsplit
@@ -382,6 +406,7 @@ class LiveJournalClient:
                     raise ExportError('Адрес полученной записи относится к другому журналу.')
 
     def login(self):
+        self._calendar = None
         self.progress(phase='login', message='Вход в ЖЖ…')
         community = self.source['type'] == 'community'
         self.source['access']['status'] = 'unverified'
@@ -625,6 +650,7 @@ class LiveJournalClient:
         return page, raw
 
     def close(self):
+        self._calendar = None
         self._password_hash = ""
         self._web_password = ""
         self._cookie = None

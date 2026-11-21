@@ -159,6 +159,49 @@ function error(message,form=false){const target=$(form?'form-error':'app-error')
 function setBusy(value){busy=value;document.querySelectorAll('[data-new],[data-update],[data-resume],[data-busy]').forEach(b=>b.disabled=value||moving||closed);$('submit-export').disabled=value||moving||submitting||preparingResume||needsCommunity()||closed;$('move-storage').disabled=value||moving||closed;$('move-storage').title=value?'После завершения загрузки':'';}
 function setScope(value){scope=value;document.querySelectorAll('[data-scope]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.scope===value)));$('period-fields').hidden=value!=='period';$('url-fields').hidden=value!=='urls';$('entry-urls').required=value==='urls';$('entry-urls').disabled=value!=='urls';if(!limitEdited)$('request-limit').value=value==='latest'?'50':'';$('request-limit').required=value==='latest';$('account').checked=value==='full';setSource();}
 let communityRequest=0, communityTask=null;
+const communitySnapshots=new Map();
+const communityAccount=()=>$('username').value.trim().toLowerCase().replaceAll('-','_');
+const communityNames=names=>Array.isArray(names)&&names.every(name=>typeof name==='string'&&/^[a-z0-9_]{1,15}$/.test(name));
+function savedCommunities(account){
+  let snapshot=communitySnapshots.get(account);
+  try{
+    const stored=JSON.parse(localStorage.getItem('ljarchive.communities.'+account));
+    if(Number.isFinite(stored?.savedAt)&&communityNames(stored.names)&&
+       (!snapshot||(stored.revision||0)>=(snapshot.revision||0)))snapshot=stored;
+  }catch{}
+  return snapshot;
+}
+function rememberCommunities(account,snapshot,initial){
+  const previous=savedCommunities(account);
+  if(previous&&previous.revision!==initial?.revision&&previous.savedAt>snapshot.savedAt)return previous;
+  snapshot.revision=(previous?.revision||0)+1;
+  communitySnapshots.set(account,snapshot);
+  try{localStorage.setItem('ljarchive.communities.'+account,JSON.stringify(snapshot));}catch{}
+  return snapshot;
+}
+function communityOptions(names){
+  const select=$('journal'),previous=select.value;
+  select.replaceChildren(...names.map(name=>new Option(name,name)));
+  if(names.length>1){
+    select.insertBefore(new Option('Выберите сообщество',''),select.firstChild);
+    select.value=names.includes(previous)?previous:'';
+  }
+  select.hidden=!names.length;
+}
+function showSavedCommunities(){
+  const saved=savedCommunities(communityAccount());
+  if(!saved)return false;
+  communityOptions(saved.names);
+  const status=$('community-status'),button=$('load-communities');
+  const when=new Date(saved.savedAt).toLocaleString('ru-RU',{dateStyle:'short',timeStyle:'short'});
+  status.textContent=(saved.names.length?'Список от ':'Нет управляемых сообществ · ')+when;
+  status.hidden=false;
+  OperationLog.bind(status,{phase:'complete',message:status.textContent,requests_used:0,
+    events:[{kind:'step',at:saved.savedAt/1000,message:'Список сохранён в этом браузере'}]});
+  button.textContent='Обновить';button.hidden=false;
+  setBusy(busy);
+  return true;
+}
 function cancelCommunity(){
   communityRequest++;
   if(communityTask)api('/api/communities/cancel',{id:communityTask}).catch(()=>{});
@@ -171,6 +214,7 @@ function resetCommunities(){
   $('journal').replaceChildren();
   $('journal').hidden=true;
   $('load-communities').hidden=false;
+  $('load-communities').textContent='Показать сообщества';
   $('community-status').hidden=true;
   setBusy(busy);
 }
@@ -178,6 +222,7 @@ async function loadCommunities(){
   if(!choosingCommunity())return;
   for(const id of ['username','password'])if(!$(id).reportValidity())return;
   const token=++communityRequest,status=$('community-status'),button=$('load-communities');
+  const account=communityAccount(),previous=savedCommunities(account);
   button.hidden=true;status.textContent='Загружаем сообщества…';status.hidden=false;
   OperationLog.bind(status,{message:'Запускаем поиск сообществ…',requests_used:0});
   let state={events:[]};
@@ -196,15 +241,16 @@ async function loadCommunities(){
     }
     if(state.phase==='error')throw Error(state.message);
     const {communities}=state;
-    if(communities.length){
-      const select=$('journal');
-      select.replaceChildren(...communities.map(name=>new Option(name,name)));
-      if(communities.length>1){select.insertBefore(new Option('Выберите сообщество',''),select.firstChild);select.value='';}
-      select.hidden=false;status.hidden=!state.id;
-    }else{status.textContent='ЖЖ не вернул управляемых сообществ.';button.hidden=false;}
+    if(!communityNames(communities))throw Error('ЖЖ не подтвердил список сообществ.');
+    const saved=rememberCommunities(account,{savedAt:(state.started_at||Date.now()/1000)*1000,names:communities},previous);
+    if(saved.names!==communities){showSavedCommunities();return;}
+    communityOptions(saved.names);
+    status.hidden=communities.length>0&&!state.id;
+    if(!communities.length)status.textContent='ЖЖ не вернул управляемых сообществ.';
+    button.textContent='Обновить';button.hidden=false;
   }catch(e){
     if(token===communityRequest){
-      status.textContent=e.message;button.hidden=false;
+      status.textContent=previous?'Список не обновлён · '+e.message:e.message;button.hidden=false;
       OperationLog.bind(status,{...state,events:[...state.events||[],...e.localEvents||[]],phase:'error',message:e.message});
       if(communityTask)cancelCommunity();
       setBusy(busy);
@@ -220,11 +266,16 @@ function setSource(){
 }
 $('source-type').onchange=()=>{
   resetCommunities();setSource();
-  if(choosingCommunity()&&$('username').validity.valid&&$('password').value)loadCommunities();
+  if(choosingCommunity()&&!showSavedCommunities()&&$('username').validity.valid&&$('password').value)loadCommunities();
 };
 $('load-communities').onclick=loadCommunities;
 $('journal').onchange=()=>setBusy(busy);
-for(const id of ['username','password'])$(id).addEventListener('input',()=>{if(choosingCommunity())resetCommunities();});
+$('username').addEventListener('input',()=>{if(choosingCommunity()){resetCommunities();showSavedCommunities();}});
+$('password').addEventListener('input',()=>{
+  if(choosingCommunity()&&$('load-communities').hidden){
+    resetCommunities();showSavedCommunities();
+  }
+});
 function openDialog(kind,archive=null){
   if(busy||moving||closed)return;mode=kind;selected=archive;error('',true);const resume=kind==='resume',isNew=kind==='new';
   document.querySelectorAll('.more[open]').forEach(menu=>menu.open=false);
@@ -676,7 +727,7 @@ $('export-form').onsubmit=async e=>{e.preventDefault();if(busy||submitting||prep
   try{const state=await api('/api/export',data);$('export-dialog').close();
     saveContactJob({id:state.job_id});
     showStatus(state);await library();}
-  catch(e){error(e.message,true);$('password').value='';if(choosingCommunity())resetCommunities();$('password').focus();}
+  catch(e){error(e.message,true);$('password').value='';if(choosingCommunity()&&$('load-communities').hidden){resetCommunities();showSavedCommunities();}$('password').focus();}
   finally{data.password='';submitting=false;setBusy(busy);}
 };
 $('job-action').onclick=async()=>{try{if(lastState.phase==='browser_login'){$('job-action').disabled=true;showStatus(await api('/api/browser-confirm',{job_id:lastState.job_id}));}else if(busy){$('job-action').disabled=true;showStatus(await api('/api/cancel',{}));}else{await library();const archive=archives.find(a=>a.slug===lastState.slug);if(archive)openDialog('resume',archive);else error('Сохранённая задача не найдена.');}}catch(e){error(e.message);$('job-action').disabled=false;}};

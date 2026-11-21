@@ -395,3 +395,42 @@ def test_community_pin_can_use_readers_layout(monkeypatch):
         assert seen == ['https://bookclub.livejournal.com/', 'https://bookclub.livejournal.com/?style=mine']
     finally:
         client.close()
+
+
+def test_repeated_calendar_read_uses_session_snapshot(monkeypatch):
+    client, wire = community_client(monkeypatch)
+    client.login()
+    try:
+        first = client.call('getdaycounts')
+        count = client.budget.used
+        first['daycounts'].clear()
+        assert len(client.call('getdaycounts')['daycounts']) == 2
+        assert client.budget.used == count
+        client.source['access']['status'] = 'unconfirmed'
+        with pytest.raises(ExportError, match='Права'):
+            client.call('getdaycounts')
+        client.login()
+        client.call('getdaycounts')
+        assert sum(name == 'getdaycounts' for name, _ in wire.calls) == 2
+    finally:
+        client.close()
+
+
+def test_incomplete_and_expired_calendars_are_read_again(monkeypatch):
+    client = LiveJournalClient('manager', 'fixture')
+    replies = iter([{}, {'daycounts': [{'date':'unknown','count':1}]},
+                    {'daycounts': []}, {'daycounts': [{'date':'2026-01-01','count':1}]}, {'daycounts': []}])
+    clock = [10.]
+    monkeypatch.setattr('ljarchive.client.time.monotonic', lambda: clock[0])
+    monkeypatch.setattr(client, '_rpc', lambda method, *args:
+                        {'challenge':'fixture'} if method == 'getchallenge' else next(replies))
+    try:
+        assert client.call('getdaycounts') == {}
+        assert client.call('getdaycounts')['daycounts'][0]['date'] == 'unknown'
+        assert client.call('getdaycounts')['daycounts'] == []
+        assert client.call('getdaycounts')['daycounts'] == []
+        clock[0] += 61
+        assert client.call('getdaycounts')['daycounts'][0]['count'] == 1
+        assert client.call('getdaycounts', refresh=True)['daycounts'] == []
+    finally:
+        client.close()

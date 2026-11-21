@@ -219,7 +219,7 @@ class Exporter:
                 with store.db:
                     for entry in entries:
                         store.save_entry(entry)
-            calendar = self.client.call("getdaycounts").get("daycounts")
+            calendar = self.client.call("getdaycounts", refresh=True).get("daycounts")
             if not isinstance(calendar, list):
                 raise ExportError("ЖЖ вернул меньше запрошенных записей; проверить размер журнала не удалось.")
             expected = min(expected, sum(int(d["count"]) for d in calendar))

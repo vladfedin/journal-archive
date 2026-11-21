@@ -132,7 +132,7 @@ class SyncExporter(Exporter):
         if not self.resuming or self.scope.mode == 'urls' or not self.state.get('calendar_loaded'):
             return
         self.update('posts', 'Проверяем свежие записи…')
-        days = self.client.call('getdaycounts').get('daycounts')
+        days = self.client.call('getdaycounts', refresh=True).get('daycounts')
         if not isinstance(days, list):
             raise ExportError('ЖЖ не вернул календарь для проверки свежих записей.')
         old = {r['day']: r['expected'] for r in self.store.db.execute('SELECT day,expected FROM days')}
