@@ -472,21 +472,26 @@ def main():
                 page.locator('.stats-totals a[href=\"discussions.html?kind=posts&year=2008\"]').click()
                 expect(page.locator('#discussion-count')).to_contain_text('Записей: 1')
                 # Return with a partial snapshot, then deliver the complete one after selecting all years.
-                def partial_statistics(route):
-                    response = route.fetch()
-                    route.fulfill(response=response, body=response.text() + '''
-                        window.testFullStats = structuredClone(window.ARCHIVE_STATS);
-                        delete window.ARCHIVE_STATS.generated_at;
-                        window.ARCHIVE_STATS.years = ['2008'];''')
-                page.route('**/assets/statistics-data.js', partial_statistics, times=1)
-                page.route('**/assets/statistics-live.js', lambda route: route.fulfill(
-                    content_type='application/javascript', body=''), times=1)
                 pending_script = []
-                page.route('**/assets/statistics.js', pending_script.append, times=1)
+                def initial_statistics(route):
+                    name = route.request.url.rsplit('/', 1)[-1]
+                    if name == 'statistics.js':
+                        pending_script.append(route)
+                        return
+                    script = ''
+                    if name == 'statistics-data.js':
+                        script = (root / 'example_journal/assets' / name).read_text(encoding='utf-8') + '''
+                            window.testFullStats = structuredClone(window.ARCHIVE_STATS);
+                            delete window.ARCHIVE_STATS.generated_at;
+                            window.ARCHIVE_STATS.years = ['2008'];'''
+                    route.fulfill(content_type='application/javascript', body=script)
+                page.route('**/assets/statistics*.js', initial_statistics)
                 with page.expect_request('**/assets/statistics.js'):
                     page.locator('#discussion-back').click(no_wait_after=True)
                 expect(page.locator('#stats-year')).to_be_disabled()
                 pending_script.pop().continue_()
+                page.wait_for_load_state('load')
+                page.unroute('**/assets/statistics*.js', initial_statistics)
                 expect(page.locator('#stats-year')).to_have_value('2008')
                 page.locator('#stats-year').select_option('')
                 page.evaluate("window.dispatchEvent(new CustomEvent('archive-statistics', {detail: window.testFullStats}))")
