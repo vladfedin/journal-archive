@@ -271,3 +271,53 @@ def test_live_view_scopes_a_link_update_and_does_not_call_earlier_gaps_loading(t
         assert timeline(store, task=True)['task']['expected'] == 2
     finally:
         store.close()
+
+
+def test_media_retry_after_keeps_text_first_and_another_host_ready(tmp_path, monkeypatch):
+    from ljarchive.media import Media
+    from test_media_errors import ImageResponse
+    from requests import Session
+    class IllustratedJournal(Journal):
+        def entry(self, eid):
+            urls = ['https://a.example/1', 'https://a.example/2'] if eid == 1 else ['https://b.example/3']
+            return {**super().entry(eid), 'event': ''.join(f'<img src="{url}">' for url in urls)}
+    client = IllustratedJournal()
+    calls, waits = [], []
+    exporter = SyncExporter(tmp_path, client, Scope(), images=True)
+    def respond(session, url, **kwargs):
+        assert exporter.store.db.execute('SELECT COUNT(*) FROM comments').fetchone()[0] == 4
+        calls.append(url)
+        if len(calls) == 1:
+            return ImageResponse(status=429, headers={'Retry-After':'300'})
+        return ImageResponse(content=b'image', headers={'Content-Type':'image/png'})
+    monkeypatch.setattr('ljarchive.media.public_url', lambda _: None)
+    monkeypatch.setattr(Session, 'get', respond)
+    monkeypatch.setattr(Media, 'wait', lambda self, seconds: waits.append(seconds) or True)
+    report = exporter.run()
+    assert report['status'] == 'complete' and report['images_saved'] == 3
+    assert calls == ['https://a.example/1','https://b.example/3','https://a.example/2','https://a.example/1']
+    assert waits[1] < 3 and min(waits[2:]) > 290
+
+
+def test_interrupted_text_stage_lists_discovered_media_without_fetching(tmp_path, monkeypatch):
+    from ljarchive.client import Cancelled
+    from ljarchive.video import VideoArchive
+    class InterruptedJournal(Journal):
+        def entry(self, eid):
+            return {**super().entry(eid), 'event': '<img src="https://img.example/1">'
+                    '<iframe src="https://www.youtube.com/embed/D-7x7LlUXms"></iframe>'}
+        def call(self, method, **params):
+            if method == 'getevents' and params.get('year') == 2026:
+                raise Cancelled('fixture interruption')
+            return super().call(method, **params)
+    monkeypatch.setattr('requests.Session.get', lambda *a, **k: pytest.fail('Image requested before text'))
+    monkeypatch.setattr(VideoArchive, 'download', lambda *a, **k: pytest.fail('Video requested before text'))
+    report = SyncExporter(tmp_path, InterruptedJournal(), Scope(), images=True, videos=True).run()
+    assert report['status'] == 'cancelled'
+    assert next(iter(report['videos']['missing'].values()))['status'] == 'pending'
+    store = Store.reader(tmp_path)
+    try:
+        row = timeline(store)['entries'][0]
+        assert row['videos'] == 1 and row['materials']['missing'] == 1 and row['comments_complete']
+    finally:
+        store.close()

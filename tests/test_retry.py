@@ -96,3 +96,30 @@ def test_media_retry_after_uses_same_budget(tmp_path,monkeypatch):
     assert media.mapping[url].startswith('media/')
     assert budget.used==2 and max(waits)>3590
     media.close()
+
+
+def test_host_deadlines_survive_resume_without_delaying_text(tmp_path, monkeypatch):
+    import time
+    from ljarchive.retry import restore_cooldowns
+    from ljarchive.storage import Store
+    store = Store(tmp_path)
+    client = LiveJournalClient('fixture', 'test')
+    other = LiveJournalClient('fixture', 'test')
+    try:
+        stamp = time.time() + 300
+        with store.db:  # Existing archive with the previous single deadline format.
+            store.set('request_not_before', stamp)
+            store.set('request_wait', {'host':'images.example', 'reason':'http', 'server_delay':True})
+        restore_cooldowns(client, store)
+        client._defer(120, url='https://video.example', category='videos', reason='http', server_delay=True)
+        restore_cooldowns(other, store)
+        waits = []
+        monkeypatch.setattr(other, '_wait', waits.append)
+        monkeypatch.setattr(other.session, 'request', lambda *a, **kw: Response(content=b'ok'))
+        assert other._request('GET', '/text') == b'ok' and max(waits) < 3
+        assert other.budget.deadline_for('https://images.example/b') == stamp
+        assert other.budget.deadline_for('https://video.example/c') > stamp - 181
+    finally:
+        store.close()
+        client.close()
+        other.close()

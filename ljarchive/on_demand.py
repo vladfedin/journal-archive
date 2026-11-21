@@ -11,7 +11,7 @@ from urllib.parse import urljoin
 from .client import AuthenticationRequired, Cancelled, ExportError, LiveJournalClient, RequestBudget, RequestLimitReached
 from .media import Media, authenticated_image_host, image_url, error_message, settle_browser_answer
 from .gaps import ATTEMPTS, closed, reopen
-from .retry import restored_deadline
+from .retry import restore_cooldowns
 from .render import build_archive, original_url, text_value
 from .storage import Store
 from .video import VideoArchive, VideoRefs, VideoStop, canonical_video, embed_key
@@ -114,11 +114,7 @@ def download_browser_images(store, data, cancel, update, sessions):
     client = LiveJournalClient(identity['login_username'], '', journal=identity['username'], source_type=identity['type'],
                                delay=data.get('delay', 3), cancel=cancel, budget=budget, progress=update)
     media = Media(store.folder, True, cancel, budget, client=client)
-    def cooldown(deadline):
-        with store.db:
-            store.set('request_not_before', deadline)
-            store.set('request_wait', budget.wait_info)
-    budget.save_cooldown = cooldown
+    restore_cooldowns(client, store)
     try:
         sessions.restore(client)
         media.load_state(store); media.browser_only = True
@@ -128,15 +124,13 @@ def download_browser_images(store, data, cancel, update, sessions):
         with store.db: media.save_state(store)
         if pending:
             browser_login(client, data, sessions)
-        budget.not_before = restored_deadline(store)
-        budget.wait_info = store.get('request_wait', {})
         update(phase='running', batch_total=len(pending), total=len(pending), completed=0, saved=0, failed=0)
         for attempt in range(ATTEMPTS):
-            retry = [item for item in pending if item['url'] not in saved and not closed(media.errors.get(item['url']))]
-            for item in retry:
+            retry = {item['url']: item for item in pending if item['url'] not in saved and not closed(media.errors.get(item['url']))}
+            for value in media.ready_first(retry):
+                item = retry[value]
                 if cancel.is_set():
                     raise Cancelled('Загрузка остановлена.')
-                value = item['url']
                 referer = f'https://{client.user.replace("_", "-")}.livejournal.com/'
                 if item['entries']:
                     row = store.db.execute('SELECT payload FROM entries WHERE id=?', (item['entries'][0]['id'],)).fetchone()
@@ -145,6 +139,8 @@ def download_browser_images(store, data, cancel, update, sessions):
                 update(phase='running', message=f'Изображения · попытка {attempt + 1} из {ATTEMPTS}',
                        batch_total=len(pending), completed=len(seen), total=len(pending), saved=len(saved))
                 path = media.get(value, required=True, referer=referer)
+                if media.deferred_host:
+                    continue
                 with store.db: media.save_state(store)
                 seen.add(value)
                 if path: saved.add(value)
@@ -156,8 +152,8 @@ def download_browser_images(store, data, cancel, update, sessions):
                 reason = media.errors.get(value, {}).get('reason')
                 consecutive = consecutive + 1 if reason in ('browser_network', 'browser_timeout', 'browser_dns') else 0
                 if not path and (reason in ('browser_closed', 'browser_login', 'browser_start', 'browser_profile', 'browser_missing') or
-                                 media.errors.get(value, {}).get('http_status') == 429 or consecutive >= 3):
-                    # Session loss, rate limits and a broken connection affect the
+                                 consecutive >= 3):
+                    # Session loss and a broken connection affect the
                     # queue; a file-specific 401/403/404 does not.
                     update(error=media.errors[value])
                     raise ExportError(error_message(media.errors[value]))
@@ -180,13 +176,7 @@ def download_one(store, data, cancel, update, sessions=None):
     client.session.trust_env = False
     if sessions:
         sessions.restore(client)
-    budget.not_before = client.not_before = restored_deadline(store)
-    budget.wait_info = store.get('request_wait', {})
-    def cooldown(deadline):
-        with store.db:
-            store.set('request_not_before', deadline)
-            store.set('request_wait', budget.wait_info)
-    client.save_cooldown = budget.save_cooldown = cooldown
+    restore_cooldowns(client, store)
     manager, media = None, None
     try:
         update(phase='running', message='Загрузка…', **budget.snapshot())

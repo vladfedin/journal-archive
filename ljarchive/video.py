@@ -19,7 +19,7 @@ import requests
 
 from .client import AuthenticationRequired, Cancelled, ExportError, HTTPError, RequestLimitReached
 from .media import public_url
-from .retry import backoff
+from .retry import SourceCoolingDown, backoff
 from .gaps import ATTEMPTS, closed, fail, reopen
 
 VIDEO_SUFFIXES = {'.mp4', '.webm', '.ogv', '.mov', '.m4v'}
@@ -360,8 +360,8 @@ class VideoArchive:
             self.check(); public_url(current)
             if budget.limit is not None and budget.used >= budget.limit:
                 budget.consume('videos')
-            budget.announce_wait()
-            self.wait(max(budget.delay, budget.not_before - time.time()))
+            budget.announce_wait(url=current)
+            self.wait(max(budget.delay, budget.deadline_for(current) - time.time()))
             budget.consume('videos')
             from .browser_bridge import safe_url
             trace = {'url': safe_url(current), 'transport': 'http', 'http_status': None, 'stage': self.stage}
@@ -376,8 +376,8 @@ class VideoArchive:
             trace["http_status"] = r.status_code
             budget.event("response", "videos", current, http_status=r.status_code, request_url=safe_url(current))
             if r.status_code in (429, 500, 502, 503, 504):
-                budget.not_before = time.time() + backoff(attempt, r.headers.get('Retry-After'), limited=r.status_code == 429)
-                budget.describe_wait(budget.not_before, 'http', 'videos', current, http_status=r.status_code,
+                retry_at = time.time() + backoff(attempt, r.headers.get('Retry-After'), limited=r.status_code == 429)
+                budget.describe_wait(retry_at, 'http', 'videos', current, http_status=r.status_code,
                                      attempt=attempt + 1, max_attempts=6, server_delay=bool(r.headers.get('Retry-After')))
                 budget.save_cooldown(budget.not_before)
             if 300 <= r.status_code < 400:
@@ -462,6 +462,9 @@ class VideoArchive:
                           height=info.get('height'), format=info.get('format_id'))
             record.pop('error', None); shutil.rmtree(work)
             reopen(record)
+        except SourceCoolingDown:
+            self.attempted.discard(url)
+            raise
         except VideoStop as exc:
             record.update(status='pending', error={'reason': exc.reason})
         except (Cancelled, RequestLimitReached) as exc:
@@ -558,7 +561,7 @@ class VideoArchive:
                         'duration': (playlist.get('duration') or 0) / 1000,
                         'extractor_key': 'LiveJournal', 'id': record_id}
 
-    def capture(self, entry, enabled):
+    def capture(self, entry, enabled, *, pending=False):
         from .render import original_url, text_value
         eid, base = int(entry['itemid']), original_url(self.client.user, entry)
         refs = VideoRefs(base)
@@ -567,6 +570,7 @@ class VideoArchive:
         refs.close()
         missing = [module for module in refs.modules if embed_key(base, module) not in self.embeds and embed_key(base, module) not in self.external
                    and not closed(self.records.get(embed_key(base, module)))]
+        queued = 'pending' if pending else 'not_requested'
         tried = bool(enabled and missing and base not in self.pages)
         stop_reason, detail = None, None
         if tried:
@@ -575,6 +579,9 @@ class VideoArchive:
             self.pages.add(base)
             try:
                 self.resolve(entry, missing)
+            except SourceCoolingDown:
+                self.pages.discard(base)
+                raise
             except (Cancelled, RequestLimitReached, VideoStop) as exc:
                 stop_reason = 'request_limit' if isinstance(exc, RequestLimitReached) else getattr(exc, 'reason', 'cancelled')
             except ExportError as exc:
@@ -589,7 +596,9 @@ class VideoArchive:
             key = embed_key(base, module)
             if key in self.embeds: refs.urls.add(self.embeds[key])
             elif key not in self.external:
-                record = self.records.setdefault(key, {'url': base, 'entries': [eid], 'status': 'not_requested'})
+                record = self.records.setdefault(key, {'url': base, 'entries': [eid], 'status': queued})
+                if pending and record['status'] == 'not_requested':
+                    record['status'] = queued
                 if enabled and not closed(record):
                     if not tried and not self.client.budget.exhausted and not self.client.cancel.is_set():
                         continue
@@ -606,11 +615,14 @@ class VideoArchive:
         for url in sorted(refs.urls):
             if enabled: self.download(url, eid)
             else:
-                record = self.records.setdefault(url, {'url': url, 'status': 'not_requested', 'entries': []})
+                record = self.records.setdefault(url, {'url': url, 'status': queued, 'entries': []})
+                if pending and record['status'] == 'not_requested':
+                    record['status'] = queued
                 record['entries'] = sorted(set(record.get('entries', [])) | {eid})
         for module in refs.modules:
             if embed_key(base, module) in self.embeds: self.records.pop(embed_key(base, module), None)
         self.save()
+        return sorted(refs.urls), base if missing else None
 
     def retry_failed(self, selected=None):
         entries = {int(e['itemid']): e for e in self.store.entries()}
@@ -631,11 +643,12 @@ class VideoArchive:
         self.session.close()
 
 
-def capture_videos(exporter, entry):
+def capture_videos(exporter, entry, *, discover_only=False):
     manager = getattr(exporter, '_videos', None)
     if manager is None:
         manager = exporter._videos = VideoArchive(exporter.store, exporter.client, exporter.progress)
-    manager.capture(entry, getattr(exporter, 'videos', False))
+    requested = getattr(exporter, 'videos', False)
+    return manager.capture(entry, requested and not discover_only, pending=discover_only and requested)
 
 
 def video_error_message(record):

@@ -280,9 +280,12 @@ class BrowserBridge:
                         visits[address] = visits.get(address, 0) + 1
                         if visits[address] > 2 or len(trace) >= 8:
                             raise BrowserFailure('browser_redirect', trace, status)
-                        wait = max(0, self.last_request + budget.delay - time.monotonic(), budget.not_before - time.time())
+                        retry_at = budget.deadline_for(address)
+                        wait = max(0, self.last_request + budget.delay - time.monotonic(), retry_at - time.time())
                         if wait:
-                            message = 'ЖЖ запросил паузу перед следующим запросом' if budget.not_before > time.time() else 'Пауза между запросами'
+                            if retry_at > time.time() and budget.before_host_wait:
+                                budget.before_host_wait(address)
+                            message = 'ЖЖ запросил паузу перед следующим запросом' if retry_at > time.time() else 'Пауза между запросами'
                             budget.progress(phase='waiting', message=message, retry_at=time.time() + wait)
                             deadline += wait
                             if cancel.wait(wait):
@@ -313,8 +316,8 @@ class BrowserBridge:
                             from .retry import backoff
                             retry_after = next((v for k, v in response.get('headers', {}).items() if k.lower() == 'retry-after'), None)
                             if retry_after is not None or status == 429:
-                                budget.not_before = max(budget.not_before, time.time() + backoff(0, retry_after, limited=status == 429))
-                                budget.describe_wait(budget.not_before, 'http', category, url, http_status=status,
+                                retry_at = time.time() + backoff(0, retry_after, limited=status == 429)
+                                budget.describe_wait(retry_at, 'http', category, response['url'], http_status=status,
                                                      server_delay=bool(retry_after))
                                 budget.save_cooldown(budget.not_before)
                         if status >= 400:

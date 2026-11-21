@@ -302,7 +302,10 @@ class Personal:
                 raise IncompleteData('Переписка сохранена до границы выдачи ЖЖ; сервер повторяет страницу. Полнота не подтверждена.')
             cursor = next_cursor
 
-    def run(self, account, messages):
+    def run(self, account, messages, *, with_media=True):
+        if messages:
+            for direction, event_type in (('incoming', 18), ('outgoing', 19)):
+                self.capture('messages_' + direction, lambda d=direction, t=event_type: self.inbox(d, t), 'LJ.XMLRPC.getinbox')
         if account:
             with self.store.db:
                 self.store.set('profile_social_requested', True)
@@ -318,16 +321,12 @@ class Personal:
             self.capture('managed_communities',
                          lambda: {'users': [{'username': name} for name in self.client.managed_communities(confirm_empty=True)]},
                          'community/manage.bml')
-        if messages:
-            for direction, event_type in (('incoming', 18), ('outgoing', 19)):
-                self.capture('messages_' + direction, lambda d=direction, t=event_type: self.inbox(d, t), 'LJ.XMLRPC.getinbox')
-        from .media import Media
+        if with_media:
+            self.download_materials(account, messages)
+
+    def material_sources(self, account, messages):
         from .userpics import picture_url
         from .progress import Images
-        media = getattr(self.exporter, '_media', None)
-        if media is None:
-            media = self.exporter._media = Media(self.store.folder, self.exporter.images, self.client.cancel, self.client.budget, client=self.client)
-            media.load_state(self.store)
         urls, embeds = set(), set()
         if account:
             urls.update(self.store.get('userpic_catalog', {}).get('pickwurls') or [])
@@ -342,8 +341,20 @@ class Personal:
                     parser.feed(item.get('body') if isinstance(item.get('body'), str) else '')
                     parser.close()
                     embeds.update(parser.urls)
-        for url, category in ([(u, 'userpics') for u in sorted(set(filter(None, (picture_url(u) for u in urls))))]
-                              + [(u, 'images') for u in sorted(embeds)]):
+        for url in sorted(set(filter(None, (picture_url(u) for u in urls)))):
+            yield url, 'userpics'
+        for url in sorted(embeds):
+            yield url, 'images'
+
+    def download_materials(self, account, messages):
+        from .media import Media
+        media = getattr(self.exporter, '_media', None)
+        if media is None:
+            media = self.exporter._media = Media(self.store.folder, self.exporter.images, self.client.cancel, self.client.budget, client=self.client)
+            media.load_state(self.store)
+        sources = dict(self.material_sources(account, messages))
+        for url in media.ready_first(sources):
+            category = sources[url]
             self.client.check()
             self.exporter.update('personal', 'Материалы профиля и переписки')
             media.get(url, required=category == 'userpics', category=category)
@@ -458,7 +469,7 @@ def download_profile(store, data, cancel, update, sessions=None):
     from .client import LiveJournalClient, RequestBudget
     from .on_demand import NeedsLogin
     from .sources import stored_source, bind_source
-    from .retry import restored_deadline
+    from .retry import restore_cooldowns
     identity = stored_source(store)
     if identity['type'] != 'own':
         raise ExportError('Личный профиль доступен только в архиве своего журнала.')
@@ -468,12 +479,7 @@ def download_profile(store, data, cancel, update, sessions=None):
     client = LiveJournalClient(identity['login_username'], data['password'], budget=budget,
                                delay=data.get('delay', 3), cancel=cancel, progress=update,
                                session_ready=sessions.remember if sessions else None)
-    client.not_before = budget.not_before = restored_deadline(store)
-    def checkpoint(deadline):
-        with store.db:
-            store.set('request_not_before', deadline)
-            store.set('request_wait', budget.wait_info)
-    client.save_cooldown = budget.save_cooldown = checkpoint
+    restore_cooldowns(client, store)
     exporter = SimpleNamespace(store=store, client=client, images=False,
         personal_cycle=secrets.token_hex(12),
         update=lambda phase, message, **values: update(phase=phase, message=message, **values))

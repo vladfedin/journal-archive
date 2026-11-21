@@ -6,7 +6,7 @@ import ipaddress
 import socket
 import threading
 import time
-from collections import Counter
+from collections import Counter, deque
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit, urlunsplit
@@ -16,7 +16,7 @@ import requests
 from .storage import atomic_write
 from .client import RequestBudget, RequestLimitReached, WebLoginRequired
 from .web_session import AGENT, AUTH_COOKIES, cookie_header, ready as web_ready
-from .retry import backoff
+from .retry import SourceCoolingDown, backoff
 from .gaps import ATTEMPTS, carry, closed, fail, reopen
 
 TYPES = {"image/jpeg": ".jpg", "image/png": ".png", "image/gif": ".gif", "image/webp": ".webp", "image/avif": ".avif"}
@@ -158,6 +158,9 @@ class Media:
         self.videos, self.video_embeds, self.external_embeds = {}, {}, {}
         self.traces = {}
         self.downloads = {}
+        self._batch_url = None
+        self.deferred_host = None
+        self._deferred = {}
         self.browser_only = False
         self.browser_outcomes = {}
         self.browser_counts = Counter()
@@ -212,19 +215,69 @@ class Media:
             record['status'] = 'pending'
         self.errors[url] = fail(record, previous) if record['status'] == "failed" else carry(record, previous)
 
+    def ready_first(self, urls, address_of=image_url):
+        """Drain ready image hosts before waiting on one with a Retry-After."""
+        groups = {}
+        def enqueue(url, address):
+            try:
+                host = urlsplit(address).hostname or ''
+            except ValueError:
+                host, address = '', ''
+            if host not in groups:
+                groups[host] = (address, deque())
+            groups[host][1].append(url)
+        for url in urls:
+            enqueue(url, address_of(url))
+        def yield_to_ready(address):
+            if any(self.budget.deadline_for(other) <= time.time() for other, _ in groups.values()):
+                self.deferred_host = address
+                raise SourceCoolingDown()
+        previous_hook = self.budget.before_host_wait
+        self.budget.before_host_wait = yield_to_ready
+        try:
+            while groups:
+                earliest, next_host = float('inf'), None
+                for host, (address, _) in groups.items():
+                    deadline = self.budget.deadline_for(address)
+                    if deadline <= time.time():
+                        next_host = host
+                        break
+                    if deadline < earliest:
+                        earliest, next_host = deadline, host
+                batch = groups[next_host][1]
+                url = batch.popleft()
+                if not batch:
+                    del groups[next_host]
+                self._batch_url = url
+                self.deferred_host = None
+                yield url
+                destination = self._deferred[url][1] if url in self._deferred else self.deferred_host
+                if destination:
+                    self.budget.event('wait', 'materials', destination, retry_at=self.budget.deadline_for(destination),
+                                      message='Запрос отложен в очереди этого сервера')
+                    enqueue(url, destination)
+        finally:
+            self.budget.before_host_wait = previous_hook
+            self.deferred_host = None
+            self._batch_url = None
+            for transfer, _ in self._deferred.values():
+                transfer.close()
+            self._deferred.clear()
+
     def retry_failed(self, urls=None, checkpoint=None):
         """At the end of a run, repeat failed downloads until they are saved or closed."""
         for _ in range(ATTEMPTS):
             pending = [url for url, error in self.errors.items() if error.get("status") == "failed"
                        and not closed(error) and (urls is None or url in urls)]
-            for index, url in enumerate(pending):
+            for index, url in enumerate(self.ready_first(pending)):
                 if self.stopped or self.cancel.is_set():
                     return
                 category = self.errors[url].get("category", "images")
                 self.budget.progress(phase="materials", message="Повторяем недополученные изображения",
                                      completed=index, total=len(pending))
-                self.attempted.discard(url)
-                self.mapping.pop(url, None)
+                if url not in self._deferred:
+                    self.attempted.discard(url)
+                    self.mapping.pop(url, None)
                 self.get(url, required=category == "userpics", category=category)
                 if checkpoint:
                     checkpoint()
@@ -239,10 +292,9 @@ class Media:
         return not self.cancel.is_set()
 
     def defer(self, seconds, **details):
-        self.budget.not_before = max(self.budget.not_before, time.time() + seconds)
-        self.budget.describe_wait(self.budget.not_before, **details)
+        self.budget.describe_wait(time.time() + seconds, **details)
         self.budget.save_cooldown(self.budget.not_before)
-        self.budget.announce_wait()
+        self.budget.progress(activity={'kind': 'wait', 'at': time.time(), **self.budget.wait_info})
 
     def browser_get(self, url, referer, category, *, retry_login=True):
         from .browser_bridge import BrowserFailure, BrowserLoginRequired, safe_url
@@ -310,6 +362,21 @@ class Media:
         return None
 
     def get(self, url: str, *, required=False, category="images", referer=None) -> str | None:
+        paused = self._deferred.pop(url, None)
+        transfer = paused[0] if paused else self._download(url, required, category, referer)
+        try:
+            while True:
+                destination = next(transfer)
+                if url == self._batch_url:
+                    self._deferred[url] = transfer, destination
+                    return None
+        except SourceCoolingDown:
+            self.attempted.discard(url)
+            return None
+        except StopIteration as done:
+            return done.value
+
+    def _download(self, url, required, category, referer):
         self.used_urls[category].add(url)
         self.categories.setdefault(url, category)
         if referer:
@@ -362,6 +429,9 @@ class Media:
                 if origin in self.paused_origins:
                     self.record_error(url, "host_paused", status="pending", requests_made=requests_made, checked_at=checked_at)
                     return None
+                if redirect and self.budget.deadline_for(current) > time.time():
+                    # No connection is open here. Resume this redirect at its own host's turn.
+                    yield current
                 public_url(current)
                 headers = self.headers(current, referer)
                 # Photo authorization can return through the main LJ domain. It needs
@@ -382,8 +452,8 @@ class Media:
                 visited.add(fingerprint)
                 if self.budget.limit is not None and self.budget.used >= self.budget.limit:
                     self.budget.consume(category)
-                self.budget.announce_wait()
-                if not self.wait(max(self.budget.delay, self.budget.not_before - time.time())):
+                self.budget.announce_wait(url=current)
+                if not self.wait(max(self.budget.delay, self.budget.deadline_for(current) - time.time())):
                     self.record_error(url, "cancelled", status="pending", requests_made=requests_made, checked_at=checked_at)
                     return None
                 self.budget.consume(category)

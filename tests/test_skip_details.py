@@ -32,7 +32,7 @@ class ProfileRedirect(Journal):
 def test_optional_profile_redirect_continues_to_video_and_images(tmp_path):
     exporter = SyncExporter(tmp_path, ProfileRedirect(), Scope('urls', urls=('https://fixture.livejournal.com/263.html',)),
                             account=True, videos=True, images=True)
-    with patch.object(exporter, 'video_stage', wraps=exporter.video_stage) as videos, \
+    with patch.object(exporter, 'material_stage', wraps=exporter.material_stage) as videos, \
          patch.object(exporter, 'retry_materials', wraps=exporter.retry_materials) as images:
         report = exporter.run()
     videos.assert_called_once()
@@ -144,7 +144,7 @@ def test_exhausted_http_429_preserves_stop_and_cooldown(tmp_path):
     try:
         with patch.object(client, 'personal_feed', feed), patch.object(http, '_wait'), \
              patch.object(http.session, 'request', return_value=response) as calls, \
-             patch.object(exporter, 'video_stage') as video:
+             patch.object(exporter, 'material_stage') as video:
             report = exporter.run()
         assert calls.call_count == 2 and not video.called
         assert report['status'] == 'partial' and not report['finished_with_skips'] and not report['sync']['done']

@@ -11,7 +11,7 @@ from .exporter import Exporter, now
 from .entries import is_repost
 from .storage import atomic_write, dumps
 from .sources import bind_source, source
-from .retry import restored_deadline
+from .retry import restore_cooldowns
 from .gaps import ATTEMPTS, closed, fail, reopen
 
 
@@ -238,7 +238,7 @@ class SyncExporter(Exporter):
                             store.db.execute("INSERT OR REPLACE INTO days(day,expected) VALUES (?,?)", (value, int(day["count"])))
                     store.set("days_loaded", True)
                 self.checkpoint(calendar_loaded=True)
-            # Calendar first, then each day's posts with their discussions and media.
+            # Calendar first, then each day's posts with their discussions.
             for day in store.db.execute("SELECT * FROM days WHERE done!=1 ORDER BY day").fetchall():
                 self.update("posts", f"Записи за {day['day']}…")
                 year, month, number = map(int, day["day"].split("-"))
@@ -425,18 +425,10 @@ class SyncExporter(Exporter):
         from .integrity import verify_archive
         store = self.store
         error, cancelled = None, False
-        rate_limited = False
+        text_processed = False
         try:
             self.prepare()
-            self.client.not_before = restored_deadline(store)
-            def save_cooldown(deadline):
-                with store.db:
-                    store.set("request_not_before", deadline)
-                    store.set("request_wait", self.client.budget.wait_info)
-            self.client.save_cooldown = save_cooldown
-            self.client.budget.save_cooldown = save_cooldown
-            self.client.budget.not_before = self.client.not_before
-            self.client.budget.wait_info = store.get("request_wait", {})
+            restore_cooldowns(self.client, store)
             try:
                 if self.scope.mode == "full":
                     audit = verify_archive(store, progress=self.progress, check=self.client.check)
@@ -473,6 +465,7 @@ class SyncExporter(Exporter):
                     stage(self.unavailable_posts, "записи")
                 if self.state["phase"] == "comments" or (self.state["phase"] == "posts" and self.selected_ids):
                     stage(self.comments, "комментарии")
+                personal = self.personal()
                 if self.state["phase"] in ("comments", "reactions"):
                     try:
                         if self.reactions(entry_ids=self.selected_ids, checkpoint="sync_reaction_counts") and not failures:
@@ -481,22 +474,21 @@ class SyncExporter(Exporter):
                         failures.append(str(exc))
                 if store.db.execute("SELECT 1 FROM days WHERE done!=1").fetchone():
                     self.checkpoint(phase="posts")
-                self.personal()
-                self.video_stage()
-                self.retry_materials()
                 self.refresh_feed_pin()
+                text_processed = True
+                self.material_stage(personal)
                 error = " ".join(failures) or None
             except Cancelled as exc:
                 error, cancelled = str(exc), True
             except (HTTPRateLimited, APIRateLimited) as exc:
-                rate_limited, error = True, str(exc)
+                text_processed, error = False, str(exc)
             except ExportError as exc:
                 error = str(exc)
             with store.db:
                 identity = bind_source(store, self.client)
             report = self.report(error, cancelled)
             report['source'] = identity
-            report = build_archive(store, report, images=self.images and not (cancelled or rate_limited), userpics=not (cancelled or rate_limited),
+            report = build_archive(store, report, images=self.images and (text_processed and not cancelled), userpics=(text_processed and not cancelled),
                                    client_cancel=self.client.cancel, progress=self.progress, budget=self.client.budget, media=getattr(self, "_media", None), client=self.client)
             complete = self.state["phase"] == "render" and not error and (report["status"] == "complete" or report.get("finished_with_skips"))
             if complete:

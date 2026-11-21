@@ -26,43 +26,28 @@ class Images(HTMLParser):
                     self.captions[url] = caption
 
 
-def capture_materials(exporter, entry):
-    from .media import Media
+def entry_material_sources(exporter, entry):
     from .render import original_url, text_value
     from .userpics import resolve, owner_id
     store, eid = exporter.store, int(entry['itemid'])
-    media = getattr(exporter, '_media', None)
-    if media is None:
-        media = exporter._media = Media(store.folder, exporter.images, exporter.client.cancel,
-                                       getattr(exporter.client, 'budget', None), client=exporter.client)
-        media.load_state(store)
     comments = store.comments(eid)
     parser = Images(original_url(exporter.client.user, entry))
     pictures = set()
+    catalog = store.get('userpic_catalog')
+    uid = owner_id(store, catalog)
     for kind, items in (('post', [entry]), ('comment', comments)):
         for item in items:
             parser.feed(text_value(item.get('event' if kind == 'post' else 'body')))
-            catalog = store.get('userpic_catalog')
-            pic = resolve(item, kind, catalog, owner=exporter.client.user, owner_id=owner_id(store, catalog))
+            pic = resolve(item, kind, catalog, owner=exporter.client.user, owner_id=uid)
             if pic['url']:
                 pictures.add(pic['url'])
     parser.close()
     requested = [(url, 'userpics') for url in sorted(pictures)]
     if exporter.images:
         requested += [(url, 'images') for url in sorted(parser.urls - pictures)]
-    state = store.get('entry_materials', {})
-    def checkpoint():
-        state[str(eid)] = {'images': len(parser.urls), 'userpics': len(pictures),
-                          'urls': [u for u, _ in requested], 'requested': len(requested), 'saved': sum(bool(media.mapping.get(u)) for u, _ in requested)}
-        with store.db:
-            store.set('entry_materials', state)
-            media.save_state(store)
-    checkpoint()
-    for url, category in requested:
-        exporter.client.check()
-        exporter.update('materials', f'Материалы записи #{eid}', entry_id=eid)
-        media.get(url, required=category == 'userpics', category=category, referer=parser.base)
-        checkpoint()
+    record = {'images': len(parser.urls), 'userpics': len(pictures), 'requested': len(requested),
+              'urls': [url for url, _ in requested]}
+    return record, [(url, category, parser.base, eid) for url, category in requested]
 
 
 def material_progress(record, mapping, errors=None):

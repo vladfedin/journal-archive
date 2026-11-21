@@ -140,12 +140,11 @@ def test_export_passes_authenticated_client_to_both_material_stages(tmp_path, mo
     client = LiveJournalClient('fixture', '', budget=RequestBudget(4)); authenticated(client)
     calls = network(monkeypatch, lambda url, headers: image(200 if SESSION in headers.get('Cookie', '') else 403))
     from ljarchive.exporter import Exporter
-    from ljarchive.progress import capture_materials
     from ljarchive.render import build_archive
     exporter = Exporter(tmp_path, client, images=True)
     try:
         if stage == 'entry':
-            capture_materials(exporter, exporter.store.entries()[0])
+            exporter.material_stage()
         else:
             report = json.loads((tmp_path / 'export-report.json').read_text())
             build_archive(exporter.store, report, images=True, client=client, budget=client.budget)

@@ -82,6 +82,8 @@ class RequestBudget:
         self.delay = 2.0
         self.not_before = 0.0
         self.wait_info = {}
+        self.cooldowns = {}
+        self.before_host_wait = None
         self.save_cooldown = lambda deadline: None
 
     def event(self, kind, category, url="", **values):
@@ -91,13 +93,35 @@ class RequestBudget:
 
     def describe_wait(self, deadline, reason, category, url="", **values):
         from urllib.parse import urlsplit
-        self.wait_info = {"reason": reason, "category": category,
-                          "host": urlsplit(url).hostname or "", "retry_at": deadline, **values}
+        host = urlsplit(url).hostname or ""
+        self.cooldowns = {h: wait for h, wait in self.cooldowns.items() if wait["retry_at"] > time.time()}
+        previous = self.cooldowns.get(host, {})
+        self.wait_info = previous if previous.get("retry_at", 0) > deadline else {
+            "reason": reason, "category": category, "host": host, "retry_at": deadline, **values}
+        self.cooldowns[host] = self.wait_info
+        self.not_before = self.wait_info["retry_at"]
 
-    def announce_wait(self, progress=None):
-        if self.not_before <= time.time():
+    def wait_for(self, url):
+        from urllib.parse import urlsplit
+        host = urlsplit(url).hostname or ""
+        info = self.cooldowns.get(host, {})
+        general = self.cooldowns.get("", {})
+        if general.get("retry_at", 0) > info.get("retry_at", 0):
+            info = general
+        if not self.cooldowns and self.not_before and self.wait_info.get("host", host) in (host, ""):
+            return {**self.wait_info, "retry_at": self.not_before}
+        return info
+
+    def deadline_for(self, url):
+        return self.wait_for(url).get("retry_at", 0)
+
+    def announce_wait(self, progress=None, *, url=None, yieldable=True):
+        info = self.wait_for(url) if url is not None else self.wait_info
+        deadline = info.get("retry_at", 0)
+        if deadline <= time.time():
             return
-        info = self.wait_info or {"reason": "restored", "retry_at": self.not_before}
+        if yieldable and url is not None and self.before_host_wait:
+            self.before_host_wait(url)
         reason = info.get("reason")
         message = {"timeout": "Сервер не ответил вовремя. Повторим запрос.",
                    "connection": "Не удалось соединиться. Повторим запрос.",
@@ -108,7 +132,7 @@ class RequestBudget:
         if reason == "http":
             message = f"Сервер вернул HTTP {info.get('http_status')}. Повторим запрос."
         (progress or self.progress)(phase="waiting", message=message or "Ожидание повтора.",
-                                   wait=info, retry_at=self.not_before)
+                                   wait=info, retry_at=deadline)
 
     def consume(self, category):
         with self.lock:
@@ -232,10 +256,8 @@ class LiveJournalClient:
     def _defer(self, seconds, **details):
         if self.deadline and details.get("attempt") == details.get("max_attempts"):
             return  # This foreground operation has no further retry to schedule.
-        self.not_before = max(self.not_before, time.time() + seconds)
-        self.budget.not_before = self.not_before
-        self.budget.describe_wait(self.not_before, **details)
-        self.save_cooldown(self.not_before)
+        self.budget.describe_wait(time.time() + seconds, **details)
+        self.save_cooldown(self.budget.not_before)
         self.budget.announce_wait(self.progress)
 
     def _request(self, method: str, path: str, *, base_url=BASE_URL, category="livejournal", accepted_statuses=(200,), attempts=None, rpc_method=None, **kwargs) -> bytes:
@@ -253,9 +275,8 @@ class LiveJournalClient:
             self.check()
             if self.budget.limit is not None and self.budget.used >= self.budget.limit:
                 self.budget.consume(category)  # Raise before waiting for a request that cannot be sent.
-            self.budget.not_before = max(self.not_before, self.budget.not_before)
-            self.budget.announce_wait(self.progress)
-            self._wait(self.budget.not_before - time.time())
+            self.budget.announce_wait(self.progress, url=base_url, yieldable=path != '/login.bml')
+            self._wait(self.budget.deadline_for(base_url) - time.time())
             self._wait(self.delay - (time.monotonic() - self._last_request))
             if attempt:
                 self.progress(phase="retrying", message=f"Повтор запроса к ЖЖ · попытка {attempt + 1} из {attempts}")
@@ -355,7 +376,6 @@ class LiveJournalClient:
         for attempt in range(self.max_attempts):
             try:
                 if attempt:
-                    self._wait(max(self.not_before, self.budget.not_before) - time.time())
                     self.progress(phase="retrying", message=f"Повтор запроса XML-RPC · попытка {attempt + 1} из {self.max_attempts}")
                 challenge = self._rpc("getchallenge").get("challenge")
                 if not isinstance(challenge, str) or not challenge:

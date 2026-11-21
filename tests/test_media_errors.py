@@ -114,7 +114,8 @@ def test_failed_origin_does_not_stop_healthy_images_and_is_retried_next_run(tmp_
     assert calls == [bad] * 3 + [good]
     assert media.budget.used == 4 and not media.stopped
     if failure == 'http':
-        assert waits[-1] > 3590  # The shared Retry-After deadline is still respected.
+        assert min(waits[1:3]) > 3590  # Both retries to the original host wait.
+        assert waits[-1] == media.budget.delay
     store = Store(tmp_path)
     with store.db:
         media.save_state(store)
@@ -186,3 +187,43 @@ def test_image_error_survives_rebuild_restart_and_clears_after_recovery(tmp_path
     assert not store.get('media_errors') and report['images_saved'] == 1
     assert not any('Не удалось сохранить' in issue for issue in report['issues'])
     store.close()
+
+
+def test_redirect_to_cooling_host_yields_to_other_files_without_replaying_request(tmp_path, monkeypatch):
+    media = downloader(tmp_path, monkeypatch)
+    start, blocked, other = 'https://a.example/1', 'https://cdn.example/1', 'https://z.example/2'
+    media.defer(300, reason='http', category='images', url=blocked, http_status=429, server_delay=True)
+    calls, waits = [], []
+    def get(url, **kwargs):
+        calls.append(url)
+        if url == start:
+            return ImageResponse(status=302, headers={'Location':blocked})
+        return ImageResponse(content=b'image', headers={'Content-Type':'image/png'})
+    monkeypatch.setattr(media.session, 'get', get)
+    monkeypatch.setattr(media, 'wait', lambda s: waits.append(s) or True)
+    for url in media.ready_first([start, other]):
+        media.get(url)
+    assert calls == [start, other, blocked]
+    assert waits[1] < 3 and waits[2] > 290
+    assert media.mapping[start] and media.mapping[other] and media.budget.used == 3
+    media.close()
+
+
+def test_nested_player_read_requeues_before_waiting_for_cdn(tmp_path, monkeypatch):
+    from ljarchive.retry import SourceCoolingDown
+    media = downloader(tmp_path, monkeypatch)
+    first = 'https://player.example/video'
+    second = 'https://other.example/video'
+    cdn = 'https://cdn.example/file'
+    media.defer(300, reason='http', category='videos', url=cdn, http_status=429, server_delay=True)
+    entered, finished = [], []
+    for url in media.ready_first([first, second]):
+        entered.append(url)
+        try:
+            media.budget.announce_wait(url=cdn if url == first else second)
+        except SourceCoolingDown:
+            continue
+        finished.append(url)
+    assert entered == [first, second, first] and finished == [second, first]
+    assert media.budget.before_host_wait is None and media.budget.deadline_for(cdn) > 0
+    media.close()

@@ -245,7 +245,7 @@ def test_redirect_and_429_attempts_count_and_keep_cooldown(tmp_path, monkeypatch
         calls.append(url)
         from urllib3.response import HTTPResponse
         r = Response(); r.url = url; r.raw = HTTPResponse(body=io.BytesIO(b'ok'), preload_content=False)
-        if len(calls) == 1:
+        if url == 'https://example.org/clip.mp4':
             r.status_code = 302; r.headers['Location'] = 'https://cdn.example/clip.mp4'
         elif len(calls) == 2:
             r.status_code = 429; r.headers['Retry-After'] = '3600'
@@ -258,8 +258,9 @@ def test_redirect_and_429_attempts_count_and_keep_cooldown(tmp_path, monkeypatch
         failure.value.response.close()
         with video.open(Request('https://example.org/clip.mp4')) as response:
             assert response.read() == b'ok'
-        assert len(calls) == video.client.budget.used == 3
-        assert max(waits) > 3590
+        assert len(calls) == video.client.budget.used == 4
+        assert waits[-2] == video.client.budget.delay
+        assert waits[-1] > 3590
     finally: close(video)
 
 

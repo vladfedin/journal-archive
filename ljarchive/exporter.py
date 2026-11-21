@@ -10,7 +10,7 @@ from .storage import Store, atomic_write, dumps
 from .comment_state import DELETED
 from .entries import is_repost
 from .sources import bind_source
-from .retry import restored_deadline
+from .retry import SourceCoolingDown, restore_cooldowns
 from .gaps import ATTEMPTS, RETRIES, closed, fail
 
 
@@ -73,6 +73,7 @@ class Exporter:
         self.videos = videos
         self.progress = progress or (lambda **kwargs: None)
         self.entry_limit = validate_entry_limit(entry_limit)
+        self.material_sources = {}
         self.store = Store(folder)
         self.account, self.messages = account, messages
 
@@ -82,7 +83,7 @@ class Exporter:
     def retry_missing(self, operation, label):
         # HTTP failures already have their own retry policy. A partial successful response
         # gets RETRIES more passes over what is still missing, with no local pause: only a
-        # delay requested by the server (client.not_before) applies. Each gap counts its own
+        # delay requested by the server applies. Each gap counts its own
         # attempts across runs and is closed after the last one, so the passes are finite.
         for attempt in range(ATTEMPTS):
             self.client.check()
@@ -125,21 +126,6 @@ class Exporter:
             return  # A private or unreadable journal page supplies no new observation.
         with self.store.db:
             self.store.observe_feed_pin(did)
-
-    def retry_materials(self):
-        """After every stage, repeat this task's failed downloads until saved or closed."""
-        selected = getattr(self, "selected_ids", None)
-        records = self.store.get("entry_materials", {})
-        urls = {url for eid, record in records.items() if selected is None or int(eid) in selected
-                for url in record.get("urls", [])}
-        if not urls:
-            return
-        media = self.media()
-        def checkpoint():
-            with self.store.db:
-                media.save_state(self.store)
-        media.retry_failed(urls, checkpoint=checkpoint)
-        checkpoint()
 
     def reactions(self, *, entry_ids=None, checkpoint="trial_reaction_counts"):
         from .reactions import capture_reactions
@@ -289,7 +275,7 @@ class Exporter:
                     store.set("entry_comments", statuses)
                 self.update("comments", f"Запись #{eid}: " + ("комментарии сохранены" if status.get("done") else "есть пропуски"),
                             entry_id=eid)
-            self.entry_materials(entry)
+                self.index_entry_materials(entry)
         with store.db:
             store.set("meta_done", True)
             store.set("bodies_done", not incomplete)
@@ -386,25 +372,100 @@ class Exporter:
                 return
             page += 1
 
-    def entry_materials(self, entry):
-        # Filled by the per-entry media stage; the final renderer also uses this cache.
-        from .progress import capture_materials
-        capture_materials(self, entry)
-        from .video import capture_videos
-        capture_videos(self, entry)
-
-    def video_stage(self):
-        if not self.videos:
-            return
-        from .video import capture_videos
+    def material_entries(self):
         selected = getattr(self, 'selected_ids', None)
         for entry in self.store.entries():
             if selected is None or int(entry['itemid']) in selected:
                 self.client.check()
-                capture_videos(self, entry)
+                yield entry
+
+    def index_entry_materials(self, entry):
+        from .progress import entry_material_sources
+        from .video import capture_videos
+        eid = int(entry['itemid'])
+        record, sources = entry_material_sources(self, entry)
+        video_urls, embed_page = capture_videos(self, entry, discover_only=True)
+        self.material_sources[eid] = sources, video_urls, embed_page
+        records = self.store.get('entry_materials', {})
+        if records.get(str(eid)) != record:
+            records[str(eid)] = record
+            with self.store.db:
+                self.store.set('entry_materials', records)
+
+    def material_stage(self, personal=None):
+        queue, videos = {}, {}
+        for entry in self.material_entries():
+            eid = int(entry['itemid'])
+            if eid not in self.material_sources:
+                self.index_entry_materials(entry)
+            sources, video_urls, embed_page = self.material_sources.pop(eid)
+            if self.videos:
+                for url in video_urls:
+                    videos.setdefault(('video', url), eid)
+                if embed_page:
+                    videos[('embeds', embed_page)] = entry
+            for url, category, referer, eid in sources:
+                queue.setdefault(url, (category, referer, eid))
+        if personal:
+            for url, category in personal.material_sources(self.account, self.messages):
+                queue.setdefault(url, (category, None, None))
+        self.download_materials(queue, videos)
+        self.retry_materials(queue, videos)
+
+    def download_materials(self, images, videos, *, retry=False):
+        from .media import image_url
+        media = self.media()
         manager = getattr(self, '_videos', None)
-        if manager:
-            manager.retry_failed(selected)
+        def address(job):
+            return job[1] if isinstance(job, tuple) else image_url(job)
+        for job in media.ready_first([*images, *videos], address):
+            self.client.check()
+            if job in videos:
+                kind, url = job
+                try:
+                    if kind == 'video':
+                        if retry:
+                            manager.attempted.discard(url)
+                        manager.download(url, videos[job])
+                    else:
+                        if retry:
+                            manager.pages.discard(url)
+                        entry = videos[job]
+                        resolved, _ = manager.capture(entry, True)
+                        for source in resolved:
+                            videos.setdefault(('video', source), entry['itemid'])
+                except SourceCoolingDown:
+                    pass  # The queue has moved this job to the destination host.
+                continue
+            category, referer, eid = images[job]
+            if retry:
+                media.attempted.discard(job)
+            saved = media.mapping.get(job)
+            if not saved:
+                self.update('materials', f'Материалы записи #{eid}' if eid else 'Материалы профиля и переписки', entry_id=eid)
+            path = media.get(job, required=category == 'userpics', category=category, referer=referer)
+            if not path or path != saved:
+                with self.store.db:
+                    media.save_state(self.store)
+
+    def retry_materials(self, images, videos):
+        media = self.media()
+        manager = getattr(self, '_videos', None)
+        def retryable(record):
+            return record.get('status') == 'failed' and not closed(record)
+        for _ in range(RETRIES):
+            if self.client.cancel.is_set() or media.budget.exhausted:
+                break
+            pending = {url: data for url, data in images.items()
+                       if not media.stopped and retryable(media.errors.get(url, {}))}
+            failed = {key for key, record in manager.records.items() if retryable(record)} if manager else set()
+            pages = {key.split('#lj-embed-', 1)[0] for key in failed if '#lj-embed-' in key}
+            clips = {job: data for job, data in videos.items()
+                     if job[1] in (pages if job[0] == 'embeds' else failed)}
+            if not pending and not clips:
+                break
+            self.download_materials(pending, clips, retry=True)
+            videos.update(clips)
 
     def save_thread(self, items, users, *, evidence="getcomments"):
         store = self.store
@@ -582,7 +643,9 @@ class Exporter:
             self.store.set("personal_requested", {"account": self.account, "messages": self.messages})
             self.store.set("personal_images_requested", self.images)
         if self.account or self.messages:
-            Personal(self).run(self.account, self.messages)
+            personal = Personal(self)
+            personal.run(self.account, self.messages, with_media=False)
+            return personal
 
     def report(self, error=None, cancelled=False):
         store = self.store
@@ -661,15 +724,7 @@ class Exporter:
         store = self.store
         try:
             if hasattr(self.client, "not_before"):
-                self.client.not_before = restored_deadline(store)
-                def save_cooldown(deadline):
-                    with store.db:
-                        store.set("request_not_before", deadline)
-                        store.set("request_wait", self.client.budget.wait_info)
-                self.client.save_cooldown = save_cooldown
-                self.client.budget.save_cooldown = save_cooldown
-                self.client.budget.not_before = self.client.not_before
-                self.client.budget.wait_info = store.get("request_wait", {})
+                restore_cooldowns(self.client, store)
             old_user = store.get('username')
             if old_user and store.get('entry_limit') != self.entry_limit:
                 raise ExportError('Папка содержит архив с другим объёмом выгрузки. Используйте отдельную папку.')
@@ -705,7 +760,7 @@ class Exporter:
                     if self.entry_limit is not None:
                         store.set("entry_comments", {})
             error, cancelled = None, False
-            rate_limited = False
+            text_processed = False
             try:
                 failures = []
                 def stage(operation, label):
@@ -719,21 +774,21 @@ class Exporter:
                 else:
                     self.comment_metadata()
                     self.comment_bodies()
+                personal = self.personal()
                 try:
                     if not self.reactions():
                         reasons = store.get('reaction_issues') or ['Не удалось обновить реакции.']
                         failures.extend(reasons)
                 except IncompleteData as exc:
                     failures.append(str(exc))
-                self.personal()
-                self.video_stage()
-                self.retry_materials()
                 self.refresh_feed_pin()
+                text_processed = True
+                self.material_stage(personal)
                 error = " ".join(failures) or None
             except Cancelled as exc:
                 error, cancelled = str(exc), True
             except (HTTPRateLimited, APIRateLimited) as exc:
-                rate_limited, error = True, str(exc)
+                text_processed, error = False, str(exc)
             except ExportError as exc:
                 error = str(exc)
             with store.db:
@@ -745,7 +800,7 @@ class Exporter:
                 with store.db:
                     store.set("last_request_stats", budget.snapshot())
             self.update("render", "Собираем страницы, поиск и отчёт о полноте…")
-            report = build_archive(store, report, images=self.images and not (cancelled or rate_limited), userpics=not (cancelled or rate_limited),
+            report = build_archive(store, report, images=self.images and (text_processed and not cancelled), userpics=(text_processed and not cancelled),
                                    client_cancel=self.client.cancel, progress=self.progress, budget=budget, media=getattr(self, "_media", None), client=self.client)
             with store.db:
                 store.set("finished", report["status"] == "complete")

@@ -47,6 +47,7 @@ def establish(client, url='https://ic.pics.livejournal.com/'):
         return True
     if client._web_login_attempted or not client._web_password:
         return False
+    client.budget.announce_wait(url='https://www.livejournal.com/login.bml')
     client._web_login_attempted = True
     client.progress(phase='login', message='Входим в ЖЖ через веб-форму…')
     headers = {'User-Agent': AGENT, 'Accept': 'text/html', 'Referer': 'https://www.livejournal.com/login.bml'}
