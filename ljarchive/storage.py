@@ -178,6 +178,12 @@ class Store:
             if pin and pin.get('ditemid', 0) // 256 == eid:
                 self.set('sticky_entry_id', self.sticky_entry_id())
 
+    def mark_absent_entries(self, seen, *, includes=lambda day: True):
+        for entry in self.entries():
+            if (entry['itemid'] not in seen and includes(entry['eventtime'][:10])
+                    and entry.get('source_status') != 'not_returned'):
+                self.save_entry({**entry, 'source_status': 'not_returned'})
+
     def retain_recent_entries(self, ids):
         """Replace membership only after validating the new bounded selection."""
         keep = {int(eid) for eid in ids}
@@ -251,6 +257,11 @@ class Store:
 
     def save_reactions(self, kind, object_id, payload):
         self.db.execute("INSERT OR REPLACE INTO reactions VALUES (?,?,?)", (kind, object_id, dumps(payload)))
+
+    def comments_for_download(self, entry_id=None):
+        if self.get('comments_requested') is False:
+            return []
+        return [item for item in self.comments(entry_id) if item.get('source_status') != 'hidden_from_reader']
 
     def comments(self, entry_id=None):
         rows = self.db.execute("""SELECT c.payload, m.state, m.posterid, u.name FROM comments c

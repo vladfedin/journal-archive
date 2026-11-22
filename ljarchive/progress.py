@@ -30,7 +30,7 @@ def entry_material_sources(exporter, entry):
     from .render import original_url, text_value
     from .userpics import resolve, owner_id
     store, eid = exporter.store, int(entry['itemid'])
-    comments = store.comments(eid)
+    comments = store.comments_for_download(eid)
     parser = Images(original_url(exporter.client.user, entry))
     pictures = set()
     catalog = store.get('userpic_catalog')
@@ -211,6 +211,7 @@ def preview_entry(store, eid):
                    'security': security, 'security_label': {'private': 'Личная', 'usemask': 'Для друзей / группы'}.get(security, security),
                    'repost': is_repost(entry), 'repost_url': repost_url(entry), 'userpic': pictures['post'].get(str(eid)), 'tags': [], 'reactions': reaction_view(store.reactions('post').get(eid))}
         return ENV.get_template('entry.html').render(user=user, entry=entry, summary=summary, comments=comments,
+                     comments_skipped=store.get('entry_comments', {}).get(str(eid), {}).get('skipped') == 'not_requested',
                      content=safe_content(entry.get('event'), url, {}, media, set(), expand_cuts=True), original=url,
                      post_autoformat=needs_autoformat(entry.get('event'), entry.get('props')), current=[], newer=None, older=None,
                      coverage_notice=coverage_notice(store.get('entry_comments', {}).get(str(eid), {}),

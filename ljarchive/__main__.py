@@ -57,7 +57,9 @@ def main():
     verify = sub.add_parser("verify", help="Проверить базу и контрольные суммы файлов без сети")
     verify.add_argument("folder", type=Path)
     for command in (cli, update):
-        command.add_argument('--journal', help='Имя управляемого сообщества; username — аккаунт для входа')
+        command.add_argument('--journal', help='Имя журнала или сообщества; username — аккаунт для входа')
+        command.add_argument('--source-type', choices=('own', 'community', 'reader'), help='reader — читать со своего аккаунта')
+        command.add_argument('--no-comments', action='store_true', help='Пропустить обсуждения в режиме reader')
         command.add_argument("--videos", action="store_true", help="Скачивать встроенные видео")
         command.add_argument("--account", action="store_true", help="Профиль, друзья, настройки, каталог юзерпиков")
         command.add_argument("--messages", action="store_true", help="Входящие и исходящие из доступной выдачи ЖЖ")
@@ -98,9 +100,29 @@ def main():
                     report = json.loads(report_file.read_text(encoding="utf-8"))
                 else:
                     # Recover readable pages after a hard interruption before first rendering.
-                    exporter = object.__new__(Exporter)
-                    exporter.store, exporter.images = store, False
-                    report = exporter.report("Архив восстановлен после прерывания. Требуется продолжить выгрузку.")
+                    from .client import LiveJournalClient
+                    from .sources import stored_source
+                    from .sync import Scope, SyncExporter
+                    identity = stored_source(store)
+                    if not identity:
+                        raise ExportError("В базе нет данных авторизованного журнала.")
+                    client = LiveJournalClient(identity['login_username'], '', journal=identity['username'],
+                                               source_type=identity['type'])
+                    client.source = identity
+                    state = store.get('sync_job', {})
+                    if state.get('scope'):
+                        exporter = SyncExporter(store, client, Scope(**state['scope']))
+                        exporter.state = state
+                    else:
+                        exporter = Exporter(store, client, images=False, entry_limit=store.get('entry_limit'))
+                    try:
+                        report = exporter.report("Архив восстановлен после прерывания. Требуется продолжить выгрузку.")
+                        report['source'] = identity
+                        if exporter.reader:
+                            report['comments_requested'] = store.get('comments_requested', True)
+                            report['scope'] = f"Сохранённая часть журнала · читатель {identity['login_username']}."
+                    finally:
+                        client.close()
                 if not report.get("username"):
                     raise ExportError("В базе нет данных авторизованного журнала.")
                 if args.command == 'build' and args.journal_page:
@@ -117,9 +139,26 @@ def main():
                     from .exporter import now
                     from .reactions import capture_reactions
                     budget = RequestBudget(args.max_requests)
-                    client = LiveJournalClient(report["username"], "", budget=budget)
+                    from .sources import bind_source, stored_source
+                    identity = stored_source(store)
+                    reader = identity and identity['type'] == 'reader'
+                    if reader:
+                        password = getpass.getpass(f"Пароль ЖЖ для {identity['login_username']}: ")
+                        if not password:
+                            raise ExportError("Введите пароль читателя.")
+                        client = LiveJournalClient(identity['login_username'], password, journal=identity['username'],
+                                                   source_type='reader', budget=budget)
+                    else:
+                        client = LiveJournalClient(report['username'], '', budget=budget)
                     try:
-                        capture_reactions(store, client, lambda **v: print(v.get("message", ""), flush=True))
+                        selected = None
+                        if reader:
+                            client.login()
+                            client.source['capabilities'].update(identity.get('capabilities', {}))
+                            with store.db:
+                                bind_source(store, client)
+                            selected = {p['itemid'] for p in store.entries() if p.get('source_status') != 'not_returned'}
+                        capture_reactions(store, client, lambda **v: print(v.get("message", ""), flush=True), entry_ids=selected)
                     finally:
                         client.close()
                     report["reaction_refresh"] = {"created_at": now(), **budget.snapshot()}
@@ -153,13 +192,17 @@ def main():
             RequestBudget(args.max_requests)
             if not math.isfinite(args.delay) or not 1 <= args.delay <= 60:
                 raise ExportError("Пауза должна быть от 1 до 60 секунд.")
+            from .sources import archive_base, source
+            base = archive_base(source(args.username, args.journal, args.source_type))
+            if args.no_comments and args.source_type != 'reader':
+                raise ExportError('--no-comments применяется к режиму reader.')
             if args.command == "sync" or full_export:
                 from .sync import sync, validate_scope, target_slug
                 from .client import username
                 args.username = username(args.username)
                 if args.command == "sync":
                     validate_scope(args.journal or args.username, args.mode, args.date_from, args.date_to, args.url)
-                    target_slug(args.journal or args.username, args.archive)
+                    target_slug(base, args.archive)
             password = getpass.getpass("Пароль ЖЖ (не сохраняется): ")
             if not password:
                 raise ExportError("Пароль не может быть пустым.")
@@ -173,18 +216,18 @@ def main():
                     print(message, flush=True)
                     last_message = message
             if args.command == "sync":
-                report = sync(args.username, password, args.output, journal=args.journal, mode=args.mode, start=args.date_from, end=args.date_to,
+                report = sync(args.username, password, args.output, journal=args.journal, source_type=args.source_type, include_comments=not args.no_comments, mode=args.mode, start=args.date_from, end=args.date_to,
                               urls=args.url, archive=args.archive, images=args.images, videos=args.videos, delay=args.delay,
                               cancel=cancel, progress=progress, max_requests=args.max_requests, account=args.account, messages=args.messages)
             elif full_export:
-                report = sync(args.username, password, args.output, journal=args.journal, mode="full", images=args.images, videos=args.videos,
+                report = sync(args.username, password, args.output, journal=args.journal, source_type=args.source_type, include_comments=not args.no_comments, mode="full", images=args.images, videos=args.videos,
                               delay=args.delay, cancel=cancel, progress=progress, max_requests=args.max_requests, account=args.account, messages=args.messages)
             else:
-                report = export(args.username, password, args.output, journal=args.journal, images=args.images, videos=args.videos,
+                report = export(args.username, password, args.output, journal=args.journal, source_type=args.source_type, include_comments=not args.no_comments, images=args.images, videos=args.videos,
                                 delay=args.delay, cancel=cancel, progress=progress,
                                 entry_limit=entry_limit, max_requests=args.max_requests, account=args.account, messages=args.messages)
             password = ""
-            slug = target_slug(report['username'], args.archive) if args.command == "sync" else archive_slug(report["username"], entry_limit)
+            slug = target_slug(base, args.archive) if args.command == "sync" else archive_slug(base, entry_limit)
             print((args.output / slug / "index.html").resolve())
             print(f"HTTP-запросов: {report['requests_used']}" + (f" / {report['request_limit']}" if report["request_limit"] else ""))
             if report["status"] != "complete":

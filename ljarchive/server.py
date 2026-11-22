@@ -21,6 +21,7 @@ from .contact import has_contact_question, send_message
 from .demo import create_demo
 from .exporter import archive_slug, export, validate_entry_limit
 from .render import ARCHIVE_FORMAT_VERSION, ROOT, plural
+from .sources import ARCHIVE_PATTERN, archive_base, source
 from .sync import sync, validate_scope, target_slug
 
 TERMINAL = {"complete", "partial", "cancelled", "error", "demo", "idle"}
@@ -31,7 +32,7 @@ GAPS_RECOUNT = 30
 
 
 class Jobs:
-    PARAMS = ("username", "journal", "source_type", "archive", "mode", "date_from", "date_to", "urls", "entry_limit", "images", "videos", "delay", "max_requests", "account", "messages")
+    PARAMS = ("username", "journal", "source_type", "archive", "mode", "date_from", "date_to", "urls", "entry_limit", "include_comments", "images", "videos", "delay", "max_requests", "account", "messages")
 
     def __init__(self, output: Path):
         from .relocation import resolve_output
@@ -146,7 +147,7 @@ class Jobs:
 
     def task_path(self, slug):
         import re
-        if not isinstance(slug, str) or not re.fullmatch(r"[a-z0-9_]{1,15}(?:-latest-[1-9][0-9]?)?", slug):
+        if not isinstance(slug, str) or not re.fullmatch(ARCHIVE_PATTERN, slug):
             raise ExportError("Некорректный архив.")
         return self.tasks / (slug + ".json")
 
@@ -248,6 +249,7 @@ class Jobs:
                 "mode": "latest" if report.get("entry_limit") else scope.get("mode", "full"),
                 "entry_limit": report.get("entry_limit"), "date_from": scope.get("start"),
                 "date_to": scope.get("end"), "urls": scope.get("urls", []),
+                "include_comments": report.get("comments_requested", True),
                 "images": bool(report.get("images_requested")), "videos": bool(report.get("videos_requested")), "delay": 3,
                 "max_requests": report.get("request_limit", 50 if report.get("entry_limit") else None)}
 
@@ -455,8 +457,12 @@ class Jobs:
                 if not isinstance(data.get("username"), str):
                     raise ExportError("Введите имя пользователя.")
                 data["username"] = username(data["username"])
-                from .sources import source
                 identity = source(data['username'], data.get('journal'), data.get('source_type'))
+                base = archive_base(identity)
+                if data.get('include_comments') is None:
+                    data['include_comments'] = True
+                if type(data['include_comments']) is not bool:
+                    raise ExportError('Некорректная настройка комментариев.')
                 data.update(journal=identity['username'], source_type=identity['type'])
                 if not isinstance(data.get("password"), str) or not 0 < len(data["password"]) <= 1024:
                     raise ExportError("Введите пароль ЖЖ.")
@@ -474,16 +480,16 @@ class Jobs:
                     data["mode"] = data.get("mode") or "full"
                     scope = validate_scope(data["journal"], data["mode"], data.get("date_from"), data.get("date_to"), data.get("urls"))
                     data.update(mode=scope.mode, date_from=scope.start, date_to=scope.end, urls=list(scope.urls))
-                    data["archive"] = target_slug(data["journal"], data.get("archive"))
+                    data["archive"] = target_slug(base, data.get("archive"))
                     data["sync_scope"] = scope.data()
                 else:
                     data["mode"] = "latest"
-                    data["archive"] = archive_slug(data["journal"], data["entry_limit"])
+                    data["archive"] = archive_slug(base, data["entry_limit"])
                 for key in ("account", "messages"):
                     data.setdefault(key, False)
                     if not isinstance(data[key], bool):
                         raise ExportError("Некорректная настройка личных данных.")
-                if data['source_type'] == 'community':
+                if data['source_type'] != 'own':
                     data['account'] = data['messages'] = False
                 data.setdefault("videos", False)
                 if not isinstance(data["videos"], bool):
@@ -631,13 +637,13 @@ class Jobs:
                 password = data.pop("password")
                 if data.get("sync_scope"):
                     scope = data["sync_scope"]
-                    report = sync(data["username"], password, self.output, journal=data['journal'], source_type=data['source_type'], images=data["images"], videos=data.get("videos", False),
+                    report = sync(data["username"], password, self.output, journal=data['journal'], source_type=data['source_type'], include_comments=data['include_comments'], images=data["images"], videos=data.get("videos", False),
                                   delay=data["delay"], cancel=self.cancel, progress=self.progress,
                                   max_requests=data["max_requests"], mode=scope["mode"], start=scope["start"],
                                   end=scope["end"], urls=scope["urls"], archive=slug, account=data.get("account", False), messages=data.get("messages", False),
                                   session_ready=self.remember_session, resume=bool(data.get('_resuming')))
                 else:
-                    report = export(data["username"], password, self.output, journal=data['journal'], source_type=data['source_type'], images=data["images"], videos=data.get("videos", False),
+                    report = export(data["username"], password, self.output, journal=data['journal'], source_type=data['source_type'], include_comments=data['include_comments'], images=data["images"], videos=data.get("videos", False),
                                     delay=data["delay"], cancel=self.cancel, progress=self.progress,
                                     entry_limit=data["entry_limit"], max_requests=data["max_requests"], account=data.get("account", False), messages=data.get("messages", False),
                                     session_ready=self.remember_session)
@@ -1148,7 +1154,7 @@ def make_server(output: Path, port=8787):
                 extension = ".activitystreams.json" if path.endswith(".activitystreams.json") else Path(path).suffix
                 slug = path.removeprefix("/download/")[:-len(extension)]
                 import re
-                if not re.fullmatch(r"[a-z0-9_]{1,15}(?:-latest-[1-9][0-9]?)?", slug):
+                if not re.fullmatch(ARCHIVE_PATTERN, slug):
                     return self.json({"error": "Некорректное имя архива."}, 400)
                 folder = (jobs.output / slug).resolve()
                 if not folder.is_relative_to(jobs.output) or not (folder / "index.html").is_file():

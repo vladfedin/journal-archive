@@ -411,15 +411,19 @@ def build_archive(store: Store, report: dict, *, images=False, userpics=False, c
         report["status"] = "partial"
         report["issues"].append("Не все реакции или имена авторов получены.")
     pictures = describe(store, entries, comments)
-    selected = report.get("sync", {}).get("selected")
+    selected = report.get("sync", {}).get("selected", report.get("recent_ids"))
     selected = None if selected is None else set(selected)
     comment_entries = {str(c["id"]): int(c.get("jitemid", 0)) for c in comments}
+    excluded_pics = {str(c['id']) for c in comments if c.get('source_status') == 'hidden_from_reader'
+                     or report.get('comments_requested') is False}
     task_pictures = {"post": {}, "comment": {}}
     requested_pics = set()
     total_pics = len({pic["url"] for group in pictures.values() for pic in group.values() if pic["url"]})
     for kind, group in pictures.items():
         for key, pic in group.items():
             in_scope = selected is None or (int(key) if kind == "post" else comment_entries[key]) in selected
+            if kind == 'comment' and key in excluded_pics:
+                in_scope = False
             if pic["url"]:
                 if progress and userpics and in_scope and pic["url"] not in requested_pics:
                     requested_pics.add(pic["url"])
@@ -505,6 +509,7 @@ def build_archive(store: Store, report: dict, *, images=False, userpics=False, c
                                         entries[index + 1] if index + 1 < len(entries) else None)]
             rendered = ENV.get_template("entry.html").render(user=user, entry=entry, summary=summary,
                         content=content, comments=entry_comments, original=url,
+                        comments_skipped=comment_statuses.get(str(eid), {}).get('skipped') == 'not_requested',
                         post_autoformat=needs_autoformat(entry.get("event"), entry.get("props")),
                         current=current, newer=neighbours[0], older=neighbours[1],
                         coverage_notice=coverage_notice(comment_statuses.get(str(eid), {}),

@@ -10,7 +10,7 @@ from .client import HTTPRateLimited, APIRateLimited, Cancelled, ExportError, Inc
 from .exporter import Exporter, now
 from .entries import is_repost
 from .storage import atomic_write, dumps
-from .sources import bind_source, source
+from .sources import archive_base, bind_source, journal_base, source
 from .retry import restore_cooldowns
 from .gaps import ATTEMPTS, closed, fail, reopen
 
@@ -51,7 +51,7 @@ def validate_scope(user, mode="full", start=None, end=None, urls=None):
     urls = tuple(dict.fromkeys(urls or ()))
     if mode == "urls":
         if not urls or len(urls) > 100:
-            raise ExportError("Укажите от 1 до 100 URL записей своего журнала.")
+            raise ExportError("Укажите от 1 до 100 URL записей выбранного журнала.")
         for url in urls:
             url_id(user, url)
     return Scope(mode, start if mode == "period" else None, end if mode == "period" else None,
@@ -62,20 +62,27 @@ def url_id(user, url):
     try:
         parts = urlsplit(url)
         host = user.replace("_", "-") + ".livejournal.com"
-        match = re.fullmatch(r"/([1-9][0-9]*)\.html", parts.path)
-        if parts.scheme not in ("http", "https") or parts.hostname not in (host, user + ".livejournal.com") or parts.username or parts.password or parts.port not in (None, 80, 443) or not match:
+        path = parts.path
+        hosts = (host, user + ".livejournal.com")
+        if journal_base(user).startswith("https://users.livejournal.com/") and parts.hostname == "users.livejournal.com":
+            hosts = ("users.livejournal.com",)
+            if not path.startswith("/" + user + "/"):
+                raise ValueError()
+            path = path[len(user) + 1:]
+        match = re.fullmatch(r"/([1-9][0-9]*)\.html", path)
+        if parts.scheme not in ("http", "https") or parts.hostname not in hosts or parts.username or parts.password or parts.port not in (None, 80, 443) or not match:
             raise ValueError()
         did = int(match[1])
         if did // 256 <= 0:
             raise ValueError()
         return did
     except (ValueError, TypeError):
-        raise ExportError("Нужен URL записи своего журнала: https://имя.livejournal.com/12345.html. Параметр thread допустим.") from None
+        raise ExportError("Нужен URL записи выбранного журнала: https://имя.livejournal.com/12345.html. Параметр thread допустим.") from None
 
 
 class SyncExporter(Exporter):
-    def __init__(self, folder, client, scope, *, images=False, progress=None, account=False, messages=False, videos=False, resume=False):
-        super().__init__(folder, client, images=images, progress=progress, account=account, messages=messages, videos=videos)
+    def __init__(self, folder, client, scope, *, images=False, progress=None, account=False, messages=False, videos=False, resume=False, include_comments=True):
+        super().__init__(folder, client, images=images, progress=progress, account=account, messages=messages, videos=videos, include_comments=include_comments)
         self.scope = scope
         self.selected_ids = set()
         self.state = {}
@@ -102,14 +109,14 @@ class SyncExporter(Exporter):
             if (finished and saved.get('phase') == 'render' and not saved.get('done')
                     and saved.get('scope') == old.get('scope') and saved.get('started_at') == old.get('started_at')):
                 old = {}
-        if old and (self.resume_requested or not old.get("done")) and old.get("scope") == self.scope.data():
+        if old and (self.resume_requested or not old.get("done")) and old.get("scope") == self.scope.data() and old.get("include_comments", True) == self.include_comments:
             self.state = old
             self.resuming = True
             self.state['done'] = False
             if self.state['phase'] == 'done':
                 self.state['phase'] = 'comments'
         else:
-            self.state = {"scope": self.scope.data(), "started_at": now(), "phase": "posts", "done": False,
+            self.state = {"scope": self.scope.data(), "include_comments": self.include_comments, "started_at": now(), "phase": "posts", "done": False,
                           "calendar_loaded": False, "seen": [], "unavailable": [], "url_done": [], "absent_checked": []}
             with store.db:
                 store.db.execute("DELETE FROM days")
@@ -123,6 +130,8 @@ class SyncExporter(Exporter):
         with store.db:
             store.set("username", self.client.user)
             store.set("entry_limit", None)
+            if self.reader:
+                store.set('comments_requested', self.include_comments)
             store.set("started_at", self.state["started_at"])
             store.set('sync_job', self.state)
             store.set("journal_id", getattr(self.client, "journal_id", None) or store.get("journal_id"))
@@ -225,6 +234,8 @@ class SyncExporter(Exporter):
                     self.update("posts", f"Обновляем запись по URL · #{did // 256}")
                     self.fetch_one(did // 256, did)
                     self.checkpoint(url_done=self.state["url_done"] + [did])
+        elif self.reader:
+            self.reader_posts()
         else:
             if not self.state["calendar_loaded"]:
                 self.update("posts", "Получаем календарь и выбираем дни…")
@@ -279,6 +290,67 @@ class SyncExporter(Exporter):
         with store.db:
             store.set("posts_done", True)
         self.checkpoint(phase="comments", selected=sorted(self.selected_ids))
+
+    def reader_posts(self):
+        community = self.client.source.get('is_community')
+        cursor = self.state.get('reader_cursor', {})
+        if not cursor and community is False and self.scope.end and self.scope.end != '9999-12-31':
+            after_end = date.fromisoformat(self.scope.end) + timedelta(days=1)
+            cursor = {'beforedate': f'{after_end} 00:00:00'}
+        while True:
+            self.client.check()
+            self.update('posts', f'Читаем журнал · сохранено записей: {len(self.state["seen"])}')
+            result = self.client.call('getevents', selecttype='lastn', howmany=50, lineendings='unix',
+                                      noprops=0, truncate=0, **cursor)
+            events = result.get('events')
+            if not isinstance(events, list):
+                raise ExportError('ЖЖ не вернул ленту записей.')
+            if not events:
+                break
+            times = []
+            batch = []
+            for entry in events:
+                if not isinstance(entry, dict) or type(entry.get('itemid')) is not int or 'event' not in entry or not isinstance(entry.get('eventtime'), str):
+                    raise ExportError('ЖЖ вернул запись без ID, даты или текста.')
+                if community is None and entry.get('logtime') != entry['eventtime']:
+                    raise ExportError('ЖЖ не сообщил тип журнала. Дату для продолжения ленты определить не удалось.')
+                stamp = entry.get('logtime' if community else 'eventtime')
+                try:
+                    stamp = datetime.strptime(stamp, '%Y-%m-%d %H:%M:%S')
+                except (ValueError, TypeError) as exc:
+                    raise ExportError('ЖЖ не вернул дату для продолжения чтения ленты.') from exc
+                times.append(stamp)
+                if self.scope.includes(entry['eventtime'][:10]):
+                    batch.append(entry)
+            seen = set(self.state['seen'])
+            statuses = self.store.get('entry_comments', {})
+            with self.store.db:
+                for entry in batch:
+                    eid = entry['itemid']
+                    self.store.save_entry(entry)
+                    if eid not in seen:
+                        statuses[str(eid)] = {'done': False, 'next_page': 1}
+                        seen.add(eid)
+                self.store.set('entry_comments', statuses)
+                self.checkpoint(seen=sorted(seen))
+            oldest = min(times)
+            if community is False and self.scope.start and oldest.date().isoformat() < self.scope.start:
+                break
+            # lastn uses a strict upper bound. Skip only the already read rows in
+            # the boundary second so simultaneous posts can span multiple pages.
+            page_ids = sorted(e['itemid'] for e in events)
+            before = (oldest + timedelta(seconds=1)).isoformat(sep=' ')
+            skip = times.count(oldest)
+            if cursor.get('beforedate') == before:
+                skip += cursor.get('skip', 0)
+            if (cursor.get('beforedate', before) < before or skip > 500
+                    or self.state.get('reader_page') == page_ids):
+                raise ExportError('ЖЖ не подтвердил следующую страницу ленты. Позиция сохранена.')
+            cursor = {'beforedate': before, 'skip': skip}
+            self.checkpoint(reader_cursor=cursor, reader_page=page_ids)
+        seen = set(self.state['seen'])
+        with self.store.db:
+            self.store.mark_absent_entries(seen, includes=self.scope.includes)
 
     def open_unavailable(self):
         attempts = self.state.get("unavailable_attempts", {})
@@ -335,6 +407,10 @@ class SyncExporter(Exporter):
                 store.db.execute("UPDATE days SET done=1 WHERE day=?", (day["day"],))
 
     def comments(self):
+        if self.reader:
+            self.recent_comments()
+            self.checkpoint(phase='reactions')
+            return
         failure = None
         try:
             self.recent_comments()
@@ -393,7 +469,8 @@ class SyncExporter(Exporter):
         statuses = self.store.get("entry_comments", {})
         selected = self.selected_ids or set(self.state.get("selected", self.state.get("seen", [])))
         comments = self.store.comments()
-        missing = [{"id": c["id"], "state": c["state"]} for c in comments if "body" not in c and c["state"] not in ("D", "X")]
+        missing = [{"id": c["id"], "state": c["state"]} for c in comments if "body" not in c and c["state"] not in ("D", "X")
+                   and c.get('source_status') != 'hidden_from_reader']
         unavailable = self.open_unavailable()
         issues = ([error] if error else []) + self.access_issues()
         if self.state.get('phase') == 'reactions':
@@ -489,6 +566,10 @@ class SyncExporter(Exporter):
                 identity = bind_source(store, self.client)
             report = self.report(error, cancelled)
             report['source'] = identity
+            if self.reader:
+                report['comments_requested'] = self.include_comments
+                report['scope'] = {'full': 'Все доступные записи', 'period': 'Доступные записи за выбранный период',
+                                   'urls': 'Записи по указанным ссылкам'}[self.scope.mode] + f' · читатель {self.client.account}.'
             report = build_archive(store, report, images=self.images and (text_processed and not cancelled), userpics=(text_processed and not cancelled),
                                    client_cancel=self.client.cancel, progress=self.progress, budget=self.client.budget, media=getattr(self, "_media", None), client=self.client)
             complete = self.state["phase"] == "render" and not error and (report["status"] == "complete" or report.get("finished_with_skips"))
@@ -517,14 +598,14 @@ class SyncExporter(Exporter):
 
 def sync(user, password, output, *, mode="full", start=None, end=None, urls=None, images=False,
          delay=3, max_requests=None, cancel=None, progress=None, archive=None, account=False, messages=False, videos=False,
-         journal=None, source_type=None, session_ready=None, resume=False):
+         journal=None, source_type=None, session_ready=None, resume=False, include_comments=True):
     user = username(user)
     identity = source(user, journal, source_type)
     scope = validate_scope(identity['username'], mode, start, end, urls)
-    slug = target_slug(identity['username'], archive)
+    slug = target_slug(archive_base(identity), archive)
     budget = RequestBudget(max_requests, progress)
     client = LiveJournalClient(user, password, delay=delay, cancel=cancel, budget=budget, progress=progress, journal=journal, source_type=source_type, session_ready=session_ready)
-    return SyncExporter(Path(output) / slug, client, scope, images=images, progress=progress, account=account, messages=messages, videos=videos, resume=resume).run()
+    return SyncExporter(Path(output) / slug, client, scope, images=images, progress=progress, account=account, messages=messages, videos=videos, resume=resume, include_comments=include_comments).run()
 
 
 def target_slug(user, archive=None):

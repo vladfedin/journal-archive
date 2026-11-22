@@ -49,7 +49,7 @@ def parameters(value):
     result.update({key: number(value[key]) for key in ('delay', 'max_requests', 'entry_limit') if key in value})
     if value.get('mode') in ('full', 'period', 'urls', 'latest'):
         result['mode'] = value['mode']
-    if value.get('source_type') in ('own', 'community'):
+    if value.get('source_type') in ('own', 'community', 'reader'):
         result['source_type'] = value['source_type']
     for key in ('date_from', 'date_to'):
         if value.get(key):

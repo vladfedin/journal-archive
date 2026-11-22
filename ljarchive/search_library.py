@@ -5,6 +5,7 @@ import sqlite3
 import threading
 
 from .fulltext import PARTS, WORDS, fold, journal_docs, material_docs, personal_docs
+from .sources import ARCHIVE_PATTERN
 from .storage import Store
 from .personal import account_data
 
@@ -140,7 +141,7 @@ class SearchLibrary:
             args.append(params['year'])
         sql = ' FROM words JOIN docs ON docs.id=words.rowid WHERE ' + ' AND '.join(predicate)
         folders = {p for p in root.iterdir() if p.is_dir() and not p.is_symlink()
-                   and re.fullmatch(r'[a-z0-9_]{1,15}(?:-latest-[1-9][0-9]?)?', p.name)
+                   and re.fullmatch(ARCHIVE_PATTERN, p.name)
                    and not (p/'archive.sqlite3').is_symlink()
                    and ((p/'archive.sqlite3').is_file() or (p/'assets/fulltext-journal-0.js').is_file() or (p/'data/archive.json').is_file())}
         matches = []

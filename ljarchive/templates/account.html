@@ -21,7 +21,7 @@
     {% if default_pic and default_pic.path %}<img class="profile-avatar" width="76" height="76" src="{{ default_pic.path }}" alt="Основной юзерпик">
     {% else %}<span class="profile-avatar profile-avatar-empty" data-icon="account" aria-hidden="true"></span>{% endif %}
     <div><h1>{{ name }}</h1><a href="{{ original_profile }}" target="_blank" rel="noopener noreferrer">{{ user }} в ЖЖ ↗</a></div>
-    <a class="btn profile-mail" href="messages.html">Переписка</a>
+    {% if not report.source or report.source.type != 'reader' %}<a class="btn profile-mail" href="messages.html">Переписка</a>{% endif %}
   </header>
   {% include 'archive-nav.html' %}
   {% if overview.journaltitle or overview.journalsubtitle %}

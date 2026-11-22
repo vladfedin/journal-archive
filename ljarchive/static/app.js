@@ -79,6 +79,7 @@ function parameterTable(params={},known=Object.keys(params)){
   const value=(key,format=v=>String(v))=>known.includes(key)?format(params[key]):'Не сохранено';
   const yes=v=>v?'Да':'Нет';
   const rows=[['Объём',value('mode',v=>scopes[v]||v||'Не сохранено')]];
+  if(params.source_type==='reader')rows.unshift(['Журнал',params.journal],['Читатель',params.username],['Комментарии',params.include_comments===false?'Пропущены':'Включены']);
   if(params.source_type==='community')rows.unshift(['Сообщество',params.journal],['Аккаунт для входа',params.username]);
   if(params.mode==='period')rows.push(['С',value('date_from',v=>day(v)||'С начала журнала')],['По',value('date_to',v=>day(v)||'По последнюю запись')]);
   if(params.mode==='urls')rows.push(['Ссылки',value('urls',v=>Array.isArray(v)?v.join('\n'):v||'—')]);
@@ -259,9 +260,13 @@ async function loadCommunities(){
   finally{if(token===communityRequest)setBusy(busy);}
 }
 function setSource(){
-  const community=$('source-type').value==='community';
+  const community=$('source-type').value==='community',reader=$('source-type').value==='reader';
+  $('reader-field').hidden=!reader;$('reader-journal').disabled=!reader;$('reader-journal').required=reader&&mode==='new';
+  $('reader-comments-field').hidden=!reader;
+  if(mode==='new')document.querySelector('[data-scope=urls]').hidden=!reader;
+  if(mode==='new'&&!reader&&scope==='urls')setScope('full');
   $('journal-field').hidden=!community;$('journal').required=choosingCommunity();$('journal').disabled=!choosingCommunity();
-  for(const key of ['account','messages']){$(key).closest('label').hidden=community;$(key).disabled=community;if(community)$(key).checked=false;}
+  for(const key of ['account','messages']){$(key).closest('label').hidden=community||reader;$(key).disabled=community||reader;if(community||reader)$(key).checked=false;}
   setBusy(busy);
 }
 $('source-type').onchange=()=>{
@@ -289,6 +294,9 @@ function openDialog(kind,archive=null){
   }
   setBusy(busy);
   $('source-type').value=archive?.parameters?.source_type||'own';$('source-type').disabled=!isNew;
+  $('reader-journal').value=archive?.parameters?.journal||'';
+  $('reader-journal').readOnly=!isNew;
+  $('reader-comments').checked=archive?.parameters?.include_comments!==false;
   resetCommunities();
   if(!isNew){
     const name=archive.parameters?.journal||archive.username;
@@ -529,6 +537,7 @@ function cardFacts(a,data){
   if(a.images_saved)facts.push(count(a.images_saved,IMAGE_FORMS));if(a.videos_saved)facts.push(count(a.videos_saved,VIDEO_FORMS));
   const mode=a.parameters?.mode;const scope=a.entry_limit?`тест · ${count(a.entry_limit,ENTRY_FORMS)}`:mode==='period'?[day(a.parameters.date_from),day(a.parameters.date_to)].filter(Boolean).join(' — '):'';
   if(scope)facts.push(scope);
+  if(a.parameters?.source_type==='reader')facts.push('читатель '+a.parameters.username);
   return facts.join(' · ');
 }
 // Restoring focus after a rebuild looks an action up by its text.
@@ -722,7 +731,7 @@ $('request-limit').oninput=()=>limitEdited=true;
 $('show-password').onclick=()=>{const show=$('password').type==='password';$('password').type=show?'text':'password';$('show-password').setAttribute('aria-label',show?'Скрыть пароль':'Показать пароль');};
 $('export-form').onsubmit=async e=>{e.preventDefault();if(busy||submitting||preparingResume||needsCommunity()||closed)return;error('',true);let data;
   if(mode==='resume')data={resume:selected.slug,password:$('password').value};
-  else data={username:$('username').value,journal:$('source-type').value==='community'?$('journal').value:$('username').value,source_type:$('source-type').value,password:$('password').value,entry_limit:scope==='latest'?10:null,mode:scope==='latest'?null:scope,images:$('images').checked,videos:$('videos').checked,account:$('account').checked,messages:$('messages').checked,delay:Number($('delay').value),max_requests:$('request-limit').value?Number($('request-limit').value):null,date_from:scope==='period'?$('date-from').value||null:null,date_to:scope==='period'?$('date-to').value||null:null,urls:scope==='urls'?$('entry-urls').value:[],archive:selected?.slug||null};
+  else data={username:$('username').value,include_comments:$('source-type').value!=='reader'||$('reader-comments').checked,journal:$('source-type').value==='reader'?$('reader-journal').value:$('source-type').value==='community'?$('journal').value:$('username').value,source_type:$('source-type').value,password:$('password').value,entry_limit:scope==='latest'?10:null,mode:scope==='latest'?null:scope,images:$('images').checked,videos:$('videos').checked,account:$('account').checked,messages:$('messages').checked,delay:Number($('delay').value),max_requests:$('request-limit').value?Number($('request-limit').value):null,date_from:scope==='period'?$('date-from').value||null:null,date_to:scope==='period'?$('date-to').value||null:null,urls:scope==='urls'?$('entry-urls').value:[],archive:selected?.slug||null};
   submitting=true;$('submit-export').disabled=true;
   try{const state=await api('/api/export',data);$('export-dialog').close();
     saveContactJob({id:state.job_id});

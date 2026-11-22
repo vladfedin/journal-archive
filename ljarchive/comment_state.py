@@ -27,7 +27,8 @@ def merge_comment(previous, incoming, *, evidence='getcomments', observed_at=Non
         # the web page has explicitly marked this very comment as deleted.
         return dict(previous)
     elif 'body' not in current:
-        current = {**previous, **current, 'source_status': 'body_not_returned'}
+        status = 'hidden_from_reader' if incoming.get('source_status') == 'hidden_from_reader' else 'body_not_returned'
+        current = {**previous, **current, 'source_status': status}
     return current
 
 
@@ -44,4 +45,5 @@ def comment_view(item, settled=False):
     return {'state_label': label, 'deleted': deleted,
             'retained_text': retained and (deleted or bool(item.get('source_status'))),
             'display_body': item.get('body', 'Комментарий удалён.' if deleted else
+                                     'Текст скрыт от читателя.' if item.get('source_status') == 'hidden_from_reader' else
                                      'ЖЖ не отдал текст этого комментария.' if settled else 'Текст пока не получен.')}

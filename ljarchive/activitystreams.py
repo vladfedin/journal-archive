@@ -127,7 +127,8 @@ def to_activitystreams(data):
     identity = lambda kind, number: namespace + kind + ":" + quote(str(number), safe="")
     media = data.get("media", {})
     owner = person(user, journal.get("id"))
-    community = (data.get('source') or {}).get('type') == 'community'
+    journal_source = data.get('source') or {}
+    community = journal_source.get('type') == 'community' or journal_source.get('is_community') is True
     if owner and community:
         owner['type'] = 'Group'
     entries = {e["itemid"]: e for e in data.get("entries", [])}

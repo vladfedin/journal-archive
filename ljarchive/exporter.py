@@ -68,13 +68,16 @@ def normalize_thread(nodes, entry_id):
 
 
 class Exporter:
-    def __init__(self, folder: Path, client: LiveJournalClient, *, images=True, progress=None, entry_limit=None, account=False, messages=False, videos=False):
-        self.folder, self.client, self.images = folder, client, images
+    def __init__(self, folder: Path | Store, client: LiveJournalClient, *, images=True, progress=None, entry_limit=None, account=False, messages=False, videos=False, include_comments=True):
+        self.client, self.images = client, images
+        self.reader = getattr(client, 'source', {}).get('type') == 'reader'
+        self.include_comments = include_comments if self.reader else True
         self.videos = videos
         self.progress = progress or (lambda **kwargs: None)
         self.entry_limit = validate_entry_limit(entry_limit)
         self.material_sources = {}
-        self.store = Store(folder)
+        self.store = folder if isinstance(folder, Store) else Store(folder)
+        self.folder = self.store.folder
         self.account, self.messages = account, messages
 
     def update(self, phase, message, **extra):
@@ -190,6 +193,8 @@ class Exporter:
     def recent_posts(self):
         store = self.store
         if store.get("posts_done"):
+            if self.reader:
+                self.selected_ids = set(store.get('recent_ids', []))
             return
         self.update("posts", f"Получаем последние {self.entry_limit} записей…")
         response = self.client.call("getevents", selecttype="lastn", howmany=self.entry_limit,
@@ -200,7 +205,7 @@ class Exporter:
             raise ExportError("ЖЖ не вернул корректный список последних записей.")
         entries = sorted({int(e["itemid"]): e for e in entries}.values(),
                          key=lambda e: (e["eventtime"], int(e["itemid"])), reverse=True)[:self.entry_limit]
-        expected = self.entry_limit
+        expected = len(entries) if self.reader else self.entry_limit
         replacing = store.get("refresh_recent", False)
         if len(entries) < expected:
             if not replacing:
@@ -216,9 +221,18 @@ class Exporter:
         if complete or not replacing:
             with store.db:
                 if complete:
+                    ids = [entry['itemid'] for entry in entries]
+                    if self.reader:
+                        self.selected_ids = set(ids)
+                        store.set('recent_ids', ids)
+                        store.mark_absent_entries(self.selected_ids)
+                    else:
+                        store.retain_recent_entries(ids)
                     if replacing:
-                        store.set("entry_comments", {})
-                    store.retain_recent_entries([entry["itemid"] for entry in entries])
+                        statuses = store.get('entry_comments', {})
+                        for eid in ids:
+                            statuses.pop(str(eid), None)
+                        store.set('entry_comments', statuses)
                     store.set("refresh_recent", False)
                 for entry in entries:
                     store.save_entry(entry)
@@ -240,6 +254,9 @@ class Exporter:
                              and c.get("state") not in ("D", "X") for c in records if c["id"] in seen)
         missing_screened = entry.get("props", {}).get("hasscreened") in (1, "1", True) and not any(
             c.get("state") == "S" and c["id"] in seen for c in records)
+        if self.reader:
+            return not any(('body' not in c or c.get('source_status') == 'body_not_returned')
+                           and c['state'] not in DELETED and c.get('source_status') != 'hidden_from_reader' for c in records if c['id'] in seen)
         return not (missing_bodies or missing_screened or len(seen) < int(entry.get("reply_count", 0) or 0))
 
     def recent_comments(self):
@@ -254,6 +271,11 @@ class Exporter:
             self.client.check()
             eid = int(entry["itemid"])
             status = statuses.setdefault(str(eid), {"next_page": 1, "done": False})
+            if not self.include_comments:
+                statuses[str(eid)] = {"done": True, "skipped": "not_requested"}
+                continue
+            if status.get("skipped") == "not_requested":
+                status = statuses[str(eid)] = {"next_page": 1, "done": False}
             if status.get("done") and (not is_repost(entry) or status.get("skipped") == "repost"):
                 continue
             if closed(status):
@@ -280,6 +302,7 @@ class Exporter:
                             entry_id=eid)
                 self.index_entry_materials(entry)
         with store.db:
+            store.set("entry_comments", statuses)
             store.set("meta_done", True)
             store.set("bodies_done", not incomplete)
         if incomplete:
@@ -360,7 +383,8 @@ class Exporter:
                     status["seen_ids"] = sorted(set(status["seen_ids"]) | {int(c["id"]) for c in expanded_items})
                 if missing:
                     self.check_web_deletions(entry, status, statuses, self.missing_comment_bodies(eid))
-                self.confirm_deleted(eid, status)
+                if not self.reader:
+                    self.confirm_deleted(eid, status)
                 status["done"] = self.discussion_complete(entry, status)
                 with store.db:
                     store.set("userpic_comments_requested", sorted(set(store.get("userpic_comments_requested", [])) | {eid}))
@@ -474,6 +498,9 @@ class Exporter:
         store = self.store
         with store.db:
             for item in items:
+                if self.reader and item.get('is_show') in (False, '0') and item.get('state') not in DELETED:
+                    item = {**item, 'source_status': 'hidden_from_reader'}
+                    item.pop('body', None)
                 current = store.save_comment(item, evidence=evidence)
                 store.db.execute("INSERT OR REPLACE INTO comment_meta VALUES (?,?,?)",
                                  (current["id"], current["posterid"], current["state"]))
@@ -484,6 +511,7 @@ class Exporter:
         import json
         rows = self.store.db.execute("""SELECT payload FROM comments WHERE entry_id=?
             AND (json_type(payload,'$.body') IS NULL OR json_extract(payload,'$.source_status')='body_not_returned')
+            AND COALESCE(json_extract(payload,'$.source_status'),'') != 'hidden_from_reader'
             AND COALESCE(json_extract(payload,'$.state'),'A') NOT IN ('D','X')""", (eid,))
         return [json.loads(row[0]) for row in rows]
 
@@ -637,7 +665,7 @@ class Exporter:
             store.set("bodies_done", True)
 
     def personal(self):
-        if getattr(self.client, 'source', {}).get('type') == 'community':
+        if getattr(self.client, 'source', {}).get('type') in ('community', 'reader'):
             with self.store.db:
                 self.store.set('personal_requested', {'account': False, 'messages': False})
             return
@@ -655,6 +683,7 @@ class Exporter:
         entry_limit = store.get("entry_limit")
         rows = store.db.execute("""SELECT m.id,m.state,c.entry_id FROM comment_meta m
             LEFT JOIN comments c ON c.id=m.id WHERE (c.id IS NULL OR json_type(c.payload,'$.body') IS NULL)
+            AND COALESCE(json_extract(c.payload,'$.source_status'),'') != 'hidden_from_reader'
             AND m.state NOT IN ('D','X') ORDER BY m.id""").fetchall()
         statuses = store.get("entry_comments", {})
         missing = [{"id": row[0], "state": row[1]} for row in rows]
@@ -675,7 +704,8 @@ class Exporter:
         issues += self.access_issues()
         if pending:
             issues.append(f"Не подтверждена полнота записей за {len(pending)} дн.")
-        if counts["entries"] != expected_entries:
+        observed = len(store.get('recent_ids', [])) if self.reader and entry_limit else counts['entries']
+        if observed != expected_entries:
             source = "выбранным объёмом" if entry_limit is not None else "календарём ЖЖ"
             issues.append(f"Число сохранённых записей ({counts['entries']}) не совпадает с {source} ({expected_entries}).")
         if open_missing:
@@ -688,13 +718,15 @@ class Exporter:
         if entry_limit is not None:
             for entry in store.entries():
                 eid = int(entry["itemid"])
-                if is_repost(entry):
+                if is_repost(entry) or (self.reader and entry.get('source_status') == 'not_returned'):
                     continue
                 if closed(statuses.get(str(eid))):
                     unavailable_comments.append(eid)
                     continue
                 if not statuses.get(str(eid), {}).get("done"):
                     pending_comments.append(eid)
+                if self.reader:
+                    continue
                 count = store.db.execute("SELECT COUNT(*) FROM comments WHERE entry_id=?", (eid,)).fetchone()[0]
                 if count < int(entry.get("reply_count", 0) or 0):
                     issues.append(f"К записи #{eid} получено {count} комментариев; ЖЖ сообщил как минимум {entry['reply_count']}.")
@@ -734,6 +766,8 @@ class Exporter:
             with store.db:
                 bind_source(store, self.client)
                 store.set('entry_limit', self.entry_limit)
+                if self.reader:
+                    store.set('comments_requested', self.include_comments)
             self.update("login", "Входим в ЖЖ и проверяем доступ…")
             try:
                 self.client.login()
@@ -780,7 +814,7 @@ class Exporter:
                     self.comment_bodies()
                 personal = self.personal()
                 try:
-                    if not self.reactions():
+                    if not self.reactions(entry_ids=getattr(self, 'selected_ids', None)):
                         reasons = store.get('reaction_issues') or ['Не удалось обновить реакции.']
                         failures.extend(reasons)
                 except IncompleteData as exc:
@@ -799,6 +833,11 @@ class Exporter:
                 source = bind_source(store, self.client)
             report = self.report(error, cancelled)
             report['source'] = source
+            if self.reader:
+                report['comments_requested'] = self.include_comments
+                report['recent_ids'] = store.get('recent_ids', [])
+                report['scope'] = f'Последние {self.entry_limit} записей, доступных аккаунту {self.client.account}.'
+                report['limitations'] = 'В архив входит содержимое, доступное этому читателю на момент загрузки.'
             budget = getattr(self.client, "budget", None)
             if budget:
                 with store.db:
@@ -821,13 +860,20 @@ class Exporter:
 
 
 def export(user, password, output, *, images=False, delay=2, cancel=None, progress=None,
-           entry_limit=10, max_requests=50, account=False, messages=False, videos=False, journal=None, source_type=None, session_ready=None):
+           entry_limit=10, max_requests=50, account=False, messages=False, videos=False, journal=None, source_type=None, session_ready=None, include_comments=True):
     user = username(user)
     entry_limit = validate_entry_limit(entry_limit)
+    from .sources import archive_base, source
+    identity = source(user, journal, source_type)
+    if identity['type'] == 'reader' and entry_limit is None:
+        from .sync import sync
+        return sync(user, password, output, journal=journal, source_type='reader', images=images, videos=videos,
+                    delay=delay, max_requests=max_requests, cancel=cancel, progress=progress,
+                    session_ready=session_ready, include_comments=include_comments)
     budget = RequestBudget(max_requests, progress=progress)
     client = LiveJournalClient(user, password, delay=delay, cancel=cancel, budget=budget, progress=progress, journal=journal, source_type=source_type, session_ready=session_ready)
     try:
-        return Exporter(Path(output) / archive_slug(client.user, entry_limit), client, images=images,
-                        progress=progress, entry_limit=entry_limit, account=account, messages=messages, videos=videos).run()
+        return Exporter(Path(output) / archive_slug(archive_base(identity), entry_limit), client, images=images,
+                        progress=progress, entry_limit=entry_limit, account=account, messages=messages, videos=videos, include_comments=include_comments).run()
     finally:
         client.close()

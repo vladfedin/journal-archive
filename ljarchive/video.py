@@ -531,7 +531,7 @@ class VideoArchive:
         pages = []
         if contains_player(entry.get('event')):
             pages.append(None)
-        for comment in self.store.comments(eid):
+        for comment in self.store.comments_for_download(eid):
             if contains_player(comment.get('body')):
                 thread = comment.get('dtalkid') or int(comment['id']) * 256 + int(entry.get('anum') or 0)
                 if str(thread).isdigit():
@@ -565,7 +565,7 @@ class VideoArchive:
         from .render import original_url, text_value
         eid, base = int(entry['itemid']), original_url(self.client.user, entry)
         refs = VideoRefs(base)
-        for record in [entry, *self.store.comments(eid)]:
+        for record in [entry, *self.store.comments_for_download(eid)]:
             refs.feed(text_value(record.get('event', record.get('body'))))
         refs.close()
         missing = [module for module in refs.modules if embed_key(base, module) not in self.embeds and embed_key(base, module) not in self.external

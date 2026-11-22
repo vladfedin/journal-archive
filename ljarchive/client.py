@@ -13,6 +13,7 @@ from datetime import date
 from typing import Any
 
 import requests
+from .sources import journal_base
 from .retry import backoff
 from defusedxml import ElementTree, xmlrpc as safe_xmlrpc
 
@@ -262,9 +263,9 @@ class LiveJournalClient:
 
     def _request(self, method: str, path: str, *, base_url=BASE_URL, category="livejournal", accepted_statuses=(200,), attempts=None, rpc_method=None, **kwargs) -> bytes:
         user_directory = (base_url == 'https://users.livejournal.com'
-                          and path == f'/{self.user}/profile/subslist/'
+                          and (path == f'/{self.user}/profile/subslist/' or base_url + path == journal_base(self.user) + '/')
                           and (self.user.startswith('_') or self.user.endswith('_')))
-        if not user_directory and base_url not in (BASE_URL, LIKES_URL, f"https://{self.user.replace('_', '-')}.livejournal.com"):
+        if not user_directory and base_url not in (BASE_URL, LIKES_URL, journal_base(self.user)):
             raise ExportError("Неподдерживаемый адрес сервиса ЖЖ.")
         attempts = self.max_attempts if attempts is None else attempts
         from .browser_bridge import safe_url
@@ -355,12 +356,14 @@ class LiveJournalClient:
     def call(self, method: str, *, refresh=False, **params) -> dict:
         standard_calendar = method == 'getdaycounts' and not params
         capability = {'getdaycounts': 'calendar', 'getevents': 'posts', 'getcomments': 'comments', 'syncitems': 'sync'}.get(method)
-        if self.source['type'] == 'community':
+        if self.source['type'] == 'reader' and method not in ('login', 'sessiongenerate', 'getevents', 'getcomments'):
+            raise ExportError('Метод недоступен в режиме чтения.')
+        if self.source['type'] != 'own':
             if method in ('getfriends', 'getfriendof', 'getinbox', 'getusertags'):
                 raise ExportError('Личные данные аккаунта не входят в архив сообщества.')
             if capability:
                 if self.source['access']['status'] != 'verified':
-                    raise ExportError('Права управления сообществом ещё не подтверждены.')
+                    raise ExportError('Права доступа к журналу ещё не подтверждены.')
                 key = 'journal' if method == 'getcomments' else 'usejournal'
                 if any(params.get(k, self.user) != self.user for k in ('journal', 'usejournal')):
                     raise ExportError('Запрос относится к другому журналу.')
@@ -383,7 +386,7 @@ class LiveJournalClient:
                 response = hashlib.md5((challenge + self._password_hash).encode("utf-8")).hexdigest()
                 result = self._rpc(method, {**params, "username": self.account, "ver": 1, "auth_method": "challenge",
                                           "auth_challenge": challenge, "auth_response": response})
-                if method == 'getevents' and self.source['type'] == 'community':
+                if method == 'getevents' and self.source['type'] != 'own':
                     self._validate_entries(result)
                 if capability:
                     self.source['capabilities'][capability] = 'available'
@@ -416,32 +419,54 @@ class LiveJournalClient:
         from urllib.parse import urlsplit
         entries = result.get('events')
         if not isinstance(entries, list) or any(not isinstance(e, dict) for e in entries):
-            raise ExportError('ЖЖ не вернул список записей сообщества.')
+            raise ExportError('ЖЖ не вернул список записей журнала.')
         for entry in entries:
+            if self.source['type'] == 'reader' and not entry.get('url') and not entry.get('journalid'):
+                raise ExportError('ЖЖ не указал журнал полученной записи.')
             if entry.get('journalid') and entry['journalid'] != self.journal_id:
                 raise ExportError('ЖЖ вернул запись из другого журнала. Данные не смешаны.')
             if entry.get('url') and not entry.get('repost'):
-                host = urlsplit(entry['url']).hostname
-                if host not in (self.user + '.livejournal.com', self.user.replace('_', '-') + '.livejournal.com'):
+                parsed = urlsplit(entry['url'])
+                directory = (journal_base(self.user).startswith('https://users.livejournal.com/')
+                             and parsed.hostname == 'users.livejournal.com'
+                             and parsed.path.startswith('/' + self.user + '/'))
+                if not directory and parsed.hostname not in (self.user + '.livejournal.com', self.user.replace('_', '-') + '.livejournal.com'):
                     raise ExportError('Адрес полученной записи относится к другому журналу.')
 
     def login(self):
         self._calendar = None
         self.progress(phase='login', message='Вход в ЖЖ…')
-        community = self.source['type'] == 'community'
+        external = self.source['type'] != 'own'
         self.source['access']['status'] = 'unverified'
-        result = self.call("login", clientversion="Python-LJLocalArchive/0.4", **({} if community else {'getpickws': 1, 'getpickwurls': 1}))
+        result = self.call("login", clientversion="Python-LJLocalArchive/0.4", **({} if external else {'getpickws': 1, 'getpickwurls': 1}))
         if result.get('username') and username(result['username']) != self.account:
             raise ExportError('ЖЖ вернул другой аккаунт при входе.')
-        self.profile = {} if community else {key: result[key] for key in (
+        self.profile = {} if external else {key: result[key] for key in (
             "username", "userid", "fullname", "friendgroups", "usejournals", "caps",
             "is_validated", "is_identity", "identity_type", "identity_value", "identity_display") if key in result}
-        self.userpics = None if community else {key: result.get(key) for key in ("pickws", "pickwurls", "defaultpicurl")}
+        self.userpics = None if external else {key: result.get(key) for key in ("pickws", "pickwurls", "defaultpicurl")}
         uid = result.get("userid")
-        if not community and isinstance(uid, int) and not isinstance(uid, bool) and uid > 0:
+        if not external and isinstance(uid, int) and not isinstance(uid, bool) and uid > 0:
             self.journal_id = uid
         self.generate_session()
-        if community:
+        if self.source['type'] == 'reader':
+            base = journal_base(self.user)
+            try:
+                raw = self._request('GET', '/', base_url=base, headers={'Cookie': 'ljsession=' + self._cookie})
+                try:
+                    self.read_journal_identity(raw)
+                except ExportError:
+                    from .web_session import LoginForm
+                    form = LoginForm()
+                    form.feed(raw.decode('utf-8', errors='replace'))
+                    if not form.token:
+                        raise
+                    raise AuthenticationRequired('ЖЖ запросил веб-вход для чтения журнала.') from None
+            except AuthenticationRequired:
+                if not self.ensure_web_session(base + '/'):
+                    raise
+                self.read_journal_identity(self._request('GET', '/', base_url=base))
+        elif self.source['type'] == 'community':
             self.source['access']['status'] = 'unconfirmed'
             if self.user not in self.managed_communities(confirm_empty=True):
                 raise ExportError('ЖЖ не подтвердил управление этим сообществом. Проверьте аккаунт и права на странице «Мои сообщества»; право публикации или модерации недостаточно.')
@@ -509,7 +534,7 @@ class LiveJournalClient:
         return establish(self, url)
 
     def personal_page(self, path):
-        if self.source['type'] == 'community':
+        if self.source['type'] != 'own':
             raise ExportError('Личные настройки аккаунта не входят в архив сообщества.')
         return self._request("GET", path, category="personal", headers={"Cookie": "ljsession=" + self._cookie})
 
@@ -542,12 +567,12 @@ class LiveJournalClient:
             raise IncompleteData('ЖЖ не вернул полный список подписок.') from exc
 
     def personal_feed(self, name):
-        if self.source['type'] == 'community':
+        if self.source['type'] != 'own':
             raise ExportError('Личный профиль аккаунта не входит в архив сообщества.')
         if name not in ("foaf", "userpics"):
             raise ExportError("Неизвестный раздел профиля.")
         return self._request("GET", "/data/" + name, category="personal",
-                             base_url=f"https://{self.user.replace('_', '-')}.livejournal.com",
+                             base_url=journal_base(self.user),
                              headers={"Cookie": "ljsession=" + self._cookie})
 
     def reaction_counts(self, entities):
@@ -568,7 +593,7 @@ class LiveJournalClient:
         from .feed_pin import page_pin
         from .web_session import ready
 
-        base = f"https://{self.user.replace('_', '-')}.livejournal.com"
+        base = journal_base(self.user)
         def read(path, headers):
             raw = self._request('GET', path, base_url=base, headers=headers, attempts=1)
             return page_pin(raw, self.user, self.journal_id, self.account, requested_home=True)
@@ -592,7 +617,7 @@ class LiveJournalClient:
     def web_deleted_threads(self, ditemid, dtalkid):
         from .comment_page import deleted_threads
         from .web_session import cookie_header
-        base = f"https://{self.user.replace('_', '-')}.livejournal.com"
+        base = journal_base(self.user)
         headers = {"Accept": "text/html"}
         if self._cookie and not cookie_header(self, base + "/"):
             headers["Cookie"] = "ljsession=" + self._cookie
@@ -603,7 +628,10 @@ class LiveJournalClient:
     def discover_journal_id(self, display_id):
         """Resolve an old archive without a stored user ID, using one public page."""
         raw = self._request("GET", f"/{int(display_id)}.html", category="reactions",
-                            base_url=f"https://{self.user.replace('_', '-')}.livejournal.com")
+                            base_url=journal_base(self.user))
+        return self.read_journal_identity(raw)
+
+    def read_journal_identity(self, raw):
         source = raw.decode("utf-8", errors="replace")
         match = re.search(r"\bSite\.journal\s*=\s*(\{)", source)
         try:
@@ -614,7 +642,12 @@ class LiveJournalClient:
             if username(data["username"]) != self.user or type(uid) is not int or uid <= 0:
                 raise ValueError()
         except (ValueError, KeyError, TypeError) as exc:
-            raise ExportError("Не удалось определить ID журнала для реакций. Повторите выгрузку со входом.") from exc
+            raise ExportError("ЖЖ не подтвердил имя и ID запрошенного журнала.") from exc
+        community = data.get('is_community')
+        if community in (True, False, 1, 0, '1', '0'):
+            self.source['is_community'] = community in (True, 1, '1')
+        elif data.get('is_personal') is True:
+            self.source['is_community'] = False
         self.journal_id = uid
         return uid
 
@@ -662,8 +695,10 @@ class LiveJournalClient:
     def comments(self, kind: str, start: int) -> tuple[CommentPage, bytes]:
         if not self._cookie:
             raise ExportError("Сначала войдите в ЖЖ.")
+        if self.source['type'] == 'reader':
+            raise ExportError('Общий экспорт комментариев доступен только владельцу или управляющему.')
         if self.source['type'] == 'community' and self.source['access']['status'] != 'verified':
-            raise ExportError('Права управления сообществом ещё не подтверждены.')
+            raise ExportError('Права доступа к журналу ещё не подтверждены.')
         raw = self._request("GET", "/export_comments.bml", params={"get": kind, "startid": start,
                             "numitems": 1000 if kind == "comment_meta" else 500, "props": 1,
                             **({'authas': self.user} if self.source['type'] == 'community' else {})},
