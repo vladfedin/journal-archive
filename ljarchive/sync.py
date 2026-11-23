@@ -15,6 +15,9 @@ from .sources import archive_base, bind_source, journal_base, source
 from .retry import restore_cooldowns
 from .gaps import ATTEMPTS, closed, fail, reopen
 
+# Days around a period within which a community post's date may differ from its posting time.
+COMMUNITY_DATE_MARGIN = 7
+
 
 @dataclass(frozen=True)
 class Scope:
@@ -292,12 +295,69 @@ class SyncExporter(Exporter):
             store.set("posts_done", True)
         self.checkpoint(phase="comments", selected=sorted(self.selected_ids))
 
+    def reader_windows(self, community):
+        """Spans of the feed to read, newest first. A span reads back from `before` (or now) past `stop`."""
+        def day(value, shift):
+            try:
+                return value and f'{date.fromisoformat(value) + timedelta(days=shift)} 00:00:00'
+            except OverflowError:
+                return None  # The period is open on that side.
+        scope = self.scope
+        if community is False:
+            # A personal journal is ordered by entry date: read exactly the period.
+            return [{'before': day(scope.end, 1), 'stop': day(scope.start, 0)}]
+        if not community or scope.mode != 'period':
+            return [{'before': None, 'stop': None}]
+        # A community is ordered by posting time, which nobody can change, while an entry's date can differ
+        # from it. Read the period with a margin on both sides and everything posted after it, since a new
+        # post may carry an earlier date. After a finished read of the same period, the posts up to the
+        # newest one seen then have been looked at; read the new ones and the period again. A post dated in
+        # the period but posted well after it is then found only if it was visible to the reader at that
+        # time; a full update reads everything.
+        stop, after_end = day(scope.start, -COMMUNITY_DATE_MARGIN), day(scope.end, COMMUNITY_DATE_MARGIN + 1)
+        previous = self.store.get('reader_scan') or {}
+        newest = previous.get('newest') if previous.get('scope') == scope.data() else None
+        if newest and after_end:
+            seen_until = str(datetime.fromisoformat(newest) - timedelta(days=1))
+            if after_end < seen_until:
+                return [{'before': None, 'stop': seen_until}, {'before': after_end, 'stop': stop}]
+        return [{'before': None, 'stop': stop}]
+
     def reader_posts(self):
         community = self.client.source.get('is_community')
-        cursor = self.state.get('reader_cursor', {})
-        if not cursor and community is False and self.scope.end and self.scope.end != '9999-12-31':
-            after_end = date.fromisoformat(self.scope.end) + timedelta(days=1)
-            cursor = {'beforedate': f'{after_end} 00:00:00'}
+        if 'reader_windows' not in self.state:
+            windows = self.reader_windows(community)
+            self.checkpoint(reader_windows=windows, reader_full=windows == [{'before': None, 'stop': None}],
+                            reader_cursor={}, reader_page=None)
+        while self.state['reader_windows']:
+            self.read_feed(community, self.state['reader_windows'][0])
+            self.checkpoint(reader_windows=self.state['reader_windows'][1:], reader_cursor={}, reader_page=None)
+        seen = set(self.state['seen']) | set(self.state.get('reader_moved', []))
+        if community and self.scope.mode == 'period':
+            with self.store.db:
+                self.store.set('reader_scan', {'scope': self.scope.data(), 'newest': self.state.get('reader_newest')})
+        if not self.state['reader_full']:
+            # A bounded read does not see a saved entry whose date moved out of the period or which was posted
+            # outside the spans read. As for one's own journal, ask LJ for each such entry before calling it missing.
+            missing = [e for e in self.store.entries() if e['itemid'] not in seen and self.scope.includes(e['eventtime'][:10])]
+            for entry in missing:
+                eid = entry['itemid']
+                if eid not in self.state.get('absent_checked', []):
+                    self.fetch_one(eid)
+                    if entry.get('source_status') == 'not_returned' and eid in self.state['unavailable']:
+                        # An earlier update already gave up on it: one more look is enough.
+                        self.checkpoint(unavailable_attempts={**self.state['unavailable_attempts'], str(eid): ATTEMPTS})
+                    self.checkpoint(absent_checked=self.state.get('absent_checked', []) + [eid])
+            return
+        with self.store.db:
+            absent = self.store.mark_absent_entries(seen, includes=self.scope.includes)
+        # The finished read is the evidence: report them as no longer returned without fetching them one by one.
+        attempts = {**self.state.get('unavailable_attempts', {}), **{str(eid): ATTEMPTS for eid in absent}}
+        self.checkpoint(unavailable=sorted(set(self.state['unavailable']) | set(absent)), unavailable_attempts=attempts)
+
+    def read_feed(self, community, window):
+        cursor = self.state.get('reader_cursor') or ({'beforedate': window['before']} if window['before'] else {})
+        stop = window['stop'] and datetime.fromisoformat(window['stop'])
         while True:
             self.client.check()
             self.update('posts', f'Читаем журнал · сохранено записей: {len(self.state["seen"])}')
@@ -341,9 +401,10 @@ class SyncExporter(Exporter):
                             statuses[str(eid)] = {'done': False, 'next_page': 1}
                         seen.add(eid)
                 self.store.set('entry_comments', statuses)
-                self.checkpoint(seen=sorted(seen), reader_moved=sorted(moved))
+                newest = max(filter(None, (str(max(times)), self.state.get('reader_newest'))))
+                self.checkpoint(seen=sorted(seen), reader_moved=sorted(moved), reader_newest=newest)
             oldest = min(times)
-            if community is False and self.scope.start and oldest.date().isoformat() < self.scope.start:
+            if stop and oldest < stop:
                 break
             # lastn uses a strict upper bound. Skip only the already read rows in
             # the boundary second so simultaneous posts can span multiple pages.
@@ -357,21 +418,6 @@ class SyncExporter(Exporter):
                 raise ExportError('ЖЖ не подтвердил следующую страницу ленты. Позиция сохранена.')
             cursor = {'beforedate': before, 'skip': skip}
             self.checkpoint(reader_cursor=cursor, reader_page=page_ids)
-        seen = set(self.state['seen']) | set(self.state.get('reader_moved', []))
-        if community is False and self.scope.mode == 'period':
-            # A personal journal is read only within the period, so an entry whose date moved out of it is not
-            # seen by the scan. As for one's own journal, ask LJ for each such entry before calling it missing.
-            missing = [e['itemid'] for e in self.store.entries() if e['itemid'] not in seen and self.scope.includes(e['eventtime'][:10])]
-            for eid in missing:
-                if eid not in self.state.get('absent_checked', []):
-                    self.fetch_one(eid)
-                    self.checkpoint(absent_checked=self.state.get('absent_checked', []) + [eid])
-            return
-        with self.store.db:
-            absent = self.store.mark_absent_entries(seen, includes=self.scope.includes)
-        # The finished read is the evidence: report them as no longer returned without fetching them one by one.
-        attempts = {**self.state.get('unavailable_attempts', {}), **{str(eid): ATTEMPTS for eid in absent}}
-        self.checkpoint(unavailable=sorted(set(self.state['unavailable']) | set(absent)), unavailable_attempts=attempts)
 
     def open_unavailable(self):
         attempts = self.state.get("unavailable_attempts", {})

@@ -394,6 +394,76 @@ def test_entry_moved_out_of_period_is_not_missing(tmp_path, monkeypatch, communi
     assert report['status'] == 'complete'
 
 
+class InterruptedWire(ReaderWire):
+    interrupt_at = None
+
+    def request(self, method, url, **kwargs):
+        if url.endswith('/interface/xmlrpc') and self.interrupt_at:
+            args = xmlrpc.client.loads(kwargs['data'])[0]
+            if args and args[0].get('beforedate') == self.interrupt_at:
+                self.interrupt_at = None
+                raise ExportError('test interruption')
+        return super().request(method, url, **kwargs)
+
+
+def test_community_period_update_reads_new_posts_and_the_period(tmp_path, monkeypatch):
+    wire = InterruptedWire(community=True, count=0)
+    def post(eid, logtime, eventtime=None):
+        return {**wire.entry(eid), 'logtime': logtime, 'eventtime': eventtime or logtime, 'reply_count': 0, 'security': 'public'}
+    # A post every two days from 2015 to 2024, and one posted in 2021 under a 2018 date.
+    wire.posts = [post(i + 1, str(datetime(2015, 1, 1) + timedelta(days=2 * i))) for i in range(1826)]
+    wire.posts.append(post(2000, '2021-06-01 12:00:00', '2018-07-01 12:00:00'))
+    install(monkeypatch, wire)
+    options = dict(journal=wire.journal, source_type='reader', mode='period', start='2018-01-01', end='2018-12-31',
+                   include_comments=False)
+    def requests():
+        calls = [p for m, p in wire.calls if m == 'getevents']
+        wire.calls.clear()
+        return [p for p in calls if p['selecttype'] == 'lastn'], sorted(p['itemid'] for p in calls if p['selecttype'] == 'one')
+    first = sync('reader', 'test-secret', tmp_path, **options)
+    in_period = {p['itemid'] for p in wire.posts if p['eventtime'].startswith('2018')}
+    assert first['status'] == 'complete' and first['entries_saved'] == len(in_period)
+    # Everything posted since the period was read, but nothing well before it.
+    assert min(p['beforedate'] for p in requests()[0] if 'beforedate' in p) > '2017-12-01'
+    edited, deleted = sorted(in_period - {2000})[100:102]
+    next(p for p in wire.posts if p['itemid'] == edited)['event'] = 'Edited text'
+    wire.posts = [p for p in wire.posts if p['itemid'] != deleted]
+    wire.posts += [post(2001, '2025-02-01 10:00:00', '2018-03-03 10:00:00'), post(2002, '2025-02-02 10:00:00')]
+    wire.interrupt_at = '2019-01-08 00:00:00'
+    assert sync('reader', 'test-secret', tmp_path, **options)['status'] != 'complete'
+    pages, _ = requests()
+    # Only the newest page was needed for posts made since the first read.
+    assert len(pages) == 1 and 'beforedate' not in pages[0]
+    report = sync('reader', 'test-secret', tmp_path, **options)
+    pages, _ = requests()
+    # The resumed update goes on with the period: the new posts were already read.
+    assert all('beforedate' in p for p in pages) and len(pages) <= 6
+    assert report['status'] == 'complete' and report['unavailable_entry_ids'] == [deleted]
+    folder = tmp_path / 'bookclub-by-reader'
+    archive = {e['itemid']: e for e in json.loads((folder / 'data/archive.json').read_text())['entries']}
+    assert archive[2001]['eventtime'].startswith('2018') and 2002 not in archive
+    assert archive[edited]['event'] == 'Edited text' and archive[2000].get('source_status') != 'not_returned'
+    # The next update looks once more at the deleted entry and at the one posted outside the spans read.
+    report = sync('reader', 'test-secret', tmp_path, **options)
+    pages, singles = requests()
+    assert len(pages) <= 6 and singles == sorted([2000, deleted])
+    assert report['status'] == 'complete' and report['unavailable_entry_ids'] == [deleted]
+
+
+def test_community_period_read_starts_before_the_period(tmp_path, monkeypatch):
+    wire = ReaderWire(community=True, count=0)
+    def post(eid, logtime, eventtime=None):
+        return {**wire.entry(eid), 'logtime': logtime, 'eventtime': eventtime or logtime, 'reply_count': 0, 'security': 'public'}
+    # A page of posts within the period, a page just before it, then one posted before the period under a date in it.
+    wire.posts = [post(i + 1, str(datetime(2018, 1, 1) + timedelta(days=i))) for i in range(50)]
+    wire.posts += [post(i + 51, str(datetime(2017, 12, 31, 23) - timedelta(hours=i))) for i in range(50)]
+    wire.posts += [post(101, '2017-12-28 12:00:00', '2018-01-05 12:00:00'), post(102, '2017-06-01 12:00:00')]
+    install(monkeypatch, wire)
+    report = sync('reader', 'test-secret', tmp_path, journal=wire.journal, source_type='reader', mode='period',
+                  start='2018-01-01', end='2018-12-31', include_comments=False)
+    assert report['status'] == 'complete' and report['entries_saved'] == 51
+
+
 class GoneJournal(ReaderWire):
     gone = False
 
