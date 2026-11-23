@@ -178,11 +178,18 @@ class Store:
             if pin and pin.get('ditemid', 0) // 256 == eid:
                 self.set('sticky_entry_id', self.sticky_entry_id())
 
-    def mark_absent_entries(self, seen, *, includes=lambda day: True):
+    def mark_absent_entries(self, seen, *, includes=lambda day: True, within=None):
+        """Mark saved entries a completed read did not return; the saved text stays. Returns their IDs."""
+        absent = []
         for entry in self.entries():
-            if (entry['itemid'] not in seen and includes(entry['eventtime'][:10])
-                    and entry.get('source_status') != 'not_returned'):
+            if entry['itemid'] in seen or not includes(entry['eventtime'][:10]):
+                continue
+            if within is not None and not within(entry):
+                continue
+            absent.append(entry['itemid'])
+            if entry.get('source_status') != 'not_returned':
                 self.save_entry({**entry, 'source_status': 'not_returned'})
+        return absent
 
     def retain_recent_entries(self, ids):
         """Replace membership only after validating the new bounded selection."""
@@ -259,8 +266,7 @@ class Store:
         self.db.execute("INSERT OR REPLACE INTO reactions VALUES (?,?,?)", (kind, object_id, dumps(payload)))
 
     def comments_for_download(self, entry_id=None):
-        if self.get('comments_requested') is False:
-            return []
+        # An entry marked "comments not requested" never has saved comments, so only hidden ones are left out.
         return [item for item in self.comments(entry_id) if item.get('source_status') != 'hidden_from_reader']
 
     def comments(self, entry_id=None):

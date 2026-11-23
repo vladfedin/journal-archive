@@ -16,12 +16,12 @@ from urllib.parse import unquote, urlsplit, parse_qs
 
 from . import __version__
 from .activity import record_activity
-from .client import Cancelled, ExportError, RequestBudget, username
+from .client import Cancelled, ExportError, JournalNotFound, RequestBudget, username
 from .contact import has_contact_question, send_message
 from .demo import create_demo
 from .exporter import archive_slug, export, validate_entry_limit
 from .render import ARCHIVE_FORMAT_VERSION, ROOT, plural
-from .sources import ARCHIVE_PATTERN, archive_base, source
+from .sources import ARCHIVE_PATTERN, archive_base, folder_source, source, stored_source
 from .sync import sync, validate_scope, target_slug
 
 TERMINAL = {"complete", "partial", "cancelled", "error", "demo", "idle"}
@@ -622,6 +622,7 @@ class Jobs:
 
     def run(self, data, demo):
         slug = "_demo" if demo else data["archive"]
+        discard = False
         try:
             if demo:
                 report = create_demo(self.output / slug, progress=self.progress)
@@ -657,6 +658,10 @@ class Jobs:
                           message=message, archive_url=f"/archive/{slug}/index.html")
         except Cancelled:
             self.progress(phase="cancelled", message="Загрузка остановлена.", cancelling=False)
+        except JournalNotFound as exc:
+            self.progress(phase="error", message=str(exc), cancelling=False)
+            # Nothing was read: a mistyped name must not stay in the library as an archive to resume.
+            discard = not (self.output / slug).exists()
         except ExportError as exc:
             self.progress(phase="error", message=str(exc), cancelling=False)
         except Exception as exc:
@@ -675,6 +680,8 @@ class Jobs:
                     self.history = self.history[-10:]
                 self.recovery_before = None
                 self.persist()
+                if discard:
+                    self.task_path(slug).unlink(missing_ok=True)
 
     def archives(self):
         found = {}
@@ -1053,7 +1060,7 @@ def make_server(output: Path, port=8787):
                         jobs.task_path(slug)
                     except ExportError as exc:
                         return self.json({'error': str(exc)}, 400)
-                    body = ENV.get_template('search.html').render(user=slug, report={}, search_api=True).replace('<body>', '<body data-library-url="/">', 1).encode()
+                    body = ENV.get_template('search.html').render(user=slug, report={'source': folder_source(jobs.output / slug)}, search_api=True).replace('<body>', '<body data-library-url="/">', 1).encode()
                     self.response_headers(200, 'text/html; charset=utf-8', len(body))
                     self.wfile.write(body)
                     return
@@ -1096,7 +1103,8 @@ def make_server(output: Path, port=8787):
                         mime = 'text/javascript'
                     else:
                         body = ENV.get_template(target.name).render(user=data.get('journal', {}).get('username') or relative.parts[0],
-                            report={'status': 'partial', 'created_at': data.get('generated_at', '')}, stats=data).encode('utf-8')
+                            report={'status': 'partial', 'created_at': data.get('generated_at', ''),
+                                    'source': folder_source(jobs.output / relative.parts[0])}, stats=data).encode('utf-8')
                         body = body.replace(b'<body>', b'<body data-library-url="/">', 1)
                         mime = 'text/html'
                     self.response_headers(200, mime + '; charset=utf-8', len(body))
@@ -1135,10 +1143,10 @@ def make_server(output: Path, port=8787):
                                 html = preview_index(store)
                             elif target.name == 'calendar.html':
                                 html = ENV.get_template('calendar.html').render(
-                                    user=store.get('username'), report={'created_at': store.get('started_at', '')},
+                                    user=store.get('username'), report={'created_at': store.get('started_at', ''), 'source': stored_source(store)},
                                     report_pending=not (store.folder / 'report.html').is_file())
                             else:
-                                html = ENV.get_template("timeline.html").render(user=store.get("username"), report={"created_at": store.get("started_at", "")}, source="/api/timeline/" + relative.parts[0])
+                                html = ENV.get_template("timeline.html").render(user=store.get("username"), report={"created_at": store.get("started_at", ""), "source": stored_source(store)}, source="/api/timeline/" + relative.parts[0])
                         finally:
                             store.close()
                         if html:

@@ -39,6 +39,10 @@ class HTTPError(ExportError):
         super().__init__(f"ЖЖ вернул HTTP {status}. Прогресс сохранён.")
 
 
+class JournalNotFound(ExportError):
+    """The journal named for a reader archive does not exist; nothing was read."""
+
+
 class APIError(ExportError):
     def __init__(self, method, code):
         self.method, self.code = method, code
@@ -466,6 +470,10 @@ class LiveJournalClient:
                 if not self.ensure_web_session(base + '/'):
                     raise
                 self.read_journal_identity(self._request('GET', '/', base_url=base))
+            except HTTPError as exc:
+                if exc.status in (404, 410):
+                    raise JournalNotFound(f'ЖЖ не нашёл журнал {self.user}: имя введено с ошибкой, или журнал удалён или переименован.') from None
+                raise
         elif self.source['type'] == 'community':
             self.source['access']['status'] = 'unconfirmed'
             if self.user not in self.managed_communities(confirm_empty=True):

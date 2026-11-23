@@ -19,7 +19,8 @@ class ReaderWire(CommunityWire):
         self.posts = []
         for eid in range(1, count + 1):
             stamp = datetime(2025, 1, 1) + timedelta(days=(eid - 1) // 2)
-            self.posts.append({**self.entry(eid), 'eventtime': str(stamp), 'logtime': str(stamp),
+            # Each discussion below answers with one comment, matching LJ's reply count.
+            self.posts.append({**self.entry(eid), 'eventtime': str(stamp), 'logtime': str(stamp), 'reply_count': 1,
                                'security': 'usemask' if eid == 2 else 'public'})
 
     def request(self, method, url, **kwargs):
@@ -231,3 +232,205 @@ def test_cli_refresh_uses_saved_reader(tmp_path, monkeypatch):
     assert origin['login_username'] == 'reader'
     assert origin['capabilities'] == before['source']['capabilities']
     assert all('thread' not in item for name, batch in wire.calls if name == 'reactions' for item in batch)
+
+
+def test_short_reader_discussion_is_not_called_complete(tmp_path, monkeypatch):
+    wire = ReaderWire(count=1)
+    wire.posts[0].update(reply_count=7, props={})
+    install(monkeypatch, wire)
+    options = dict(journal=wire.journal, source_type='reader')
+    report = sync('reader', 'test-secret', tmp_path, **options)
+    # After the repeats what LJ gave is kept and the discussion is reported as incomplete, never as empty.
+    assert sum(name == 'getcomments' for name, _ in wire.calls) > 1
+    assert report['unavailable_comment_entry_ids'] == [1] and report['pending_comment_entry_ids'] == []
+    folder = tmp_path / 'bookclub-by-reader'
+    assert 'A visible reply' in (folder / 'entries/1.html').read_text()
+    assert 'Обсуждения, которые ЖЖ отдал не полностью' in (folder / 'report.html').read_text()
+    trial = export('reader', 'test-secret', tmp_path, max_requests=90, **options)
+    assert trial['unavailable_comment_entry_ids'] == [1] and trial['pending_comment_entry_ids'] == []
+
+
+def test_comments_off_update_keeps_saved_discussions(tmp_path, monkeypatch):
+    from ljarchive.progress import timeline
+    from ljarchive.storage import Store
+    wire = ReaderWire(count=4)
+    later = wire.posts.pop()
+    install(monkeypatch, wire)
+    options = dict(journal=wire.journal, source_type='reader')
+    first = sync('reader', 'test-secret', tmp_path, **options)
+    assert first['status'] == 'complete' and first['comments_saved'] == 3
+    wire.posts.append(later)
+    wire.calls.clear()
+    report = sync('reader', 'test-secret', tmp_path, mode='period', start='2025-01-01', end='2025-12-31',
+                  include_comments=False, **options)
+    assert report['status'] == 'complete' and not any(name == 'getcomments' for name, _ in wire.calls)
+    assert report['comments_saved'] == 3
+    assert report['reactions']['comments_total'] == first['reactions']['comments_total'] == 3
+    folder = tmp_path / 'bookclub-by-reader'
+    store = Store.reader(folder)
+    try:
+        items = {item['id']: item for item in timeline(store)['entries']}
+    finally:
+        store.close()
+    assert [items[eid]['comments_skipped'] for eid in (1, 2, 3, 4)] == [False, False, False, True]
+    assert all(items[eid]['comments'] == 1 and items[eid]['comments_complete'] for eid in (1, 2, 3))
+    assert 'A visible reply' in (folder / 'entries/1.html').read_text()
+    assert 'Комментарии не запрашивались' in (folder / 'entries/4.html').read_text()
+    assert 'Не запрашивались · сохранённые ранее оставлены' in (folder / 'report.html').read_text()
+
+
+def test_trial_window_shift_is_not_reported_as_missing(tmp_path, monkeypatch):
+    wire = ReaderWire(count=15)
+    later = wire.posts[12:]
+    del wire.posts[12:]
+    install(monkeypatch, wire)
+    options = dict(journal=wire.journal, source_type='reader', max_requests=90)
+    assert export('reader', 'test-secret', tmp_path, **options)['status'] == 'complete'
+    wire.posts = [p for p in wire.posts + later if p['itemid'] != 8]
+    report = export('reader', 'test-secret', tmp_path, **options)
+    archive = json.loads((tmp_path / 'bookclub-by-reader-latest-10/data/archive.json').read_text())
+    absent = sorted(p['itemid'] for p in archive['entries'] if p.get('source_status') == 'not_returned')
+    # 3 and 4 only left the last-ten window; 8 vanished from inside it.
+    assert absent == [8] and report['unavailable_entry_ids'] == [8]
+
+
+def test_entries_gone_from_reader_view_reach_the_report(tmp_path, monkeypatch):
+    wire = ReaderWire(count=3)
+    install(monkeypatch, wire)
+    options = dict(journal=wire.journal, source_type='reader')
+    assert sync('reader', 'test-secret', tmp_path, **options)['status'] == 'complete'
+    wire.posts = [p for p in wire.posts if p['itemid'] != 2]
+    report = sync('reader', 'test-secret', tmp_path, mode='period', start='2025-01-01', end='2025-12-31', **options)
+    assert report['status'] == 'complete' and report['unavailable_entry_ids'] == [2]
+    folder = tmp_path / 'bookclub-by-reader'
+    assert 'Записи, которые ЖЖ больше не возвращает' in (folder / 'report.html').read_text()
+    assert 'Text 2' in (folder / 'entries/2.html').read_text()
+
+
+class MissingJournal(ReaderWire):
+    def request(self, method, url, **kwargs):
+        if url == f'https://{self.journal}.livejournal.com/':
+            return Response(status=404, content=b'not found')
+        return super().request(method, url, **kwargs)
+
+
+def test_mistyped_journal_leaves_no_archive(tmp_path, monkeypatch):
+    from ljarchive.client import JournalNotFound
+    from ljarchive.server import Jobs
+    install(monkeypatch, MissingJournal())
+    jobs = Jobs(tmp_path)
+    jobs.start({'username': 'reader', 'journal': 'bookclub', 'source_type': 'reader', 'password': 'test-secret', 'mode': 'full'})
+    jobs.thread.join(30)
+    assert jobs.state['phase'] == 'error' and 'не нашёл журнал bookclub' in jobs.state['message']
+    assert not (tmp_path / 'bookclub-by-reader').exists()
+    assert not any(a['slug'].startswith('bookclub') for a in jobs.archives()['archives'])
+    with pytest.raises(JournalNotFound):
+        export('reader', 'test-secret', tmp_path, journal='bookclub', source_type='reader', max_requests=20)
+    assert not (tmp_path / 'bookclub-by-reader-latest-10').exists()
+
+
+def test_reader_archive_has_no_correspondence_or_owner_profile(tmp_path, monkeypatch):
+    install(monkeypatch, ReaderWire(count=1))
+    sync('reader', 'test-secret', tmp_path, journal='bookclub', source_type='reader', account=True, messages=True)
+    folder = tmp_path / 'bookclub-by-reader'
+    assert not (folder / 'messages.html').exists()
+    assert 'messages.html' not in (folder / 'index.html').read_text()
+    account = (folder / 'account.html').read_text()
+    assert 'messages.html' not in account and 'Профиль журнала не входит в архив читателя' in account
+
+
+def test_comments_off_keeps_discussions_whose_status_was_reset(tmp_path, monkeypatch):
+    from ljarchive.storage import Store
+    wire = ReaderWire(count=3)
+    install(monkeypatch, wire)
+    options = dict(journal=wire.journal, source_type='reader', max_requests=90)
+    trial = export('reader', 'test-secret', tmp_path, **options)
+    assert trial['reactions']['comments_total'] == 3
+    trial = export('reader', 'test-secret', tmp_path, include_comments=False, **options)
+    assert trial['reactions']['comments_total'] == 3 and trial['status'] == 'complete'
+    del options['max_requests']
+    assert sync('reader', 'test-secret', tmp_path, **options)['comments_saved'] == 3
+    folder = tmp_path / 'bookclub-by-reader'
+    store = Store(folder)
+    with store.db:  # an interrupted refresh with comments on leaves the statuses reset
+        store.set('entry_comments', {str(eid): {'next_page': 1, 'done': False} for eid in (1, 2, 3)})
+    store.close()
+    report = sync('reader', 'test-secret', tmp_path, include_comments=False, **options)
+    assert report['reactions']['comments_total'] == 3
+    store = Store.reader(folder)
+    try:
+        assert not any(s.get('skipped') for s in store.get('entry_comments').values())
+        assert len(store.comments_for_download()) == 3
+    finally:
+        store.close()
+
+
+def test_community_trial_window_follows_posting_time(tmp_path, monkeypatch):
+    wire = ReaderWire(community=True, count=12)
+    install(monkeypatch, wire)
+    options = dict(journal=wire.journal, source_type='reader', max_requests=90)
+    export('reader', 'test-secret', tmp_path, **options)
+    backdated = {**wire.entry(13), 'eventtime': '2010-05-05 10:00:00', 'logtime': '2025-03-01 10:00:00', 'reply_count': 1, 'security': 'public'}
+    latest = {**wire.entry(14), 'eventtime': '2025-03-02 10:00:00', 'logtime': '2025-03-02 10:00:00', 'reply_count': 1, 'security': 'public'}
+    wire.posts += [backdated, latest]
+    report = export('reader', 'test-secret', tmp_path, **options)
+    assert report['unavailable_entry_ids'] == []
+
+
+@pytest.mark.parametrize('community', [False, True])
+@pytest.mark.parametrize('moved_to', ['2019-01-01 00:00:00', '2026-06-01 00:00:00'])
+def test_entry_moved_out_of_period_is_not_missing(tmp_path, monkeypatch, community, moved_to):
+    wire = ReaderWire(count=63, community=community)
+    for index, post in enumerate(wire.posts[3:]):
+        post['eventtime'] = post['logtime'] = str(datetime(2024, 1, 1) + timedelta(days=index))
+    install(monkeypatch, wire)
+    options = dict(journal=wire.journal, source_type='reader')
+    sync('reader', 'test-secret', tmp_path, **options)
+    # Far beyond the page where the personal-journal scan of the period stops.
+    wire.posts[2]['eventtime'] = moved_to
+    wire.posts = [p for p in wire.posts if p['itemid'] != 2]
+    report = sync('reader', 'test-secret', tmp_path, mode='period', start='2025-01-01', end='2025-12-31', **options)
+    assert report['unavailable_entry_ids'] == [2]
+    assert report['status'] == 'complete'
+
+
+class GoneJournal(ReaderWire):
+    gone = False
+
+    def request(self, method, url, **kwargs):
+        if self.gone and url == f'https://{self.journal}.livejournal.com/':
+            return Response(status=410, content=b'gone')
+        return super().request(method, url, **kwargs)
+
+
+def test_archive_of_a_journal_gone_later_keeps_data_and_says_why(tmp_path, monkeypatch):
+    wire = GoneJournal(count=2)
+    install(monkeypatch, wire)
+    options = dict(journal=wire.journal, source_type='reader')
+    sync('reader', 'test-secret', tmp_path, **options)
+    wire.gone = True
+    report = sync('reader', 'test-secret', tmp_path, **options)
+    assert report['status'] == 'partial' and report['entries_saved'] == 2
+    assert any('не нашёл журнал bookclub' in issue for issue in report['issues'])
+    folder = tmp_path / 'bookclub-by-reader'
+    assert json.loads((folder / 'export-report.json').read_text())['status'] == 'partial'
+    assert 'Text 1' in (folder / 'entries/1.html').read_text()
+
+
+def test_pages_rendered_by_the_app_know_the_reader_source(tmp_path, monkeypatch):
+    from ljarchive.live import preview_index
+    from ljarchive.progress import preview_entry
+    from ljarchive.render import ENV
+    from ljarchive.sources import folder_source
+    from ljarchive.storage import Store
+    install(monkeypatch, ReaderWire(count=1))
+    sync('reader', 'test-secret', tmp_path, journal='bookclub', source_type='reader')
+    folder = tmp_path / 'bookclub-by-reader'
+    assert folder_source(folder)['type'] == 'reader' and folder_source(tmp_path / 'missing') is None
+    search = ENV.get_template('search.html').render(user='bookclub-by-reader', report={'source': folder_source(folder)}, search_api=True)
+    store = Store.reader(folder)
+    try:
+        pages = [search, preview_index(store), preview_entry(store, 1)]
+    finally:
+        store.close()
+    assert all('messages.html' not in page for page in pages)

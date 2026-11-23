@@ -414,8 +414,7 @@ def build_archive(store: Store, report: dict, *, images=False, userpics=False, c
     selected = report.get("sync", {}).get("selected", report.get("recent_ids"))
     selected = None if selected is None else set(selected)
     comment_entries = {str(c["id"]): int(c.get("jitemid", 0)) for c in comments}
-    excluded_pics = {str(c['id']) for c in comments if c.get('source_status') == 'hidden_from_reader'
-                     or report.get('comments_requested') is False}
+    excluded_pics = {str(c['id']) for c in comments if c.get('source_status') == 'hidden_from_reader'}
     task_pictures = {"post": {}, "comment": {}}
     requested_pics = set()
     total_pics = len({pic["url"] for group in pictures.values() for pic in group.values() if pic["url"]})

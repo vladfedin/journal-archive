@@ -1,12 +1,13 @@
 """Resumable, non-destructive updates of one archive by dates, URL or full audit."""
 import json
+import shutil
 import re
 from dataclasses import dataclass, asdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from .client import HTTPRateLimited, APIRateLimited, Cancelled, ExportError, IncompleteData, LiveJournalClient, RequestBudget, username
+from .client import HTTPRateLimited, APIRateLimited, Cancelled, ExportError, IncompleteData, JournalNotFound, LiveJournalClient, RequestBudget, username
 from .exporter import Exporter, now
 from .entries import is_repost
 from .storage import atomic_write, dumps
@@ -193,7 +194,7 @@ class SyncExporter(Exporter):
             return
         with self.store.db:
             self.store.save_entry(entry)
-            if entry["itemid"] not in self.state["seen"]:
+            if entry["itemid"] not in self.state["seen"] and self.include_comments:
                 statuses = self.store.get("entry_comments", {})
                 statuses[str(entry["itemid"])] = {"next_page": 1, "done": False}
                 self.store.set("entry_comments", statuses)
@@ -308,7 +309,7 @@ class SyncExporter(Exporter):
             if not events:
                 break
             times = []
-            batch = []
+            batch, outside = [], []
             for entry in events:
                 if not isinstance(entry, dict) or type(entry.get('itemid')) is not int or 'event' not in entry or not isinstance(entry.get('eventtime'), str):
                     raise ExportError('ЖЖ вернул запись без ID, даты или текста.')
@@ -322,6 +323,13 @@ class SyncExporter(Exporter):
                 times.append(stamp)
                 if self.scope.includes(entry['eventtime'][:10]):
                     batch.append(entry)
+                else:
+                    outside.append(entry['itemid'])
+            # A saved entry whose date moved out of the period was returned; it is not missing.
+            moved = set(self.state.get('reader_moved', []))
+            if outside:
+                moved.update(row[0] for row in self.store.db.execute(
+                    f"SELECT id FROM entries WHERE id IN ({','.join('?' * len(outside))})", outside))
             seen = set(self.state['seen'])
             statuses = self.store.get('entry_comments', {})
             with self.store.db:
@@ -329,10 +337,11 @@ class SyncExporter(Exporter):
                     eid = entry['itemid']
                     self.store.save_entry(entry)
                     if eid not in seen:
-                        statuses[str(eid)] = {'done': False, 'next_page': 1}
+                        if self.include_comments:
+                            statuses[str(eid)] = {'done': False, 'next_page': 1}
                         seen.add(eid)
                 self.store.set('entry_comments', statuses)
-                self.checkpoint(seen=sorted(seen))
+                self.checkpoint(seen=sorted(seen), reader_moved=sorted(moved))
             oldest = min(times)
             if community is False and self.scope.start and oldest.date().isoformat() < self.scope.start:
                 break
@@ -348,9 +357,21 @@ class SyncExporter(Exporter):
                 raise ExportError('ЖЖ не подтвердил следующую страницу ленты. Позиция сохранена.')
             cursor = {'beforedate': before, 'skip': skip}
             self.checkpoint(reader_cursor=cursor, reader_page=page_ids)
-        seen = set(self.state['seen'])
+        seen = set(self.state['seen']) | set(self.state.get('reader_moved', []))
+        if community is False and self.scope.mode == 'period':
+            # A personal journal is read only within the period, so an entry whose date moved out of it is not
+            # seen by the scan. As for one's own journal, ask LJ for each such entry before calling it missing.
+            missing = [e['itemid'] for e in self.store.entries() if e['itemid'] not in seen and self.scope.includes(e['eventtime'][:10])]
+            for eid in missing:
+                if eid not in self.state.get('absent_checked', []):
+                    self.fetch_one(eid)
+                    self.checkpoint(absent_checked=self.state.get('absent_checked', []) + [eid])
+            return
         with self.store.db:
-            self.store.mark_absent_entries(seen, includes=self.scope.includes)
+            absent = self.store.mark_absent_entries(seen, includes=self.scope.includes)
+        # The finished read is the evidence: report them as no longer returned without fetching them one by one.
+        attempts = {**self.state.get('unavailable_attempts', {}), **{str(eid): ATTEMPTS for eid in absent}}
+        self.checkpoint(unavailable=sorted(set(self.state['unavailable']) | set(absent)), unavailable_attempts=attempts)
 
     def open_unavailable(self):
         attempts = self.state.get("unavailable_attempts", {})
@@ -560,6 +581,11 @@ class SyncExporter(Exporter):
                 error, cancelled = str(exc), True
             except (HTTPRateLimited, APIRateLimited) as exc:
                 text_processed, error = False, str(exc)
+            except JournalNotFound as exc:
+                if not store.db.execute('SELECT 1 FROM entries LIMIT 1').fetchone():
+                    raise
+                # An archived journal that is gone now: the saved data stays and the report says why.
+                error = str(exc)
             except ExportError as exc:
                 error = str(exc)
             with store.db:
@@ -605,7 +631,14 @@ def sync(user, password, output, *, mode="full", start=None, end=None, urls=None
     slug = target_slug(archive_base(identity), archive)
     budget = RequestBudget(max_requests, progress)
     client = LiveJournalClient(user, password, delay=delay, cancel=cancel, budget=budget, progress=progress, journal=journal, source_type=source_type, session_ready=session_ready)
-    return SyncExporter(Path(output) / slug, client, scope, images=images, progress=progress, account=account, messages=messages, videos=videos, resume=resume, include_comments=include_comments).run()
+    folder = Path(output) / slug
+    fresh = not folder.exists()
+    try:
+        return SyncExporter(folder, client, scope, images=images, progress=progress, account=account, messages=messages, videos=videos, resume=resume, include_comments=include_comments).run()
+    except JournalNotFound:
+        if fresh:
+            shutil.rmtree(folder, ignore_errors=True)
+        raise
 
 
 def target_slug(user, archive=None):

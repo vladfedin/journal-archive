@@ -27,7 +27,8 @@ def summaries(store):
 
 def preview_index(store):
     _, rows = summaries(store)
-    report = {'created_at': store.get('started_at', ''), 'status': 'partial',
+    from .sources import stored_source
+    report = {'created_at': store.get('started_at', ''), 'status': 'partial', 'source': stored_source(store),
               'entries_saved': len(rows), 'comments_saved': sum(e['comments'] for e in rows)}
     return ENV.get_template('index.html').render(user=store.get('username'), entries=rows, report=report, preview=True)
 

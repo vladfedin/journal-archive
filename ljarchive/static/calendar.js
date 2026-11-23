@@ -16,11 +16,11 @@ const state={year:null,view:['months','weeks','calendar'].includes(saved.view)?s
 let data=new Map(),days=[],posts=[],bounds=[],selectedPosts=[],commentPeak=1;
 const issueLabel=p=>p.notice||(!p.complete&&!p.repost?'Полнота обсуждения не подтверждена':'');
 const compactCount=n=>n<1000?fmt(n):`${(n/1000).toLocaleString('ru-RU',{maximumFractionDigits:1})}к`;
-const postCommentLabel=p=>p.commentsExpected>p.comments&&!p.complete?`Комментарии: ${fmt(p.comments)} из ${fmt(p.commentsExpected)}`:commentsLabel(p.comments);
+const postCommentLabel=p=>p.skipped&&!p.comments?'Комментарии не запрашивались':p.commentsExpected>p.comments&&!p.complete?`Комментарии: ${fmt(p.comments)} из ${fmt(p.commentsExpected)}`:commentsLabel(p.comments);
 const summaryComments=items=>items.some(p=>!p.complete&&!p.repost)?`сохранено ${commentsLabel(sum(items))}`:commentsLabel(sum(items));
 function makeDate(year,month=0,day=1){const d=new Date(0);d.setUTCFullYear(year,month,day);d.setUTCHours(0,0,0,0);return d;}
 function validDate(value){if(typeof value!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(value))return false;const d=dateFrom(value);return Number.isFinite(d.getTime())&&dateKey(d)===value;}
-const records=(source.entries||[]).filter(p=>Number.isSafeInteger(p.id)&&p.id>0).map(p=>({id:p.id,date:String(p.date||'').slice(0,10),time:(String(p.date||'').match(/[ T]((?:[01]\d|2[0-3]):[0-5]\d)/)||[])[1]||'',title:String(p.title||'Без заголовка'),url:`entries/${p.id}.html`,comments:Math.max(0,Number(p.comments)||0),commentsExpected:p.repost?0:Math.max(0,Number(p.expected_comments)||0),complete:!!p.comments_complete,repost:!!p.repost,gap:p.state==='partial'||(p.state!=='ready'&&!p.repost),notice:String(p.notice||'')}));
+const records=(source.entries||[]).filter(p=>Number.isSafeInteger(p.id)&&p.id>0).map(p=>({id:p.id,date:String(p.date||'').slice(0,10),time:(String(p.date||'').match(/[ T]((?:[01]\d|2[0-3]):[0-5]\d)/)||[])[1]||'',title:String(p.title||'Без заголовка'),url:`entries/${p.id}.html`,comments:Math.max(0,Number(p.comments)||0),commentsExpected:p.repost?0:Math.max(0,Number(p.expected_comments)||0),complete:!!p.comments_complete,skipped:!!p.comments_skipped,repost:!!p.repost,gap:p.state==='partial'||(p.state!=='ready'&&!p.repost),notice:String(p.notice||'')}));
 const undated=records.filter(p=>!validDate(p.date));
 const knownYears=[...new Set([...Object.keys(source.days||{}),...Object.keys(source.missing||{}),...records.map(p=>p.date)].filter(validDate).map(d=>Number(d.slice(0,4))))].sort((a,b)=>a-b);
 const firstYear=knownYears[0],lastYear=knownYears.at(-1);

@@ -639,7 +639,8 @@ def render_personal(store, report):
             has_profile=any(not key.startswith('messages_') and section.get('data') is not None
                             for key, section in sections.items()),
             preferences=preference_rows(sections)))
-        for page in range(pages):
+        # Correspondence belongs to the signed-in account; other journals' archives never hold it.
+        for page in range(pages if (report.get('source') or {}).get('type', 'own') == 'own' else 0):
             batch = []
             from datetime import datetime, timezone
             for item in messages[page * 100:(page + 1) * 100]:

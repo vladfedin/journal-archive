@@ -71,6 +71,8 @@ function showContact(state) {
 const labels = {preparing:'Подготовка',verify:'Проверка',login:'Вход',posts:'Записи',comments:'Комментарии',reactions:'Реакции',videos:'Видео',materials:'Материалы',personal:'Личные данные',userpics:'Юзерпики',render:'Страницы',waiting:'Пауза',retrying:'Повтор запроса',complete:'Готов',partial:'Не завершён',cancelled:'Остановлено',error:'Ошибка',demo:'Пример'};
 const localProgress = phase => ['preparing','verify','render'].includes(phase);
 const scopes = {full:'весь журнал',period:'за период',urls:'по ссылкам',latest:'тест (последние 10 записей)'};
+// A reader's archive holds only what the reader's account may see.
+const scopeLabel=(params={},mode=params.mode)=>params.source_type==='reader'&&mode==='full'?'все доступные записи':scopes[mode];
 const el = (tag, cls, text) => {const n=document.createElement(tag);if(cls)n.className=cls;if(text!==undefined)n.textContent=text;return n;};
 const day = value => {const m=/^(\d{4})-(\d{2})-(\d{2})/.exec(value||'');return m?`${Number(m[3])} ${'января февраля марта апреля мая июня июля августа сентября октября ноября декабря'.split(' ')[Number(m[2])-1]} ${m[1]}`:'';};
 const dateValue = date => `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;
@@ -78,12 +80,12 @@ function parameterTable(params={},known=Object.keys(params)){
   const table=el('table','report-table'),body=el('tbody');table.append(body);
   const value=(key,format=v=>String(v))=>known.includes(key)?format(params[key]):'Не сохранено';
   const yes=v=>v?'Да':'Нет';
-  const rows=[['Объём',value('mode',v=>scopes[v]||v||'Не сохранено')]];
+  const rows=[['Объём',value('mode',v=>scopeLabel(params,v)||v||'Не сохранено')]];
   if(params.source_type==='reader')rows.unshift(['Журнал',params.journal],['Читатель',params.username],['Комментарии',params.include_comments===false?'Пропущены':'Включены']);
   if(params.source_type==='community')rows.unshift(['Сообщество',params.journal],['Аккаунт для входа',params.username]);
   if(params.mode==='period')rows.push(['С',value('date_from',v=>day(v)||'С начала журнала')],['По',value('date_to',v=>day(v)||'По последнюю запись')]);
   if(params.mode==='urls')rows.push(['Ссылки',value('urls',v=>Array.isArray(v)?v.join('\n'):v||'—')]);
-  rows.push(['Изображения',value('images',yes)],['Видео',value('videos',yes)],['Профиль, друзья, настройки',value('account',yes)],['Переписка',value('messages',yes)],['Пауза',value('delay',v=>v+' сек.')],['Лимит запросов',value('max_requests',v=>v??'Без лимита')]);
+  rows.push(['Изображения',value('images',yes)],['Видео',value('videos',yes)],...(params.source_type==='reader'?[]:[['Профиль, друзья, настройки',value('account',yes)],['Переписка',value('messages',yes)]]),['Пауза',value('delay',v=>v+' сек.')],['Лимит запросов',value('max_requests',v=>v??'Без лимита')]);
   for(const [label,text] of rows){const row=el('tr');row.append(el('td','',label),el('td','',text));body.append(row);}
   return table;
 }
@@ -311,7 +313,7 @@ function openDialog(kind,archive=null){
   document.querySelector('[data-scope=latest]').hidden=!isNew;document.querySelector('[data-scope=urls]').hidden=isNew;
   const to=new Date(),from=new Date(to);from.setDate(from.getDate()-29);$('date-from').value=dateValue(from);$('date-to').value=dateValue(to);
   if(!resume){setScope(isNew?'full':'period');if(archive?.parameters){$('images').checked=!!archive.parameters.images;$('videos').checked=!!archive.parameters.videos;}}
-  else{$('request-limit').required=false;$('entry-urls').required=false;$('entry-urls').disabled=true;$('resume-note').textContent=archive.username+' · '+(scopes[archive.parameters?.mode]||'загрузка');}
+  else{$('request-limit').required=false;$('entry-urls').required=false;$('entry-urls').disabled=true;$('resume-note').textContent=archive.username+' · '+(scopeLabel(archive.parameters)||'загрузка');}
   setSource();$('export-dialog').showModal();(isNew?$('username'):$('password')).focus();
 }
 // Minutes for the long work; seconds only for a countdown the person is watching.
@@ -438,7 +440,7 @@ function showStatus(s){lastState=s;showContact(s);
   if($('job-stage').textContent!==stage)$('job-stage').textContent=stage;
   const tone=stalled||s.phase==='error'?'error':s.phase==='waiting'||silent?'wait':(['complete','demo'].includes(s.phase)||finishedWithSkips)&&!s.request_limit_reached?'done':done?'warn':'run';
   $('job-state').dataset.tone=tone;$('job').dataset.tone=tone;$('job').classList.toggle('active',!done||materialRunning);
-  const kind=s.operation==='resume'?'докачка пропусков':s.parameters?.entry_limit?`тест · ${count(s.parameters.entry_limit,ENTRY_FORMS)}`:kinds[s.parameters?.mode]||'';
+  const kind=s.operation==='resume'?'докачка пропусков':s.parameters?.entry_limit?`тест · ${count(s.parameters.entry_limit,ENTRY_FORMS)}`:(s.parameters?.source_type==='reader'&&s.parameters.mode==='full'?'все доступные записи':kinds[s.parameters?.mode])||'';
   $('job-kind').hidden=!kind||(done&&!materialRunning);$('job-kind').textContent=kind;
   const now=material?[material.message||'']:nowContent(s,clock);if(material?.total)now.push(` · ${material.completed||0} / ${material.total}`);if(silent&&!material)now.unshift(`Ожидаем ответ${request.host?' от '+request.host:''} · ${minutes(clock-request.at)}. `);
   else if(!done&&network.has(s.phase)&&activity.kind==='failure'&&activity.reason==='web_login')now.splice(0,now.length,'Не удалось подтвердить вход для изображений. Полученное сохраняется.');

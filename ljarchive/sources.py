@@ -45,6 +45,25 @@ def stored_source(store):
     return value
 
 
+def folder_source(folder):
+    """The source of a saved archive for pages the app renders on request; None when it cannot be read."""
+    import sqlite3
+    from pathlib import Path
+    from .storage import Store
+    if not (Path(folder) / 'archive.sqlite3').is_file():
+        return None
+    try:
+        store = Store.reader(folder)
+    except (OSError, sqlite3.Error):
+        return None
+    try:
+        return stored_source(store)
+    except (sqlite3.Error, ValueError):
+        return None
+    finally:
+        store.close()
+
+
 def bind_source(store, client):
     """One journal per database; IDs are only meaningful within that journal."""
     from .client import ExportError

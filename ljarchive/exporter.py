@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import shutil
 import threading
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .client import HTTPRateLimited, APIRateLimited, APIError, Cancelled, ExportError, IncompleteData, LiveJournalClient, RequestBudget, RequestLimitReached, username
+from .client import HTTPRateLimited, APIRateLimited, APIError, Cancelled, ExportError, IncompleteData, JournalNotFound, LiveJournalClient, RequestBudget, RequestLimitReached, username
 from .storage import Store, atomic_write, dumps
 from .comment_state import DELETED
 from .entries import is_repost
@@ -65,6 +66,16 @@ def normalize_thread(nodes, entry_id):
         result.append(item)
         stack.extend(reversed(children))
     return result, users
+
+
+def recent_window(entries):
+    """Entries older than the latest selection merely left it; only gaps inside it are entries LJ no longer returns.
+
+    LJ orders a community by posting time and a personal journal by entry date, so an entry must be inside the
+    window by both to count as missing."""
+    key = lambda entry, field: (entry.get(field) or entry['eventtime'], int(entry['itemid']))
+    bounds = {field: min(key(e, field) for e in entries) for field in ('eventtime', 'logtime')}
+    return lambda entry: all(key(entry, field) >= bound for field, bound in bounds.items())
 
 
 class Exporter:
@@ -225,10 +236,10 @@ class Exporter:
                     if self.reader:
                         self.selected_ids = set(ids)
                         store.set('recent_ids', ids)
-                        store.mark_absent_entries(self.selected_ids)
+                        store.mark_absent_entries(self.selected_ids, within=recent_window(entries) if len(entries) >= self.entry_limit else None)
                     else:
                         store.retain_recent_entries(ids)
-                    if replacing:
+                    if replacing and self.include_comments:
                         statuses = store.get('entry_comments', {})
                         for eid in ids:
                             statuses.pop(str(eid), None)
@@ -254,10 +265,12 @@ class Exporter:
                              and c.get("state") not in ("D", "X") for c in records if c["id"] in seen)
         missing_screened = entry.get("props", {}).get("hasscreened") in (1, "1", True) and not any(
             c.get("state") == "S" and c["id"] in seen for c in records)
+        # LJ's reply count leaves out screened comments, so fewer seen comments mean a truncated answer for any reader.
+        short = len(seen) < int(entry.get("reply_count", 0) or 0)
         if self.reader:
-            return not any(('body' not in c or c.get('source_status') == 'body_not_returned')
-                           and c['state'] not in DELETED and c.get('source_status') != 'hidden_from_reader' for c in records if c['id'] in seen)
-        return not (missing_bodies or missing_screened or len(seen) < int(entry.get("reply_count", 0) or 0))
+            return not (short or any(('body' not in c or c.get('source_status') == 'body_not_returned')
+                                     and c['state'] not in DELETED and c.get('source_status') != 'hidden_from_reader' for c in records if c['id'] in seen))
+        return not (missing_bodies or missing_screened or short)
 
     def recent_comments(self):
         store = self.store
@@ -272,7 +285,11 @@ class Exporter:
             eid = int(entry["itemid"])
             status = statuses.setdefault(str(eid), {"next_page": 1, "done": False})
             if not self.include_comments:
-                statuses[str(eid)] = {"done": True, "skipped": "not_requested"}
+                # Switching comments off affects only discussions never read; saved ones and their gaps stay as they
+                # are, even when an earlier interrupted refresh reset their status.
+                if not (status.get("done") or status.get("seen_ids") or status.get("error")
+                        or store.db.execute("SELECT 1 FROM comments WHERE entry_id=? LIMIT 1", (eid,)).fetchone()):
+                    statuses[str(eid)] = {"done": True, "skipped": "not_requested"}
                 continue
             if status.get("skipped") == "not_requested":
                 status = statuses[str(eid)] = {"next_page": 1, "done": False}
@@ -725,11 +742,14 @@ class Exporter:
                     continue
                 if not statuses.get(str(eid), {}).get("done"):
                     pending_comments.append(eid)
-                if self.reader:
+                if statuses.get(str(eid), {}).get('skipped') == 'not_requested':
                     continue
                 count = store.db.execute("SELECT COUNT(*) FROM comments WHERE entry_id=?", (eid,)).fetchone()[0]
                 if count < int(entry.get("reply_count", 0) or 0):
                     issues.append(f"К записи #{eid} получено {count} комментариев; ЖЖ сообщил как минимум {entry['reply_count']}.")
+                if self.reader:
+                    # Screened comments outside the reader's access are not a gap of this archive.
+                    continue
                 has_screened = entry.get("props", {}).get("hasscreened")
                 if has_screened in (1, "1", True) and not store.db.execute("""SELECT 1 FROM comments c
                         JOIN comment_meta m ON m.id=c.id WHERE c.entry_id=? AND m.state='S'""", (eid,)).fetchone():
@@ -794,7 +814,7 @@ class Exporter:
                     # A partial run may have missed screened bodies. Re-fetch on retry.
                     store.set("body_cursor", 1)
                     store.set("bodies_done", False)
-                    if self.entry_limit is not None:
+                    if self.entry_limit is not None and self.include_comments:
                         store.set("entry_comments", {})
             error, cancelled = None, False
             text_processed = False
@@ -836,6 +856,7 @@ class Exporter:
             if self.reader:
                 report['comments_requested'] = self.include_comments
                 report['recent_ids'] = store.get('recent_ids', [])
+                report['unavailable_entry_ids'] = sorted(e['itemid'] for e in store.entries() if e.get('source_status') == 'not_returned')
                 report['scope'] = f'Последние {self.entry_limit} записей, доступных аккаунту {self.client.account}.'
                 report['limitations'] = 'В архив входит содержимое, доступное этому читателю на момент загрузки.'
             budget = getattr(self.client, "budget", None)
@@ -872,8 +893,14 @@ def export(user, password, output, *, images=False, delay=2, cancel=None, progre
                     session_ready=session_ready, include_comments=include_comments)
     budget = RequestBudget(max_requests, progress=progress)
     client = LiveJournalClient(user, password, delay=delay, cancel=cancel, budget=budget, progress=progress, journal=journal, source_type=source_type, session_ready=session_ready)
+    folder = Path(output) / archive_slug(archive_base(identity), entry_limit)
+    fresh = not folder.exists()
     try:
-        return Exporter(Path(output) / archive_slug(archive_base(identity), entry_limit), client, images=images,
+        return Exporter(folder, client, images=images,
                         progress=progress, entry_limit=entry_limit, account=account, messages=messages, videos=videos, include_comments=include_comments).run()
+    except JournalNotFound:
+        if fresh:
+            shutil.rmtree(folder, ignore_errors=True)
+        raise
     finally:
         client.close()

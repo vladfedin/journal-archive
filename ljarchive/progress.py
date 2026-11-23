@@ -7,6 +7,7 @@ from urllib.parse import urljoin
 from .storage import atomic_write, dumps
 from .entries import is_repost, repost_url
 from .gaps import closed
+from .sources import stored_source
 
 
 class Images(HTMLParser):
@@ -143,7 +144,8 @@ def timeline(store, *, task=False):
         items.append({'id': eid, 'date': date, 'title': plain(title) or 'Без заголовка',
                       'url': f'entries/{eid}.html', 'state': state, 'repost': repost, 'error': None if repost else status.get('error'),
                       'settled': closed(status), 'videos': missing_videos.get(eid, 0),
-                      'comments_complete': bool(done), 'screened': 0 if repost else screened[eid],
+                      'comments_complete': bool(done), 'comments_skipped': status.get('skipped') == 'not_requested',
+                      'screened': 0 if repost else screened[eid],
                       'notice': coverage_notice(status, mat, repost=repost, videos=missing_videos.get(eid, 0)),
                       'comments': 0 if repost else counts[eid], 'expected_comments': expected, 'pages': status.get('pages'),
                       'page': status.get('last_valid_page', max(0, status.get('next_page', 1) - 1)), 'materials': mat,
@@ -217,6 +219,6 @@ def preview_entry(store, eid):
                      coverage_notice=coverage_notice(store.get('entry_comments', {}).get(str(eid), {}),
                          material_progress(store.get('entry_materials', {}).get(str(eid), {}), media.mapping, store.get('media_errors', {})), repost=is_repost(entry),
                          videos=missing_by_entry(store).get(eid, 0)),
-                     preview=True, report={'created_at': store.get('started_at', '')})
+                     preview=True, report={'created_at': store.get('started_at', ''), 'source': stored_source(store)})
     finally:
         media.close()

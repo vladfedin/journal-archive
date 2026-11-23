@@ -144,7 +144,7 @@ window.ArchiveTimeline=class {
     if(item.repost)lines.push('Перепост');
     else{
       const expected=item.expected_comments,got=item.comments||0;
-      lines.push(item.comments_complete||expected==null||got>=expected?(got?T.count(got,COMMENTS):'Без комментариев'):`${got.toLocaleString('ru-RU')} из ${T.count(expected,OF_COMMENTS)}`);
+      lines.push(item.comments_skipped&&!got?'Комментарии не запрашивались':item.comments_complete||expected==null||got>=expected?(got?T.count(got,COMMENTS):'Без комментариев'):`${got.toLocaleString('ru-RU')} из ${T.count(expected,OF_COMMENTS)}`);
       if(item.screened)lines[lines.length-1]+=` · ${T.count(item.screened,['скрытый','скрытых','скрытых'])}`;
     }
     if(m.requested)lines.push(m.saved>=m.requested?T.count(m.requested,IMAGES):`${(m.saved||0).toLocaleString('ru-RU')} из ${T.count(m.requested,OF_IMAGES)}`);

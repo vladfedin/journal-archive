@@ -56,7 +56,7 @@ def metadata_snapshot(store):
     """Read metadata together; defer JSON decoding and filesystem work until after close."""
     keys = ('sync_job', 'entry_comments', 'entry_materials', 'media', 'media_errors', 'bodies_done',
             'userpic_catalog', 'username', 'personal_requested', 'personal_images_requested', 'videos', 'posts_done',
-            'journal_id', 'reaction_count_attempts', 'comments_requested')
+            'journal_id', 'reaction_count_attempts')
     settings = dict(store.db.execute('SELECT key,value FROM settings WHERE key IN (' + ','.join('?' for _ in keys) + ')', keys))
     requested = json.loads(settings.get('personal_requested', '{}'))
     return {'folder': store.folder, 'settings': settings, 'counts': store.counts(),
@@ -131,7 +131,7 @@ def inventory_snapshot(data, *, cancel=None, progress=None, whole=False):
         if row[1] in entries:
             item = json.loads(row[2])
             item['state'] = row[3] or item.get('state', 'A')
-            if settings.get('comments_requested') is False or item.get('source_status') == 'hidden_from_reader' or item['state'] in ('D', 'X'):
+            if item.get('source_status') == 'hidden_from_reader' or item['state'] in ('D', 'X'):
                 continue
             picture(item, 'comment', row[0])
             if item.get('source_status') != 'not_returned' and ('post', row[1]) in reaction_targets:
